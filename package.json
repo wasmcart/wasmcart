@@ -1,0 +1,55 @@
+{
+  "name": "wasmcart",
+  "version": "0.2.0",
+  "description": "WASM cartridge host - load and run sandboxed .wasm and .wasc game carts",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test 'test/**/*.test.js'",
+    "prepublishOnly": "npm test"
+  },
+  "exports": {
+    ".": {
+      "browser": "./web.js",
+      "default": "./index.js"
+    },
+    "./web": "./web.js"
+  },
+  "files": [
+    "index.js",
+    "web.js",
+    "src/",
+    "bin/",
+    "include/",
+    "docs/",
+    "SPEC.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "wasmcart-pack": "./bin/wasmcart-pack.js"
+  },
+  "keywords": [
+    "wasm",
+    "webassembly",
+    "cartridge",
+    "game",
+    "sandbox",
+    "emulator",
+    "retro"
+  ],
+  "author": "Luis Montes",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/monteslu/wasmcart.git"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "yauzl": "^3.2.0",
+    "yazl": "^2.5.1"
+  }
+}

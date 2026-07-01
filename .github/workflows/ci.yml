@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # Pure-JS package (deps: fflate, yauzl, yazl). No native build.
+      - run: npm ci
+      - run: npm test
+
+  pack-guard:
+    name: npm pack (files field)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      # Guard the `files` field: the published tarball should be the runtime only
+      # (no porting/, ports/, test/, logos). Fail loudly if it balloons.
+      - name: npm pack dry-run
+        run: |
+          npm pack --dry-run 2>&1 | tee pack.log
+          FILES=$(grep -c 'npm notice.*\.' pack.log || true)
+          echo "packed entries: ~$FILES"
+          if grep -qE 'ports/|porting/|test/fixtures|/obj/|\.o$|\.a$' pack.log; then
+            echo "::error::npm pack would ship build artifacts / split-out dirs - check the files field"
+            exit 1
+          fi
+
+  publish:
+    name: publish to npm
+    needs: [test, pack-guard]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # npm provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
