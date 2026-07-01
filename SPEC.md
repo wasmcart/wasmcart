@@ -410,6 +410,50 @@ All keycodes follow USB HID Usage Tables. SDL provides these natively. Browser `
 
 ## Security Model
 
+A cart is a plain WebAssembly module with **no ambient authority**. It has no
+syscalls, no filesystem, no network, no clock beyond what the host hands it, and no
+way to reach anything outside its own module memory except through the imports the
+host provides. Everything a cart can touch is mediated by the host and validated
+before it acts. This is what makes running an untrusted cart safe.
+
+### Filesystem and assets
+
+Carts have **no filesystem access.** There is no `open`, `read`, `write`, `stat`,
+directory listing, or any path-based I/O available to a cart - those imports simply
+do not exist.
+
+The only files a cart can read are **its own bundled assets**, and only through the
+asset API:
+
+- `wc_asset_size(path, len)` and `wc_load_asset(path, len, dest, maxSize)` resolve
+  paths **against the cart's own asset bundle only** (the `assets/` entries inside
+  its `.wasc`, or the dev-mode directory). A cart cannot name a file outside that
+  scope.
+- The host **validates every requested path** and rejects: absolute paths (`/...`,
+  `\...`), Windows drive letters (`C:`), parent-directory traversal (`..`), null
+  bytes, and backslashes. A rejected or unknown path returns `-1`; there is no way
+  for it to resolve to a host file.
+- A cart therefore cannot read the user's files, other carts' assets, or anything
+  on the host - its entire readable world is the assets it shipped with.
+
+### Saving is host-managed
+
+Carts do **not** write files to save progress. Persistence is entirely the host's
+responsibility, through a fixed shared-memory region:
+
+- The cart declares a save region via `wc_info_t.save_ptr` / `save_size` (a plain
+  byte blob in the cart's own memory).
+- **The host owns storage.** Before `wc_init()`, the host loads any existing save
+  bytes into that region so the cart can read them at startup. After a frame (or on
+  demand), the host reads the region back and persists it however it sees fit
+  (a file, browser storage, a libretro SRAM/save-state, a database - the cart never
+  knows or cares).
+- The cart never chooses *where* or *whether* data is stored; it only reads and
+  writes its own in-memory save blob. This keeps saving safe (no filesystem write
+  authority) and portable (the same cart saves correctly on every host).
+
+### Networking
+
 1. **No networking by default** - omit `net` from manifest = zero network access
 2. **Domain allowlist** - WebSocket connections only to declared domains
 3. **No raw sockets** - no TCP, no UDP, no localhost, no IP addresses
@@ -417,6 +461,16 @@ All keycodes follow USB HID Usage Tables. SDL provides these natively. Browser `
 5. **Graceful degradation** - offline hosts provide stub imports returning -1
 6. **Data channels are host-managed** - cart can't initiate peer connections
 7. **No DNS resolution** - cart can't enumerate network
+
+### Summary
+
+| Capability | Cart access |
+|------------|-------------|
+| Host filesystem | none |
+| Own bundled assets | read-only, path-validated, via `wc_load_asset` |
+| Save data | in-memory blob only; host owns persistence |
+| Network | none unless declared in the manifest (allowlisted WebSocket / data channels) |
+| Syscalls / clock / RNG | none except what the host explicitly imports |
 
 ---
 
