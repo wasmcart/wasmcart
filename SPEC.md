@@ -1,16 +1,19 @@
 # wasmcart Specification
 
-> **Current ABI version: 3** (backward compatible with v1 and v2). This is the
-> normative specification for the wasmcart virtual cartridge format - the
-> host↔cart contract that any conforming host (see the reference implementations
-> in [`src/`](src/)) and any cart must follow. The machine-readable form of these
-> constants lives in [`src/abi.js`](src/abi.js); the C-side contract in
-> [`include/wc_cart.h`](include/wc_cart.h).
+> **ABI version: 3.** This is the normative specification for the wasmcart virtual
+> cartridge format - the host↔cart contract that any conforming host (see the
+> reference implementations in [`src/`](src/)) and any cart must follow. The
+> machine-readable form of these constants lives in [`src/abi.js`](src/abi.js); the
+> C-side contract in [`include/wc_cart.h`](include/wc_cart.h).
 
 
 ## Overview
 
-ABI v3 extends wasmcart with networking (WebSocket + data channels) and extended input (pointer + keyboard). All new features are opt-in. Gamepad is always the default input. Backwards compatible with ABI v1 and v2 carts.
+A cart declares its capabilities in a manifest and exports three functions
+(`wc_get_info`, `wc_init`, `wc_render`). Gamepad input is always available;
+networking (WebSocket + data channels) and extended input (pointer + keyboard) are
+opt-in per cart. The host provides everything through a small set of imports and
+shared-memory regions; the cart owns its own memory and reaches nothing else.
 
 ---
 
@@ -472,11 +475,3 @@ responsibility, through a fixed shared-memory region:
 | Network | none unless declared in the manifest (allowlisted WebSocket / data channels) |
 | Syscalls / clock / RNG | none except what the host explicitly imports |
 
----
-
-## Backwards Compatibility
-
-- ABI v1/v2 carts work unchanged - new wc_info_t fields are beyond v2 struct size, host detects version
-- New fields (pointer_ptr, keys_ptr) default to 0 - host checks before writing
-- All new cart exports are optional - host checks for their existence before calling
-- All new cart imports return -1 or no-op when feature is unavailable
