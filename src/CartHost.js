@@ -214,6 +214,12 @@ export class CartHost {
     this.lastFrameTime = 0;
     this.audioReadCursor = 0;
 
+    // Deterministic-clock mode (opt-in via setFixedStep). 0 = use wall-clock
+    // (performance.now) as normal. > 0 = each runFrame advances this many virtual
+    // ms, so frame N always reports timeMs = N * step regardless of real elapsed
+    // time. Lets a host step frames reproducibly (screenshot testing, harnesses).
+    this._fixedStepMs = 0;
+
     // Views into cart memory (set after init)
     this._u8 = null;
     this._u16 = null;
@@ -629,10 +635,21 @@ export class CartHost {
    * @returns {{ framebuffer: Uint8Array, width: number, height: number, audio: Int16Array|Float32Array|null }}
    */
   runFrame(pads) {
-    const now = performance.now();
-    const deltaMs = now - this.lastFrameTime;
-    const timeMs = now - this.startTime;
-    this.lastFrameTime = now;
+    let timeMs, deltaMs;
+    if (this._fixedStepMs > 0) {
+      // Deterministic clock: a host (e.g. an automated harness) drives frames
+      // and wants frame N to always report the same time, independent of how
+      // long the frame actually took. Each runFrame advances a fixed virtual
+      // step. Opt-in via setFixedStep(); wall-clock is the default (below).
+      deltaMs = this._fixedStepMs;
+      timeMs = this.frameCount * this._fixedStepMs;
+      this.lastFrameTime = this.startTime + timeMs;
+    } else {
+      const now = performance.now();
+      deltaMs = now - this.lastFrameTime;
+      timeMs = now - this.startTime;
+      this.lastFrameTime = now;
+    }
 
     this._updateViews(); // in case memory grew
 
@@ -677,6 +694,18 @@ export class CartHost {
       height: this.info.height,
       audio,
     };
+  }
+
+  /**
+   * Enable (or disable) the deterministic fixed-step clock. When set to a
+   * positive value, each runFrame() advances exactly that many virtual ms and
+   * reports timeMs = frameCount * stepMs — so a host driving frames gets
+   * reproducible timing independent of real elapsed time. Pass 0 (or nothing) to
+   * return to wall-clock timing. Optional; standalone hosts never call this.
+   * @param {number} [stepMs=1000/60] virtual ms per frame (default ~16.667 for 60fps)
+   */
+  setFixedStep(stepMs = 1000 / 60) {
+    this._fixedStepMs = stepMs > 0 ? stepMs : 0;
   }
 
   /**
