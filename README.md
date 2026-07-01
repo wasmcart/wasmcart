@@ -297,14 +297,6 @@ npx wasmcart-pack --wasm cart.wasm -o game.wasc --pointer --keyboard
 npx wasmcart-pack --wasm cart.wasm -o game.wasc --players 4 --ws api.mygame.com --data-channel
 ```
 
-### wasmcart-screenshot
-
-Run a cart headlessly and capture a screenshot:
-
-```bash
-node bin/wasmcart-screenshot.js game.wasc --frames 120 -o screenshot.png
-```
-
 ## Writing Carts
 
 ### Minimal 2D cart (C + Emscripten)
