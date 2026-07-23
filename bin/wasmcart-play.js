@@ -32,7 +32,7 @@ import { deflateSync } from 'zlib';
 
 const argv = process.argv.slice(2);
 let cartPath = null;
-const opt = { frames: 0, shot: null, wav: null, seed: null, scale: 0, fps: 30 };
+const opt = { frames: 0, shot: null, wav: null, seed: null, scale: 0, fps: 30, term: false, window: false, gl: false, zoom: 0 };
 
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -43,8 +43,12 @@ for (let i = 0; i < argv.length; i++) {
     case '--seed':   opt.seed = parseInt(argv[++i], 10) >>> 0; break;
     case '--scale':  opt.scale = parseInt(argv[++i], 10) || 0; break;
     case '--fps':    opt.fps = Math.max(1, Math.min(60, parseInt(argv[++i], 10) || 30)); break;
+    case '--term':   opt.term = true; break;
+    case '--window': opt.window = true; break;
+    case '--gl':     opt.gl = true; break;
+    case '--zoom':   opt.zoom = parseInt(argv[++i], 10) || 0; break;
     case '-h': case '--help':
-      console.log('Usage: wasmcart-play <cart.wasc | cart-dir> [--frames n] [--shot out.png] [--wav out.wav] [--seed n] [--scale cols] [--fps n]');
+      console.log('Usage: wasmcart-play <cart.wasc | cart-dir> [--frames n] [--shot out.png] [--wav out.wav] [--seed n] [--term] [--window] [--gl] [--zoom n] [--scale cols] [--fps n]');
       process.exit(0);
     default:
       if (!cartPath && !a.startsWith('-')) cartPath = a;
@@ -126,7 +130,7 @@ function encodeWav(chunks, sampleRate) {
   return Buffer.concat([h, data]);
 }
 
-function toInt16(audio) {
+export function toInt16(audio) {
   if (!audio || !audio.length) return null;
   if (audio instanceof Int16Array) return Int16Array.from(audio);
   const out = new Int16Array(audio.length);
@@ -175,6 +179,20 @@ const KEYMAP = {
 // ── main ─────────────────────────────────────────────────────────────
 
 async function main() {
+  // windowed player (default): SDL window + audio + real key edges, on the
+  // org's own stack. --term skips it; headless --frames skips it; a failure
+  // (no SDL, no display) falls back to the terminal player below.
+  const headless = opt.frames > 0 && !opt.window;
+  if (!opt.term && !headless) {
+    try {
+      const { runWindowed } = await import('./play-window.js');
+      await runWindowed(cartPath, opt, { CartHost, toInt16 });
+      return;
+    } catch (e) {
+      console.error(`wasmcart-play: windowed mode unavailable (${e.message}) — falling back to terminal.`);
+    }
+  }
+
   const host = new CartHost();
   const loadOpts = opt.seed !== null ? { deterministic: { seed: opt.seed } } : {};
   await host.load(cartPath, loadOpts);
@@ -204,8 +222,8 @@ async function main() {
     }
   };
 
-  // headless mode
-  if (opt.frames > 0) {
+  // headless mode (--frames without --window)
+  if (opt.frames > 0 && !opt.window) {
     for (let i = 0; i < opt.frames; i++) step();
     if (opt.shot) writeFileSync(opt.shot, encodePng(frame.framebuffer, frame.width, frame.height));
     if (opt.wav) writeFileSync(opt.wav, encodeWav(audioChunks, info.audioSampleRate || 48000));

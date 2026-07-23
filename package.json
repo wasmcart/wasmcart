@@ -50,7 +50,9 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
+    "@kmamal/sdl": "^0.11.13",
     "fflate": "^0.8.3",
+    "webgl-node": "^1.2.0",
     "yauzl": "^3.2.0",
     "yazl": "^2.5.1"
   }

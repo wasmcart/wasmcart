@@ -45,21 +45,28 @@ emulator (`retroemu`). See **[The wasmcart org](#the-wasmcart-org)** below.
 npm install wasmcart
 ```
 
-## Play a cart from the terminal (no native host)
+## Play a cart
 
 ```bash
-npx wasmcart game.wasc              # ANSI terminal player, keyboard = pad 0
+npx wasmcart game.wasc              # SDL window + audio + gamepad (the default)
+npx wasmcart game.wasc --gl         # GL cart: OpenGL window via webgl-node
 npx wasmcart my-cart-dir/           # dev mode: manifest.json + cart.wasm + assets, straight off disk
+npx wasmcart game.wasc --term       # ANSI terminal player (SSH-friendly fallback)
 npx wasmcart game.wasc --frames 300 --shot out.png --wav out.wav   # headless: step, dump, exit
 npx wasmcart game.wasc --seed 7 --frames 60 --shot a.png           # deterministic replay run
 npx wasmcart pack --wasm cart.wasm -o game.wasc                    # packing, same front door
 ```
 
-Keys: arrows/WASD d-pad, `x`/`z` = A/B, Enter = Start, Tab = Select, `q` quits.
-2D framebuffer carts only — GL carts need a GL-capable host. Headless mode is
-scriptable: same seed → byte-identical PNG, so a shell loop is a regression
-test. `wasmcart-pack` remains the packer; dev-mode directories skip it during
-iteration.
+The windowed player runs on the org's own stack — `@kmamal/sdl` (window,
+keyboard, audio queue, game controllers) and `webgl-node` (WebGL2-over-native
+GLES for `--gl` carts) — with audio-paced frame stepping so sound never
+stutters. Keys: arrows/WASD d-pad, `x`/`z` = A/B, Enter = Start, Tab = Select,
+Esc/`q` quits; the first plugged-in controller maps automatically. No display?
+It falls back to the terminal player, and headless mode is scriptable: same
+seed → byte-identical PNG, so a shell loop is a regression test. Hosts that
+embed `CartHost` (harnesses like romdevtools) keep supplying their OWN
+backends via `load(..., { glBackend })` — these dependencies power the CLI,
+they are not required by the embedding API.
 
 Requires Node.js >= 22.
 
