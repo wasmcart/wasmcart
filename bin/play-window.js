@@ -19,7 +19,7 @@ import { BUTTON } from '../src/abi.js';
 const KEYMAP = {
   up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT',
   w: 'UP', s: 'DOWN', a: 'LEFT', d: 'RIGHT',
-  x: 'A', z: 'B', return: 'START', tab: 'SELECT',
+  x: 'A', z: 'B', space: 'A', return: 'START', tab: 'SELECT',
   '[': 'L', ']': 'R',
 };
 

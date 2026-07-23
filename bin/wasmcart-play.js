@@ -172,7 +172,7 @@ const KEY_HOLD_FRAMES = 6;
 const KEYMAP = {
   '\x1b[A': 'UP', '\x1b[B': 'DOWN', '\x1b[D': 'LEFT', '\x1b[C': 'RIGHT',
   w: 'UP', s: 'DOWN', a: 'LEFT', d: 'RIGHT',
-  x: 'A', z: 'B', q: null, '\r': 'START', '\t': 'SELECT',
+  x: 'A', z: 'B', ' ': 'A', q: null, '\r': 'START', '\t': 'SELECT',
   '[': 'L', ']': 'R',
 };
 
