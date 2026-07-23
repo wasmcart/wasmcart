@@ -274,6 +274,9 @@ export class CartHostWeb {
             console.warn('[cart]', text);
           }
         },
+        // Debug-ABI frame annotation — no-op stub on the play host (the intent
+        // is zero call sites in a release cart; a debug build still instantiates).
+        wc_debug_mark: () => {},
         wc_asset_size: (pathPtr, pathLen) => {
           return this._assetSize(pathPtr, pathLen);
         },

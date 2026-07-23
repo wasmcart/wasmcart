@@ -17,6 +17,8 @@ import {
   FLAG_POINTER,
   FLAG_KEYBOARD,
   FLAG_DEBUG,
+  FLAG_DETERMINISTIC,
+  HOST_FLAG_DETERMINISTIC,
   DEBUG_FIELD_SIZE,
   DEBUG_TYPE_WIDTH,
   DEBUG_TYPE_NAME,
@@ -209,6 +211,9 @@ const MAX_ASSET_SIZE = 256 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES = 100000;
 
 export class CartHost {
+  /** Cap per debug-event ring (log / marks) between drains. */
+  static MAX_DEBUG_EVENTS = 1000;
+
   constructor() {
     this.instance = null;
     this.memory = null;
@@ -223,6 +228,18 @@ export class CartHost {
     // ms, so frame N always reports timeMs = N * step regardless of real elapsed
     // time. Lets a host step frames reproducibly (screenshot testing, harnesses).
     this._fixedStepMs = 0;
+
+    // Deterministic replay (opt-in via load({deterministic:{seed}})). null =
+    // normal run. Set = fixed step + HOST_FLAG_DETERMINISTIC in host-info +
+    // wc_set_seed(seed) before wc_init. Everything happens at load; the
+    // per-frame path has no deterministic branch.
+    this.deterministicSeed = null;
+
+    // Debug event capture (pull-drained, capped). wc_log lines and
+    // wc_debug_mark(id) annotations land here stamped with the frame they
+    // occurred on. A cart that never logs/marks never touches these.
+    this.debugLog = [];
+    this.debugMarks = [];
 
     // Views into cart memory (set after init)
     this._u8 = null;
@@ -360,7 +377,14 @@ export class CartHost {
             const bytes = this._u8.slice(ptr, ptr + len);
             const text = new TextDecoder().decode(bytes);
             console.error('[cart]', text);
+            this._pushDebugEvent(this.debugLog, { frame: this.frameCount, text });
           }
+        },
+        // Frame annotation (debug ABI): the cart timestamps a moment ("level
+        // loaded", "boss spawned") so a trace/replay is navigable by event.
+        // Capture is pull-drained; a cart that never calls this pays nothing.
+        wc_debug_mark: (id) => {
+          this._pushDebugEvent(this.debugMarks, { frame: this.frameCount, id: id >>> 0 });
         },
         // Asset API (v2) - always provided, returns -1 if no assets loaded
         wc_asset_size: (pathPtr, pathLen) => {
@@ -597,9 +621,26 @@ export class CartHost {
       saveRegion.set(options.saveData.subarray(0, copyLen));
     }
 
+    // Deterministic replay (opt-in): fixed virtual clock + host flag + seed,
+    // ALL selected here at load — the per-frame path never checks a flag.
+    // options.deterministic: {seed: u32, stepMs?: number} (stepMs default 60fps).
+    if (options.deterministic) {
+      const det = options.deterministic;
+      this.deterministicSeed = (det.seed ?? 1) >>> 0;
+      this._fixedStepMs = det.stepMs > 0 ? det.stepMs : 1000 / 60;
+      options = { ...options, flags: (options.flags || 0) | HOST_FLAG_DETERMINISTIC };
+    }
+
     // Write host info BEFORE wc_init so cart can read preferred resolution etc.
     if (this.info.hostInfoPtr) {
       this._writeHostInfo(this.info.hostInfoPtr, options);
+    }
+
+    // Deliver the seed BEFORE wc_init (and before _initialize's constructors
+    // run game code) so the cart's RNG is seeded from frame 0. Optional export:
+    // a cart without WC_DETERMINISTIC_RNG simply doesn't get called.
+    if (this.deterministicSeed !== null && typeof exports.wc_set_seed === 'function') {
+      exports.wc_set_seed(this.deterministicSeed);
     }
 
     // Call WASI reactor _initialize (emscripten static constructors) if present
@@ -841,6 +882,28 @@ export class CartHost {
       default: throw new Error(`unsupported debug type ${f.type}`);
     }
     return f.valuePtr;
+  }
+
+  /** Capped push for the debug event rings — oldest entries drop past the cap
+   *  so a chatty cart can't grow host memory unbounded between drains. */
+  _pushDebugEvent(ring, ev) {
+    ring.push(ev);
+    if (ring.length > CartHost.MAX_DEBUG_EVENTS) ring.shift();
+  }
+
+  /**
+   * Drain captured debug events — wc_log lines and wc_debug_mark(id)
+   * annotations, each stamped with the frame it occurred on — clearing the
+   * rings. Pull-model: the host stores what the cart emitted; nothing is
+   * read or computed per frame.
+   * @returns {{log: {frame:number, text:string}[], marks: {frame:number, id:number}[]}}
+   */
+  drainDebugEvents() {
+    const log = this.debugLog;
+    const marks = this.debugMarks;
+    this.debugLog = [];
+    this.debugMarks = [];
+    return { log, marks };
   }
 
   /**
@@ -1729,6 +1792,10 @@ export class CartHost {
     // We do NOT read the table here — it's pull-only (readDebugState on demand),
     // so a debug cart pays nothing per frame and a non-debug cart is untouched.
     info.hasDebug = !!(info.flags & FLAG_DEBUG);
+
+    // Deterministic replay (OPT-IN, ABI 3): the cart declares it honors
+    // deterministic mode (host-seeded RNG + wc_time-only timing).
+    info.hasDeterministic = !!(info.flags & FLAG_DETERMINISTIC);
 
     return info;
   }

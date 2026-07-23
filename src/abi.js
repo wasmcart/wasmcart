@@ -71,6 +71,24 @@ export const FLAG_NET_DC    = 1 << 2;  // cart wants data channel imports
 export const FLAG_POINTER   = 1 << 3;  // cart wants pointer input
 export const FLAG_KEYBOARD  = 1 << 4;  // cart wants raw keyboard input
 export const FLAG_DEBUG     = 1 << 5;  // cart exports wc_debug_state() (opt-in; default OFF)
+export const FLAG_DETERMINISTIC = 1 << 6; // cart honors deterministic mode (opt-in; default OFF)
+
+// Host-info flags (wc_host_info_t.flags, written by the host BEFORE wc_init,
+// read by the cart ONCE at init — never per frame).
+export const HOST_FLAG_DETERMINISTIC = 1 << 0; // this run is a deterministic replay
+
+// ── Deterministic replay (OPT-IN, default OFF) ───────────────────────────
+// A cart that sets FLAG_DETERMINISTIC declares it honors deterministic mode:
+// RNG seeded ONLY from the host (via the optional wc_set_seed(u32) export,
+// called by the host after instantiation, BEFORE wc_init), all timing taken
+// from wc_time_t, no other entropy. The host signals a deterministic run by
+// setting HOST_FLAG_DETERMINISTIC in host-info flags before wc_init; the cart
+// branches ONCE at init — the per-frame path is identical in both modes.
+// Default UNSET = today's wall-clock/native-entropy path, unchanged.
+// Same seed + same input script + fixed step → identical frame sequence.
+// NOT universal: large/engine carts may legitimately never set this flag —
+// a harness must treat non-deterministic carts as first-class (named-state
+// checkpoints instead of frame hashes).
 
 // ── Debug ABI (OPT-IN, default OFF) ──────────────────────────────────────
 // A debug-capable cart (FLAG_DEBUG set) exports wc_debug_state() returning a

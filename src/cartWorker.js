@@ -91,6 +91,7 @@ const imports = {
     },
     wc_asset_size: assetSize,
     wc_load_asset: loadAsset,
+    wc_debug_mark: () => {}, // debug-ABI annotation — main-thread host captures; workers no-op
     emscripten_notify_memory_growth: () => {},
     emscripten_asm_const_int: () => 0,
     emscripten_asm_const_double: () => 0.0,

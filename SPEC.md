@@ -84,6 +84,8 @@ Optional (opt-in via a flag, absent by default):
 
 ```c
 wc_debug_field_t* wc_debug_state(void);  // debug:true carts only (WC_FLAG_DEBUG)
+void wc_set_seed(uint32_t seed);         // deterministic carts only (WC_FLAG_DETERMINISTIC);
+                                         // host calls it BEFORE wc_init on replay runs
 ```
 
 ---
@@ -138,6 +140,14 @@ typedef struct {
 #define WC_FLAG_POINTER     0x08  // cart wants pointer input
 #define WC_FLAG_KEYBOARD    0x10  // cart wants raw keyboard input
 #define WC_FLAG_DEBUG       0x20  // cart exports wc_debug_state() (opt-in, default off)
+#define WC_FLAG_DETERMINISTIC 0x40 // cart honors deterministic mode (opt-in, default off)
+```
+
+Host-info flags (`wc_host_info_t.flags`, written by the host BEFORE `wc_init`,
+read by the cart ONCE at init — never per frame):
+
+```c
+#define WC_HOST_FLAG_DETERMINISTIC 0x01  // this run is a deterministic replay
 ```
 
 ---
@@ -181,6 +191,64 @@ watching — this is opt-in and author-controlled, not a heap dump.
 The `wc_cart.h` SDK provides `WC_DEBUG_FIELDS(...)` (with `WC_DBG` / `WC_DBG_ARR`)
 to emit the table + export in one line, kept SEPARATE from the base `WC_CART`
 boilerplate so a non-debug cart pulls in none of it.
+
+### Debug events (frame annotations + captured log)
+
+**Opt-in, default OFF.** A debug-capable cart MAY import:
+
+```c
+void wc_debug_mark(uint32_t id);  // import "env"."wc_debug_mark"
+```
+
+A call stamps an annotation (`{frame, id}`) into the host's event trace —
+"level loaded", "boss spawned" — so a run or replay is navigable by event.
+Debug-capable hosts additionally capture `wc_log()` lines into the same trace
+(`{frame, text}`); `wc_log` remains the one logging import, there is no
+separate debug-log call. Capture is PULL-drained by the consumer, capped, and
+costs nothing per frame on the host side.
+
+An UNCALLED import is not emitted into the WASM binary, so declaring
+`wc_debug_mark` in a header keeps a cart with no call sites byte-identical
+(governing rule upheld). Play-only hosts MUST still instantiate carts that DO
+call it — provide a no-op stub. The intent remains zero call sites in a
+shipped build (keep marks behind your own debug `#ifdef`).
+
+---
+
+## Deterministic replay
+
+**Opt-in, default OFF — and legitimately NOT universal.** By default a cart
+runs on wall-clock time and whatever entropy it chooses; nothing changes. A
+cart that sets `WC_FLAG_DETERMINISTIC` declares a contract:
+
+- its RNG is seeded ONLY by the host, via a new optional export
+  `void wc_set_seed(uint32_t seed)`, which a host calls after instantiation and
+  BEFORE `wc_init` on deterministic runs;
+- all timing comes from `wc_time_t` (no other clock reads);
+- it performs no other nondeterministic host calls during a deterministic run.
+
+The host signals a deterministic run by setting `WC_HOST_FLAG_DETERMINISTIC`
+in host-info flags (written before `wc_init`) and driving a fixed virtual
+clock (`setFixedStep`). Everything is selected ONCE at init: neither side
+checks a determinism flag in the per-frame path.
+
+**Guarantee:** same seed + same input script + fixed step → an identical frame
+sequence. This is what makes golden frame-hash regression testing airtight
+instead of flaky.
+
+**Scale honesty (normative):** large or engine-built carts (threading, GPU
+driver variance, float ordering, asset-load timing) often CANNOT honestly
+promise bit-reproducibility. Such carts simply never set the flag, and that is
+a first-class, supported case — a harness MUST NOT assume replay works for an
+arbitrary cart, and SHOULD fall back to named debug-state checkpoints (see
+Debug state), which work at any size. A host MAY still call `wc_set_seed` only
+when the flag is set; a cart without the export is seeded by nobody and runs
+as normal.
+
+The `wc_cart.h` SDK provides `WC_DETERMINISTIC_RNG` (xorshift32 +
+`wc_set_seed` export + `wc_rand()`/`wc_rand_range(n)`), kept SEPARATE from the
+base boilerplate so a non-deterministic cart emits none of it. Pair it with
+`WC_FILL_INFO(WC_FLAG_DETERMINISTIC)`.
 
 ---
 

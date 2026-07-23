@@ -197,4 +197,62 @@ typedef struct {
     __attribute__((export_name("wc_debug_state"))) \
     wc_debug_field_t *wc_debug_state(void) { return wc_debug_table; }
 
+/* ── Deterministic replay (OPT-IN, DEFAULT OFF) ──────────────────────
+ *
+ * SEPARATE from WC_CART on purpose (same governing rule as debug): a cart
+ * without WC_DETERMINISTIC_RNG emits none of this and reads no flag anywhere.
+ *
+ * Opting in declares: my RNG comes ONLY from the host's seed (wc_set_seed,
+ * called before wc_init on deterministic runs), my timing comes ONLY from
+ * wc_time_t, no other entropy. Same seed + same input script + fixed step
+ * → an identical frame sequence, which is what makes frame-hash regression
+ * goldens airtight instead of flaky.
+ *
+ * Usage:
+ *   WC_DETERMINISTIC_RNG
+ *   ...then pair it with the flag: WC_FILL_INFO(WC_FLAG_DETERMINISTIC)
+ *   ...and use wc_rand()/wc_rand_range(n) as your ONLY random source.
+ *
+ * The branch happens ONCE (the host seeds or it doesn't); wc_rand() itself
+ * is branch-free xorshift32 — the per-frame path is identical in both modes.
+ * Large/engine carts that can't honestly promise reproducibility should NOT
+ * set the flag; a harness must treat them as first-class (named debug-state
+ * checkpoints instead of frame hashes). */
+
+#ifndef WC_FLAG_DETERMINISTIC
+#define WC_FLAG_DETERMINISTIC (1 << 6)  /* cart honors deterministic mode */
+#endif
+#ifndef WC_HOST_FLAG_DETERMINISTIC
+#define WC_HOST_FLAG_DETERMINISTIC (1u << 0)  /* host-info flags: this run is a replay */
+#endif
+
+#define WC_DETERMINISTIC_RNG \
+    static uint32_t wc_rng_state = 2463534242u; \
+    __attribute__((export_name("wc_set_seed"))) \
+    void wc_set_seed(uint32_t s) { wc_rng_state = s ? s : 2463534242u; } \
+    static inline uint32_t wc_rand(void) { \
+        uint32_t x = wc_rng_state; \
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5; \
+        return (wc_rng_state = x); \
+    } \
+    static inline uint32_t wc_rand_range(uint32_t n) { \
+        return n ? (wc_rand() % n) : 0; \
+    }
+
+/* ── Debug frame annotations (OPT-IN, DEFAULT OFF) ───────────────────
+ *
+ * wc_debug_mark(id) stamps a moment ("level loaded" / "boss spawned") into
+ * the host's event trace with the frame number, so a replay is navigable by
+ * event. wc_log() lines are captured into the same trace by debug-capable
+ * hosts. Declaring the import costs nothing — an UNCALLED import is not
+ * emitted into the binary, so a cart with no call sites stays byte-identical.
+ * Keep call sites in debug builds (e.g. behind your own #ifdef) — play-only
+ * hosts stub the import, but the intent is zero call sites when you ship. */
+#ifdef __wasm__
+__attribute__((import_module("env"), import_name("wc_debug_mark")))
+extern void wc_debug_mark(uint32_t id);
+#else
+static inline void wc_debug_mark(uint32_t id) { (void)id; }
+#endif
+
 #endif /* WC_CART_H */
