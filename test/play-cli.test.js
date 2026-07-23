@@ -11,6 +11,7 @@ import os from 'node:os';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, '..', 'bin', 'wasmcart-play.js');
+const FRONT = join(HERE, '..', 'bin', 'wasmcart.js');
 const HELLO = join(HERE, 'fixtures', 'hello.wasc');
 const DETRNG = join(HERE, 'fixtures', 'detrng.wasc');
 
@@ -62,4 +63,11 @@ test('--wav writes a WAV with a real sample rate header', async () => {
 test('debug-capable carts list their named fields in the summary line', () => {
   const out = play([DETRNG, '--frames', '3']);
   assert.match(out, /debug=\[frame_n,noise_x,player_x\]/);
+});
+
+test('the `wasmcart` front-door bin plays a bare cart path and forwards pack', () => {
+  const out = execFileSync(process.execPath, [FRONT, HELLO, '--frames', '3'], { encoding: 'utf8' });
+  assert.match(out, /ran 3 frames\s+320x240/);
+  const help = execFileSync(process.execPath, [FRONT, '--help'], { encoding: 'utf8' });
+  assert.match(help, /wasmcart pack --wasm/);
 });
