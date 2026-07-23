@@ -15,6 +15,17 @@
  */
 
 import { BUTTON } from '../src/abi.js';
+import { readFileSync, writeFileSync, statSync } from 'node:fs';
+
+function savPathFor(cartPath) {
+  try {
+    return statSync(cartPath).isDirectory()
+      ? cartPath.replace(/\/+$/, '') + '.sav'
+      : cartPath + '.sav';
+  } catch {
+    return cartPath + '.sav';
+  }
+}
 
 const KEYMAP = {
   up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT',
@@ -41,6 +52,9 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
 
   const loadOpts = {};
   if (opt.seed !== null) loadOpts.deterministic = { seed: opt.seed };
+  // cart SRAM: a .sav next to the cart, loaded before wc_init, written on quit
+  const savPath = savPathFor(cartPath);
+  try { loadOpts.saveData = new Uint8Array(readFileSync(savPath)); } catch { /* first run */ }
 
   if (opt.gl) {
     // GL cart: the context must exist BEFORE load, bound to a real window.
@@ -137,6 +151,10 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
   function quit() {
     if (closing) return;
     closing = true;
+    try {
+      const sav = host.getSaveData();
+      if (sav && sav.some((b) => b !== 0)) writeFileSync(savPath, sav);
+    } catch { /* save is best-effort */ }
     try { audioDev?.close(); } catch { /* already gone */ }
     try { window?.destroy(); } catch { /* already gone */ }
     host.destroy();
