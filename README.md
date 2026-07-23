@@ -18,6 +18,7 @@ This repository is the **specification** and its **reference implementations**.
 - 🧩 **[`src/abi.js`](src/abi.js)** - the machine-readable contract (constants, layouts)
 - 🖥️ **[`include/wc_cart.h`](include/wc_cart.h)** - the C side of the contract for cart authors
 - 📚 **[`docs/`](docs/)** - per-subsystem guides (input, networking, GL, framebuffer, fetch, porting)
+- 🧭 **[docs/positioning.md](docs/positioning.md)** - ship the artifact you debugged: `.wasc` primary, native backends optional, observability by construction
 
 ## Reference implementations
 
