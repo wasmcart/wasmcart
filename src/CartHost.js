@@ -16,6 +16,10 @@ import {
   FLAG_NET_DC,
   FLAG_POINTER,
   FLAG_KEYBOARD,
+  FLAG_DEBUG,
+  DEBUG_FIELD_SIZE,
+  DEBUG_TYPE_WIDTH,
+  DEBUG_TYPE_NAME,
   POINTER_SIZE,
   MAX_POINTERS,
   KEYS_STATE_SIZE,
@@ -732,6 +736,111 @@ export class CartHost {
    */
   getManifest() {
     return this._manifest ? { ...this._manifest } : null;
+  }
+
+  // ── Debug ABI (OPT-IN, PULL-ONLY) ────────────────────────────────────
+  // Read on demand only. A cart without FLAG_DEBUG returns null everywhere; a
+  // debug cart's table is walked here, never per frame, so there is zero
+  // per-frame debug cost. See abi.js for the wc_debug_field_t layout.
+
+  /** Read a NUL-terminated C string from cart memory (for field names). */
+  _readCString(ptr, max = 256) {
+    if (!ptr) return '';
+    const u8 = this._u8;
+    let end = ptr;
+    const hardEnd = Math.min(u8.length, ptr + max);
+    while (end < hardEnd && u8[end] !== 0) end++;
+    return new TextDecoder().decode(u8.subarray(ptr, end));
+  }
+
+  /**
+   * Read the cart's debug-state descriptor table (the fields it chose to
+   * expose by name). Returns null if the cart didn't opt in (no FLAG_DEBUG /
+   * no wc_debug_state export). Pull-only — call when a debug consumer asks.
+   * @returns {Array<{name,type,typeName,valuePtr,len}> | null}
+   */
+  readDebugState() {
+    if (!this.info?.hasDebug) return null;
+    const fn = this.instance?.exports?.wc_debug_state;
+    if (typeof fn !== 'function') return null; // FLAG_DEBUG set but no export → conformance catches it
+    const tablePtr = fn() >>> 0;
+    if (!tablePtr) return null;
+    const fields = [];
+    const u32 = this._u32;
+    for (let i = 0; i < 1024; i++) { // sane cap; table is author-sized (a handful)
+      const base = (tablePtr + i * DEBUG_FIELD_SIZE) >> 2;
+      const namePtr = u32[base + 0] >>> 0;
+      if (namePtr === 0) break; // NUL-terminated array
+      const valuePtr = u32[base + 1] >>> 0;
+      const type = this._u8[(tablePtr + i * DEBUG_FIELD_SIZE) + 8];
+      const len = u32[base + 3] >>> 0;
+      fields.push({
+        name: this._readCString(namePtr),
+        type,
+        typeName: DEBUG_TYPE_NAME[type] ?? `type${type}`,
+        valuePtr,
+        len: len || 1,
+      });
+    }
+    return fields;
+  }
+
+  /** Look up one debug field by name (or null). */
+  _findDebugField(name) {
+    const fields = this.readDebugState();
+    return fields ? fields.find((f) => f.name === name) ?? null : null;
+  }
+
+  /**
+   * Read a named debug value, decoded per its declared type. Scalars return a
+   * number (BigInt for 64-bit stays a number via Number()); arrays/BYTES return
+   * a typed view copy. Throws a clear error if the name isn't in the table.
+   */
+  readDebugValue(name) {
+    const f = this._findDebugField(name);
+    if (!f) throw new Error(`debug field '${name}' not found — cart exposes: ${(this.readDebugState() ?? []).map((x) => x.name).join(', ') || '(none)'}`);
+    const width = DEBUG_TYPE_WIDTH[f.type] ?? 1;
+    const dv = new DataView(this.memory.buffer);
+    const readOne = (off) => {
+      switch (f.type) {
+        case 0: return dv.getUint8(off);
+        case 1: return dv.getInt8(off);
+        case 2: return dv.getUint16(off, true);
+        case 3: return dv.getInt16(off, true);
+        case 4: return dv.getUint32(off, true);
+        case 5: return dv.getInt32(off, true);
+        case 6: return dv.getFloat32(off, true);
+        case 7: return dv.getFloat64(off, true);
+        default: return null;
+      }
+    };
+    if (f.type === 8) { // BYTES
+      return { name, type: 'bytes', bytes: this._u8.slice(f.valuePtr, f.valuePtr + f.len) };
+    }
+    if (f.len === 1) return { name, type: f.typeName, value: readOne(f.valuePtr) };
+    const values = [];
+    for (let i = 0; i < f.len; i++) values.push(readOne(f.valuePtr + i * width));
+    return { name, type: f.typeName, len: f.len, values };
+  }
+
+  /** Write a named scalar debug value (BYTES/arrays not supported — use write). */
+  writeDebugValue(name, value) {
+    const f = this._findDebugField(name);
+    if (!f) throw new Error(`debug field '${name}' not found.`);
+    if (f.len !== 1 || f.type === 8) throw new Error(`debug field '${name}' is not a scalar — poke its heap offset ${f.valuePtr} directly.`);
+    const dv = new DataView(this.memory.buffer);
+    switch (f.type) {
+      case 0: dv.setUint8(f.valuePtr, value); break;
+      case 1: dv.setInt8(f.valuePtr, value); break;
+      case 2: dv.setUint16(f.valuePtr, value, true); break;
+      case 3: dv.setInt16(f.valuePtr, value, true); break;
+      case 4: dv.setUint32(f.valuePtr, value, true); break;
+      case 5: dv.setInt32(f.valuePtr, value, true); break;
+      case 6: dv.setFloat32(f.valuePtr, value, true); break;
+      case 7: dv.setFloat64(f.valuePtr, value, true); break;
+      default: throw new Error(`unsupported debug type ${f.type}`);
+    }
+    return f.valuePtr;
   }
 
   /**
@@ -1615,6 +1724,11 @@ export class CartHost {
 
     // Read gpu_api (offset 64, u32 index 16) - 0=2D, 1=WebGL2, 2=WebGPU, 3=Vulkan
     info.gpuApi = u32[base + 16] || 0;
+
+    // Debug ABI (OPT-IN, ABI 3): a cart sets FLAG_DEBUG and exports wc_debug_state().
+    // We do NOT read the table here — it's pull-only (readDebugState on demand),
+    // so a debug cart pays nothing per frame and a non-debug cart is untouched.
+    info.hasDebug = !!(info.flags & FLAG_DEBUG);
 
     return info;
   }

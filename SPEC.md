@@ -48,6 +48,14 @@ shared-memory regions; the cart owns its own memory and reaches nothing else.
 - If true, host writes raw key state and delivers key event callbacks
 - If false, host does not deliver raw key input to the cart
 
+**`debug`** (boolean, optional, default: false)
+- If true, the cart exports `wc_debug_state()` naming values it chooses to expose
+  to a host/harness by name (see [Debug state](#debug-state))
+- If false (the default), the cart exports no debug surface and is byte-for-byte
+  a non-debug cart — the debug ABI is structurally absent, not merely inert
+- Debug state is read PULL-ONLY (on host demand), never per frame, so exposing
+  fields costs nothing at runtime
+
 **`net`** (object, optional)
 - Omitted = no networking. Cart receives no network imports.
 - If present, host provides the corresponding network imports to the cart
@@ -70,6 +78,12 @@ shared-memory regions; the cart owns its own memory and reaches nothing else.
 wc_info_t* wc_get_info(void);  // returns cart info struct
 void wc_init(void);             // called once at startup
 void wc_render(void);           // called every frame
+```
+
+Optional (opt-in via a flag, absent by default):
+
+```c
+wc_debug_field_t* wc_debug_state(void);  // debug:true carts only (WC_FLAG_DEBUG)
 ```
 
 ---
@@ -123,7 +137,50 @@ typedef struct {
 #define WC_FLAG_NET_DC      0x04  // cart wants data channel imports
 #define WC_FLAG_POINTER     0x08  // cart wants pointer input
 #define WC_FLAG_KEYBOARD    0x10  // cart wants raw keyboard input
+#define WC_FLAG_DEBUG       0x20  // cart exports wc_debug_state() (opt-in, default off)
 ```
+
+---
+
+## Debug state
+
+**Opt-in, default OFF.** A cart MAY expose named game state to a host or
+development harness. This is the ONLY sanctioned way to read a cart's values by
+name (there is no symbol table in a shipped WASM cart). It is governed by one
+overriding rule:
+
+> **The debug ABI defaults to ABSENT, not merely inert.** A cart that does not
+> opt in exports no `wc_debug_state`, sets no `WC_FLAG_DEBUG`, and is
+> byte-for-byte identical to a cart built before the debug ABI existed. A host
+> MUST NOT execute any debug work in the per-frame path; debug state is read
+> PULL-ONLY, on demand.
+
+A `debug:true` cart sets `WC_FLAG_DEBUG` in `wc_info_t.flags` and exports
+`wc_debug_state()` returning a pointer to a NUL-terminated array of
+`wc_debug_field_t`:
+
+```c
+typedef struct {
+    uint32_t name_ptr;   // → NUL-terminated field name ("player_x")
+    uint32_t value_ptr;  // → the value in cart memory
+    uint8_t  type;       // WC_DBG_* (see below)
+    uint8_t  _pad[3];
+    uint32_t len;        // element count: scalar=1, array>1, bytes=length
+} wc_debug_field_t;      // 16 bytes; array ends at the first name_ptr == 0
+
+#define WC_DBG_U8 0  #define WC_DBG_I8 1  #define WC_DBG_U16 2  #define WC_DBG_I16 3
+#define WC_DBG_U32 4 #define WC_DBG_I32 5 #define WC_DBG_F32 6  #define WC_DBG_F64 7
+#define WC_DBG_BYTES 8
+```
+
+The host reads this table only when a debug consumer asks (e.g. "read
+`player_x`"), resolves the name to `value_ptr` + `type`, and reads/writes the
+value in cart memory. The cart author names only the handful of values worth
+watching — this is opt-in and author-controlled, not a heap dump.
+
+The `wc_cart.h` SDK provides `WC_DEBUG_FIELDS(...)` (with `WC_DBG` / `WC_DBG_ARR`)
+to emit the table + export in one line, kept SEPARATE from the base `WC_CART`
+boilerplate so a non-debug cart pulls in none of it.
 
 ---
 

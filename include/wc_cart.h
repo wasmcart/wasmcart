@@ -141,4 +141,60 @@
   #define _WC_FILL_INFO_AUDIO_FLAG | WC_FLAG_AUDIO_F32
 #endif
 
+/* ── Debug ABI (OPT-IN, DEFAULT OFF) ─────────────────────────────
+ *
+ * SEPARATE from WC_CART on purpose: a cart that does NOT use WC_DEBUG_FIELDS
+ * emits ZERO debug code and is byte-for-byte a non-debug cart (the governing rule
+ * — default is no debugging, structurally absent). Adding the macro is the ONLY
+ * opt-in, and it must be paired with setting WC_FLAG_DEBUG in your wc_get_info
+ * flags: WC_FILL_INFO(WC_FLAG_DEBUG).
+ *
+ * A debug field NAMES one value you choose to expose to a host/harness by name
+ * — player position, HP, game mode. The host reads it PULL-ONLY (never per
+ * frame), so exposing fields costs nothing at runtime.
+ *
+ * Usage:
+ *   WC_DEBUG_FIELDS(
+ *     WC_DBG("player_x", player.x, WC_DBG_I16),
+ *     WC_DBG("hp",       hp,       WC_DBG_U8),
+ *     WC_DBG_ARR("tiles", tilemap, WC_DBG_U8, 256)
+ *   )
+ * Then set WC_FLAG_DEBUG in your info flags. */
+
+typedef struct {
+    uint32_t name_ptr;   /* NUL-terminated field name */
+    uint32_t value_ptr;  /* value location in cart memory */
+    uint8_t  type;       /* WC_DBG_* */
+    uint8_t  _pad[3];
+    uint32_t len;        /* element count (scalar=1, array>1, bytes=length) */
+} wc_debug_field_t;
+
+#define WC_DBG_U8  0
+#define WC_DBG_I8  1
+#define WC_DBG_U16 2
+#define WC_DBG_I16 3
+#define WC_DBG_U32 4
+#define WC_DBG_I32 5
+#define WC_DBG_F32 6
+#define WC_DBG_F64 7
+#define WC_DBG_BYTES 8
+
+#ifndef WC_FLAG_DEBUG
+#define WC_FLAG_DEBUG (1 << 5)  /* cart exports wc_debug_state() */
+#endif
+
+/* One scalar field. `expr` must be an lvalue whose address is taken. */
+#define WC_DBG(name_str, expr, dbg_type) \
+    { (uint32_t)(uintptr_t)(name_str), (uint32_t)(uintptr_t)&(expr), (dbg_type), {0,0,0}, 1 }
+/* An array / byte-buffer field of `count` elements. */
+#define WC_DBG_ARR(name_str, arr, dbg_type, count) \
+    { (uint32_t)(uintptr_t)(name_str), (uint32_t)(uintptr_t)(arr), (dbg_type), {0,0,0}, (count) }
+
+/* Emit the descriptor table + wc_debug_state(). Table is NUL-terminated by a
+ * zero entry. Call OUTSIDE any function, once, listing your fields. */
+#define WC_DEBUG_FIELDS(...) \
+    static wc_debug_field_t wc_debug_table[] = { __VA_ARGS__, {0,0,0,{0,0,0},0} }; \
+    __attribute__((export_name("wc_debug_state"))) \
+    wc_debug_field_t *wc_debug_state(void) { return wc_debug_table; }
+
 #endif /* WC_CART_H */

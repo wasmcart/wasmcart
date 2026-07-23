@@ -70,6 +70,28 @@ export const FLAG_NET_WS    = 1 << 1;  // cart wants WebSocket imports
 export const FLAG_NET_DC    = 1 << 2;  // cart wants data channel imports
 export const FLAG_POINTER   = 1 << 3;  // cart wants pointer input
 export const FLAG_KEYBOARD  = 1 << 4;  // cart wants raw keyboard input
+export const FLAG_DEBUG     = 1 << 5;  // cart exports wc_debug_state() (opt-in; default OFF)
+
+// ── Debug ABI (OPT-IN, default OFF) ──────────────────────────────────────
+// A debug-capable cart (FLAG_DEBUG set) exports wc_debug_state() returning a
+// pointer to a NUL-terminated array of wc_debug_field_t. The host reads it ONLY
+// on demand (pull, never per-frame). A cart WITHOUT FLAG_DEBUG is structurally
+// identical to a non-debug cart — no export, no table, no cost.
+//
+// wc_debug_field_t layout (16 bytes, all little-endian):
+//   u32 name_ptr   // pointer to a NUL-terminated field name ("player_x")
+//   u32 value_ptr  // pointer to the value in cart memory
+//   u8  type       // WC_DBG_* below
+//   u8  _pad[3]
+//   u32 len        // element count (scalar=1; array>1; BYTES=byte length)
+// Array terminates at the first entry whose name_ptr == 0.
+export const DEBUG_FIELD_SIZE = 16;
+export const DEBUG_TYPE = {
+  U8: 0, I8: 1, U16: 2, I16: 3, U32: 4, I32: 5, F32: 6, F64: 7, BYTES: 8,
+};
+// Byte width of each scalar debug type (BYTES uses `len` directly).
+export const DEBUG_TYPE_WIDTH = { 0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 8, 8: 1 };
+export const DEBUG_TYPE_NAME = { 0: "u8", 1: "i8", 2: "u16", 3: "i16", 4: "u32", 5: "i32", 6: "f32", 7: "f64", 8: "bytes" };
 
 // Extended info fields (v3) - byte offsets from wc_info_t start
 export const INFO_FIELDS_V3 = {
