@@ -422,7 +422,7 @@ are separate repos, all running the *same* carts:
 |------|------------|
 | **wasmcart** (this repo) | Spec, JS reference hosts (`CartHost`, `CartHostWeb`), `wasmcart-pack` |
 | **wasmcart-sdl2** | SDL2 backend + `stb_*` helpers + porting guide - for porting existing C/SDL games |
-| **wasmcart-mruby** | write games in Ruby (mruby runtime, DragonRuby-style API) - prebuilt engine, games ship only Ruby |
+| **wasmcart-dragonruby** | write games in Ruby (mruby runtime, DragonRuby-style API) - prebuilt engine, games ship only Ruby |
 | **wasmcart-native-host** | `libwasmcart` C host + `wasmcart-run` standalone SDL2 player (wasmtime / libnode) |
 | **wasmcart-libretro** | libretro core - run carts in RetroArch / RetroDECK |
 | **retroemu** | terminal + SDL host (libretro cores *and* wasmcart carts) |
