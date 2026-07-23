@@ -235,6 +235,10 @@ export class CartHost {
     // per-frame path has no deterministic branch.
     this.deterministicSeed = null;
 
+    // Asyncify loop-inversion state (wc_frame_yield protocol). buf is the
+    // cart-provided unwind stack (wc_yield_buffer export), resolved lazily.
+    this._asyncify = { buf: 0, suspended: false, rewinding: false, unwound: false };
+
     // Debug event capture (pull-drained, capped). wc_log lines and
     // wc_debug_mark(id) annotations land here stamped with the frame they
     // occurred on. A cart that never logs/marks never touches these.
@@ -385,6 +389,23 @@ export class CartHost {
         // Capture is pull-drained; a cart that never calls this pays nothing.
         wc_debug_mark: (id) => {
           this._pushDebugEvent(this.debugMarks, { frame: this.frameCount, id: id >>> 0 });
+        },
+        // Loop-inversion protocol for ported engines that own their main
+        // loop: the cart is post-processed with binaryen's asyncify pass
+        // (asyncify-imports = env.wc_frame_yield) and calls this once per
+        // frame from inside its loop. Unwind suspends the whole engine
+        // stack out of wc_render; the next runFrame rewinds back to this
+        // exact point. A cart without asyncify exports never triggers it.
+        wc_frame_yield: () => {
+          const ex = this.instance?.exports;
+          if (!ex?.asyncify_start_unwind) return; // not an asyncify cart: no-op
+          if (this._asyncify.rewinding) {
+            ex.asyncify_stop_rewind();
+            this._asyncify.rewinding = false;
+            return; // arrived back at the yield point; engine continues
+          }
+          ex.asyncify_start_unwind(this._asyncify.buf);
+          this._asyncify.unwound = true;
         },
         // Asset API (v2) - always provided, returns -1 if no assets loaded
         wc_asset_size: (pathPtr, pathLen) => {
@@ -658,6 +679,12 @@ export class CartHost {
     // Re-read info after wc_init - cart may have changed resolution based on host prefs
     this.info = this._readInfo(this._infoPtr);
 
+    // Asyncify loop-inversion carts export their unwind-stack descriptor
+    // (a pre-initialized {current, end} pair followed by the stack area).
+    if (typeof exports.wc_yield_buffer === 'function' && typeof exports.asyncify_start_unwind === 'function') {
+      this._asyncify.buf = exports.wc_yield_buffer();
+    }
+
     // Update GL detection from gpu_api field (authoritative) with import fallback for old carts
     if (this.info.gpuApi > 0) {
       this.usesGL = true;
@@ -711,8 +738,19 @@ export class CartHost {
     this._deliverPointerEvents();
     this._deliverKeyEvents();
 
-    // Call wc_render
-    this.instance.exports.wc_render();
+    // Call wc_render (with asyncify resume/suspend for loop-owning carts)
+    const asyncEx = this.instance.exports;
+    if (this._asyncify.suspended) {
+      asyncEx.asyncify_start_rewind(this._asyncify.buf);
+      this._asyncify.rewinding = true;
+      this._asyncify.suspended = false;
+    }
+    asyncEx.wc_render();
+    if (this._asyncify.unwound) {
+      asyncEx.asyncify_stop_unwind();
+      this._asyncify.suspended = true;
+      this._asyncify.unwound = false;
+    }
     this._updateViews(); // in case memory grew during render
 
     // Re-read width/height from WASM memory (cart may update during deferred init)
