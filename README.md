@@ -45,6 +45,21 @@ emulator (`retroemu`). See **[The wasmcart org](#the-wasmcart-org)** below.
 npm install wasmcart
 ```
 
+## Play a cart from the terminal (no native host)
+
+```bash
+npx wasmcart-play game.wasc              # ANSI terminal player, keyboard = pad 0
+npx wasmcart-play my-cart-dir/           # dev mode: manifest.json + cart.wasm + assets, straight off disk
+npx wasmcart-play game.wasc --frames 300 --shot out.png --wav out.wav   # headless: step, dump, exit
+npx wasmcart-play game.wasc --seed 7 --frames 60 --shot a.png           # deterministic replay run
+```
+
+Keys: arrows/WASD d-pad, `x`/`z` = A/B, Enter = Start, Tab = Select, `q` quits.
+2D framebuffer carts only — GL carts need a GL-capable host. Headless mode is
+scriptable: same seed → byte-identical PNG, so a shell loop is a regression
+test. `wasmcart-pack` remains the packer; dev-mode directories skip it during
+iteration.
+
 Requires Node.js >= 22.
 
 ## Cart Formats

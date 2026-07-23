@@ -27,7 +27,8 @@
     "LICENSE"
   ],
   "bin": {
-    "wasmcart-pack": "./bin/wasmcart-pack.js"
+    "wasmcart-pack": "./bin/wasmcart-pack.js",
+    "wasmcart-play": "./bin/wasmcart-play.js"
   },
   "keywords": [
     "wasm",
