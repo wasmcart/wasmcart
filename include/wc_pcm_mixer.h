@@ -94,7 +94,10 @@ typedef struct {
 typedef struct {
     wc_sound_t *sound;      /* pointer to sound slot */
     uint32_t pos_frac;      /* playback position (16.16 fixed-point) */
-    uint32_t step_frac;     /* step per output sample (16.16 fixed-point) */
+    uint32_t step_frac;     /* effective step per output sample (16.16) */
+    uint32_t base_step_frac;/* step at pitch 1.0 (16.16) */
+    float pitch;            /* playback-rate multiplier (default 1.0) */
+    int paused;             /* 1 = held (still active, not mixed) */
     float volume;           /* 0.0 - 1.0 */
     float pan;              /* -1.0 (left) to 1.0 (right), 0.0 = center */
     int loop;               /* 1 = loop playback */
@@ -305,6 +308,9 @@ int wc_mixer_play_pan(int sound_id, float volume, float pan, int loop) {
     wc_mixer_channels[ch].sound    = s;
     wc_mixer_channels[ch].pos_frac = 0;
     wc_mixer_channels[ch].step_frac = ((uint32_t)s->sample_rate << 16) / WC_MIXER_RATE;
+    wc_mixer_channels[ch].base_step_frac = wc_mixer_channels[ch].step_frac;
+    wc_mixer_channels[ch].pitch    = 1.0f;
+    wc_mixer_channels[ch].paused   = 0;
     wc_mixer_channels[ch].volume   = volume;
     wc_mixer_channels[ch].pan      = pan;
     wc_mixer_channels[ch].loop     = loop;
@@ -332,6 +338,41 @@ void wc_mixer_set_volume(int channel, float volume) {
         wc_mixer_channels[channel].volume = volume;
 }
 
+/* Playback-rate multiplier: 2.0 = double speed and up an octave. */
+void wc_mixer_set_pitch(int channel, float pitch) {
+    if (channel < 0 || channel >= WC_MIXER_MAX_CHANNELS) return;
+    wc_channel_t *c = &wc_mixer_channels[channel];
+    if (pitch < 0.05f) pitch = 0.05f;
+    if (pitch > 20.0f) pitch = 20.0f;
+    c->pitch = pitch;
+    c->step_frac = (uint32_t)(c->base_step_frac * pitch);
+}
+
+/* Hold/resume a channel without losing its position. */
+void wc_mixer_set_paused(int channel, int paused) {
+    if (channel >= 0 && channel < WC_MIXER_MAX_CHANNELS)
+        wc_mixer_channels[channel].paused = paused ? 1 : 0;
+}
+
+/* Seek to a position in SECONDS of the source sound. */
+void wc_mixer_seek(int channel, float seconds) {
+    if (channel < 0 || channel >= WC_MIXER_MAX_CHANNELS) return;
+    wc_channel_t *c = &wc_mixer_channels[channel];
+    if (!c->sound) return;
+    if (seconds < 0) seconds = 0;
+    int frame = (int)(seconds * c->sound->sample_rate);
+    if (frame >= c->sound->length) frame = c->sound->length > 0 ? c->sound->length - 1 : 0;
+    c->pos_frac = (uint32_t)frame << 16;
+}
+
+/* Current position in SECONDS of the source sound (-1 if not playing). */
+float wc_mixer_playtime(int channel) {
+    if (channel < 0 || channel >= WC_MIXER_MAX_CHANNELS) return -1.0f;
+    wc_channel_t *c = &wc_mixer_channels[channel];
+    if (!c->active || !c->sound || c->sound->sample_rate <= 0) return -1.0f;
+    return (float)(c->pos_frac >> 16) / c->sound->sample_rate;
+}
+
 /* ── Mixer core ───────────────────────────────────────────────────── */
 
 void wc_mixer_mix(int16_t *ring, uint32_t cap, uint32_t *write_cur, int frames) {
@@ -344,7 +385,7 @@ void wc_mixer_mix(int16_t *ring, uint32_t cap, uint32_t *write_cur, int frames) 
 
         for (int ch = 0; ch < WC_MIXER_MAX_CHANNELS; ch++) {
             wc_channel_t *c = &wc_mixer_channels[ch];
-            if (!c->active || !c->sound) continue;
+            if (!c->active || !c->sound || c->paused) continue;
 
             wc_sound_t *s = c->sound;
             uint32_t pos = c->pos_frac >> 16;
@@ -413,7 +454,7 @@ void wc_mixer_mix_f32(float *ring, uint32_t cap, uint32_t *write_cur, int frames
 
         for (int ch = 0; ch < WC_MIXER_MAX_CHANNELS; ch++) {
             wc_channel_t *c = &wc_mixer_channels[ch];
-            if (!c->active || !c->sound) continue;
+            if (!c->active || !c->sound || c->paused) continue;
 
             wc_sound_t *s = c->sound;
             uint32_t pos = c->pos_frac >> 16;
