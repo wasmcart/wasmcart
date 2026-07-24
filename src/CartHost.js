@@ -466,6 +466,10 @@ export class CartHost {
         // Emscripten stubs (used by gl4es and emscripten libc)
         emscripten_asm_const_int: () => 0,
         emscripten_asm_const_double: () => 0.0,
+        // setjmp/longjmp: the cart's longjmp calls this to unwind; we throw a
+        // tagged JS error that the invoke_* trampolines above catch and turn
+        // into setThrew (emscripten's classic SjLj protocol).
+        _emscripten_throw_longjmp: () => { const e = new Error('longjmp'); e._emscripten_longjmp = true; throw e; },
         emscripten_get_element_css_size: (targetPtr, widthPtr, heightPtr) => {
           try {
             const view = new DataView(this.memory.buffer);
@@ -534,6 +538,43 @@ export class CartHost {
 
     // Auto-stub any env functions not explicitly handled (syscalls, emscripten,
     // pthread, networking, etc.). These appear in engine-level carts like Godot.
+    //
+    // invoke_* are emscripten's setjmp/longjmp trampolines: they call an
+    // indirect function (first arg = table index) and, if it longjmps, catch
+    // the throw and reset the stack. A cart built with -enable-emscripten-sjlj
+    // (any big C/C++ engine that uses setjmp) needs these REAL, not stubbed —
+    // stubbing invoke_ji/invoke_jiji (i64 return) with () => -1 also throws
+    // "Cannot convert -1 to a BigInt". Implemented generically here against the
+    // cart's exported setThrew + __indirect_function_table.
+    const needsInvoke = moduleImports.some(
+      (imp) => imp.module === 'env' && imp.kind === 'function' && imp.name.startsWith('invoke_'),
+    );
+    if (needsInvoke) {
+      for (const imp of moduleImports) {
+        if (imp.module === 'env' && imp.kind === 'function'
+            && imp.name.startsWith('invoke_') && !(imp.name in imports.env)) {
+          // Signature is encoded in the name (invoke_<sig>); only the arity
+          // matters for the trampoline — pass all args after the index through.
+          imports.env[imp.name] = (index, ...args) => {
+            const ex = this.instance.exports;
+            const sp = ex.emscripten_stack_get_current?.() ?? ex.stackSave?.();
+            try {
+              return ex.__indirect_function_table.get(index)(...args);
+            } catch (e) {
+              if (sp !== undefined) (ex._emscripten_stack_restore ?? ex.stackRestore)?.(sp);
+              // Only a wasm longjmp (or the emscripten throw) is expected; a real
+              // error rethrows. setThrew records the longjmp for the setjmp side.
+              if (e instanceof WebAssembly.Exception || (e && e._emscripten_longjmp)) {
+                ex.setThrew?.(1, 0);
+                return 0;
+              }
+              throw e;
+            }
+          };
+        }
+      }
+    }
+
     for (const imp of moduleImports) {
       if (imp.module === 'env' && imp.kind === 'function') {
         if (!(imp.name in imports.env)) {
