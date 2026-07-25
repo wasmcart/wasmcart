@@ -105,6 +105,18 @@ void glClear(uint32_t mask);
 // ... etc
 ```
 
+**GL surface (normative):** the `gl` module is **OpenGL ES 3.0 C signatures
+with WebGL2 semantics** — the same profile on every host; see
+[docs/gl-surface.md](docs/gl-surface.md) for the full surface (shader
+versions, texture formats, FBO/VAO rules). **GL detection:** a cart *is* a GL
+cart iff its wasm import section imports from the `gl` module — the import
+section is the ground truth a host can read before instantiation; the
+`gpu_api` field confirms it after `wc_get_info` (a manifest field never gates
+GL). Hosts SHOULD accept `glBackend` as a lazy factory (invoked once, only
+for GL carts) so launchers need no advance knowledge of what they're loading;
+a factory that produces no context for a GL cart is a load **error**, never a
+silent stub.
+
 ---
 
 ## wc_info_t

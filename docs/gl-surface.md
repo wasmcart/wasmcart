@@ -9,6 +9,28 @@ The host reports `GL_VERSION = "OpenGL ES 3.0 wasmcart"` regardless of the actua
 driver. Real driver extensions pass through for engines that need them (e.g., Godot
 texture format detection).
 
+## Host Wiring: Detection + the glBackend Factory
+
+A cart **is** a GL cart iff its wasm import section imports from the `"gl"`
+module — readable *before* instantiation (`WebAssembly.Module.imports()`),
+which is the whole trick: a launcher never needs to know what it's loading.
+The cart's `gpu_api` field (`wc_info_t`, u32 index 16) confirms the
+declaration after `wc_get_info` and is authoritative for `usesGL`. A manifest
+field never gates GL.
+
+`load(..., { glBackend })` accepts either a WebGL2-compatible context or a
+**factory** (sync or async) that CartHost invokes exactly once, only when the
+import scan says GL. Contract:
+
+- Factory never runs for a 2D cart.
+- Factory returning nothing for a GL cart → **load error** (no silent stub).
+- No `glBackend` at all → GL imports are stubbed; only a hybrid cart's 2D
+  framebuffer renders. `usesGL` still reports true (from `gpu_api`), which is
+  what launchers key "this needs a GL window/context" off.
+- Contexts can be **offscreen** (headless harnesses `readPixels` the results)
+  or window-bound (`npx wasmcart` creates the SDL `opengl:true` window inside
+  its factory; `--gl` merely forces that up front).
+
 ## Shader Requirements
 
 All shaders MUST use one of:

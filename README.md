@@ -285,7 +285,7 @@ cart.destroy();
 
 ```js
 await cart.load('game.wasc', {
-  glBackend: gl,                // required for GL carts (any WebGL2-compatible context)
+  glBackend: gl,                // WebGL2 context OR a factory returning one (see GL Carts)
   preferredWidth: 800,          // hint for resolution negotiation
   preferredHeight: 600,
   saveData: existingSaveBuffer,  // restore previous save
@@ -294,17 +294,35 @@ await cart.load('game.wasc', {
 
 ### GL Carts
 
-GL carts import functions from the `"gl"` WASM module. The host must provide a WebGL2-compatible context:
+GL carts import functions from the `"gl"` WASM module. The host provides a
+WebGL2-compatible context — either directly, or (since 0.6.0) as a **factory**
+that CartHost invokes exactly once, and only if the cart's wasm actually
+imports GL. The factory form means a launcher never needs to know what kind
+of cart it's loading (this is how `npx wasmcart` auto-detects GL carts; the
+detection ground truth is the wasm import section, never a manifest field):
 
 ```js
-// Browser
-const canvas = document.createElement('canvas');
-const gl = canvas.getContext('webgl2');
-await cart.load('gl_game.wasm', { glBackend: gl });
+// Factory (recommended): runs only for GL carts, may be async
+await cart.load('game.wasc', {
+  glBackend: () => {
+    const canvas = document.createElement('canvas');   // browser
+    return canvas.getContext('webgl2');
+  },
+});
 
-// Node.js - provide any WebGL2-compatible context
+// Node.js factory — offscreen context (headless harnesses) or a
+// window-bound one (see bin/play-window.js for the SDL wiring)
+await cart.load('game.wasc', {
+  glBackend: async () => (await import('webgl-node')).createWebGL2Context(1280, 720).gl,
+});
+
+// Plain context still works (created up front, GL cart or not)
 await cart.load('gl_game.wasm', { glBackend: glContext });
 ```
+
+A factory that returns nothing for a GL cart is a **load error** — never a
+silent stub. Without any `glBackend` at all, GL imports are stubbed and only
+the cart's 2D framebuffer path (if it has one) renders.
 
 ## CLI Tools
 
