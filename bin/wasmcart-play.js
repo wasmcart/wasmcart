@@ -49,6 +49,7 @@ for (let i = 0; i < argv.length; i++) {
     case '--zoom':   opt.zoom = parseInt(argv[++i], 10) || 0; break;
     case '-h': case '--help':
       console.log('Usage: wasmcart-play <cart.wasc | cart-dir> [--frames n] [--shot out.png] [--wav out.wav] [--seed n] [--term] [--window] [--gl] [--zoom n] [--scale cols] [--fps n]');
+      console.log('GL carts are auto-detected (the wasm imports tell the player); --gl only FORCES the GL window up front.');
       process.exit(0);
     default:
       if (!cartPath && !a.startsWith('-')) cartPath = a;

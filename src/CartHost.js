@@ -295,7 +295,9 @@ export class CartHost {
    * @param {string|Uint8Array} source - file path (.wasc), directory path (dev mode), or .wasc zip bytes
    * @param {object} [options]
    * @param {Uint8Array} [options.saveData] - existing save data to load
-   * @param {object} [options.glBackend] - WebGL2RenderingContext (from webgl-node or browser). Required if cart uses GL.
+   * @param {object|Function} [options.glBackend] - WebGL2RenderingContext (from webgl-node or browser),
+   *   OR a factory (sync or async) returning one. The factory is invoked once, only if the cart's
+   *   wasm imports from the "gl" module - so launchers don't need to know a cart is GL up front.
    */
   async load(source, options = {}) {
     let wasmBytes;
@@ -350,6 +352,20 @@ export class CartHost {
     // gpu_api will be read after wc_get_info - for now detect from imports
     this._importsGL = importsGL;
     this.usesGL = importsGL;
+
+    // glBackend may be a FACTORY (sync or async): "here's how to get a GL
+    // context if you turn out to need one". Invoked once, only when the wasm
+    // import section says the cart is GL - so a launcher never has to know
+    // what kind of cart it's launching. The import scan is the ground truth;
+    // a manifest field never gates this (the pointer double-gate lesson).
+    if (typeof options.glBackend === 'function') {
+      let made = null;
+      if (importsGL) {
+        made = await options.glBackend();
+        if (!made) throw new Error('glBackend factory returned no GL context for a GL cart');
+      }
+      options = { ...options, glBackend: made };
+    }
 
     if (this.usesGL && !options.glBackend) {
       // Cart imports GL but no GL backend provided - stub GL imports.

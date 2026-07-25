@@ -170,7 +170,8 @@ export class CartHostWeb {
    * @param {Uint8Array} source - .wasc (ZIP) bytes or bare .wasm bytes
    * @param {object} [options]
    * @param {Uint8Array} [options.saveData] - existing save data to load
-   * @param {WebGL2RenderingContext} [options.glBackend] - required if cart uses GL
+   * @param {WebGL2RenderingContext|Function} [options.glBackend] - the context, OR a factory
+   *   (sync/async) returning one; the factory runs once, only if the cart imports GL
    * @param {number} [options.preferredWidth] - hint for cart resolution
    * @param {number} [options.preferredHeight] - hint for cart resolution
    * @param {number} [options.audioSampleRate] - host audio sample rate (default 48000)
@@ -209,7 +210,9 @@ export class CartHostWeb {
   }
 
   async load(source, options = {}) {
-    const glCtx = options.glBackend || null;
+    // glBackend may be a factory (see below) - no context to draw progress
+    // into until/unless it's invoked.
+    let glCtx = typeof options.glBackend === 'function' ? null : (options.glBackend || null);
     this._drawProgress(glCtx, 0);
 
     const u8 = source instanceof Uint8Array ? source : new Uint8Array(source);
@@ -256,6 +259,19 @@ export class CartHostWeb {
       imp.module === 'gl' ||
       (imp.module === 'env' && imp.kind === 'function' && /^gl[A-Z]/.test(imp.name))
     );
+
+    // glBackend factory: invoked once, only when the wasm import section says
+    // the cart is GL - a page never has to know what kind of cart it's
+    // loading (e.g. create the canvas + webgl2 context lazily here).
+    if (typeof options.glBackend === 'function') {
+      let made = null;
+      if (this.usesGL) {
+        made = await options.glBackend();
+        if (!made) throw new Error('glBackend factory returned no GL context for a GL cart');
+      }
+      options = { ...options, glBackend: made };
+      glCtx = made;
+    }
 
     if (this.usesGL && !options.glBackend) {
       // Cart imports GL but no GL backend provided - stub GL imports.

@@ -5,8 +5,10 @@
  * Two paths:
  *   2D (default): plain SDL window, framebuffer blitted with
  *     window.render(..., 'bgra32', ...) (CartHost pixels are XRGB LE = BGRX).
- *   GL (--gl):    opengl window + createWebGL2Context({nativeWindow}) passed
- *     to CartHost as glBackend; present via swapBuffers.
+ *   GL (auto-detected): opengl window + createWebGL2Context({nativeWindow}),
+ *     created lazily by a glBackend FACTORY that CartHost invokes only if the
+ *     cart imports from the "gl" module; present via swapBuffers. --gl forces
+ *     the GL window up front.
  *
  * Pacing: audio-paced when the cart emits audio (keep the SDL queue topped
  * up, step frames as it drains — the anti-choppiness rule); 60fps timer
@@ -56,28 +58,31 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
   const savPath = savPathFor(cartPath);
   try { loadOpts.saveData = new Uint8Array(readFileSync(savPath)); } catch { /* first run */ }
 
-  if (opt.gl) {
-    // GL cart: the context must exist BEFORE load, bound to a real window.
+  // GL is AUTO-DETECTED: this factory is handed to CartHost, which invokes it
+  // only if the cart's wasm actually imports from the "gl" module - the
+  // launcher never needs to know what kind of cart it's launching. It's a
+  // callback (not a post-load branch) because the GL context must exist
+  // before wasm instantiation, bound to a real opengl window - and a 2D cart
+  // must NOT get an opengl window (separate-GL-context fights, see playtest).
+  const makeGlWindow = async () => {
     const { createWebGL2Context } = await import('webgl-node');
     window = sdl.video.createWindow({
       title: 'wasmcart', width: opt.width || 1280, height: opt.height || 720,
       resizable: false, opengl: true,
     });
     const nativeGL = window.native?.gl;
-    if (!nativeGL) throw new Error('no native GL window handle from SDL (try without --gl, or a different video driver)');
+    if (!nativeGL) throw new Error('no native GL window handle from SDL (try a different video driver)');
     const glResult = createWebGL2Context(window.pixelWidth, window.pixelHeight, { nativeWindow: nativeGL });
-    loadOpts.glBackend = glResult.gl;
     swapBuffers = glResult.swapBuffers;
     glResult.setSwapInterval?.(0);
-  }
+    return glResult.gl;
+  };
+  // --gl forces the GL window up front (hybrid carts, debugging); default is lazy.
+  loadOpts.glBackend = opt.gl ? await makeGlWindow() : makeGlWindow;
 
   await host.load(cartPath, loadOpts);
   host.runFrame([{ connected: true, buttons: 0 }]); // settle: final resolution
   const info = host.getInfo();
-
-  if (host.usesGL && !opt.gl) {
-    throw new Error('GL cart — rerun with --gl (opens an OpenGL window via webgl-node).');
-  }
 
   if (!window) {
     const zoom = opt.zoom || (info.height <= 400 ? 2 : 1);

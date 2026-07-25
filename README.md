@@ -49,7 +49,7 @@ npm install wasmcart
 
 ```bash
 npx wasmcart game.wasc              # SDL window + audio + gamepad (the default)
-npx wasmcart game.wasc --gl         # GL cart: OpenGL window via webgl-node
+npx wasmcart game.wasc              # GL carts too - auto-detected, OpenGL window via webgl-node
 npx wasmcart my-cart-dir/           # dev mode: manifest.json + cart.wasm + assets, straight off disk
 npx wasmcart game.wasc --term       # ANSI terminal player (SSH-friendly fallback)
 npx wasmcart game.wasc --frames 300 --shot out.png --wav out.wav   # headless: step, dump, exit
@@ -59,7 +59,7 @@ npx wasmcart pack --wasm cart.wasm -o game.wasc                    # packing, sa
 
 The windowed player runs on the org's own stack — `@kmamal/sdl` (window,
 keyboard, audio queue, game controllers) and `webgl-node` (WebGL2-over-native
-GLES for `--gl` carts) — with audio-paced frame stepping so sound never
+GLES for GL carts, auto-detected from the wasm imports) — with audio-paced frame stepping so sound never
 stutters. Keys: arrows/WASD d-pad, `x`/`z` = A/B, Enter = Start, Tab = Select,
 Esc/`q` quits; the first plugged-in controller maps automatically. No display?
 It falls back to the terminal player, and headless mode is scriptable: same
