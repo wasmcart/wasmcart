@@ -135,3 +135,27 @@ test('CartHostWeb SELF-PROVIDES a context rather than demanding one', async () =
     'must try to create its own context, not blame the caller for not passing one',
   );
 });
+
+// getGlContext() must report the live context REGARDLESS of who created it.
+// bin/wasmcart-play.js needs it for GL readback, and it previously read the
+// private _ownedGl — which is only set when the host self-provisions, so a
+// caller passing its own glBackend silently disabled readback.
+test('getGlContext() reports both host-created and caller-supplied contexts', async () => {
+  const selfProvided = new CartHost();
+  await selfProvided.load(GLCART, {});
+  assert.ok(selfProvided.getGlContext(), 'host-created context must be reported');
+  selfProvided.destroy();
+
+  const calls = [];
+  const supplied = mockGl(calls);
+  const caller = new CartHost();
+  await caller.load(GLCART, { glBackend: supplied });
+  assert.equal(caller.getGlContext(), supplied,
+    'a caller-supplied context must be reported too, not null');
+  caller.destroy();
+
+  const twoD = new CartHost();
+  await twoD.load(HELLO, {});
+  assert.equal(twoD.getGlContext(), null, '2D cart has no context');
+  twoD.destroy();
+});

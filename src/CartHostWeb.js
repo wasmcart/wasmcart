@@ -130,7 +130,8 @@ export class CartHostWeb {
     this.instance = null;
     this.memory = null;
     this.info = null;
-    this._ownedGl = null;   // GL context created BY this host (see load)
+    this._ownedGl = null;
+    this._callerGl = null;     // a context the CALLER supplied via glBackend   // GL context created BY this host (see load)
     this.frameCount = 0;
     this.startTime = 0;
     this.lastFrameTime = 0;
@@ -289,6 +290,10 @@ export class CartHostWeb {
       options = { ...options, glBackend: made };
       glCtx = made;
     }
+    // Remember a caller-supplied context so getGlContext() can report it. The
+    // host does NOT own it — destroy() must not lose a context the caller may
+    // still be drawing into.
+    if (options.glBackend) this._callerGl = options.glBackend;
 
     if (this.usesGL && !options.glBackend) {
       // A browser can ALWAYS produce a WebGL2 context — it has shipped
@@ -652,6 +657,18 @@ export class CartHostWeb {
     return new Uint8Array(
       this._u8.slice(this.info.savePtr, this.info.savePtr + this.info.saveSize)
     );
+  }
+
+  /**
+   * The live WebGL2 context this cart is rendering through, or null for a 2D
+   * cart. Covers BOTH cases: one the host created for itself and one the
+   * caller supplied via `glBackend`. Readback (screenshots, terminal output,
+   * frame hashing) needs the context regardless of who made it, so keying off
+   * the host-created one alone silently disables readback whenever a caller
+   * passes its own — which is exactly the shape of bug this returns.
+   */
+  getGlContext() {
+    return this._ownedGl || this._callerGl || null;
   }
 
   getInfo() {

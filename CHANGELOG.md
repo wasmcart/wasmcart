@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.1
+
+Adds `getGlContext()` — the live WebGL2 context a cart is rendering through,
+or null for a 2D cart — and switches `bin/wasmcart-play.js` to it.
+
+0.9.0 left the player reading the private `_ownedGl`, which is set only when
+the host creates a context for itself. A caller that supplies its own
+`glBackend` left it null, so GL readback silently disabled and the frame came
+back black. The CLI never hits that today (it passes nothing), but it was a
+trap in shipped code for anyone embedding the same pattern, and readback needs
+the context regardless of who made it.
+
+Ownership is unchanged: `destroy()` still releases only a context the host
+created, never the caller's.
+
 ## 0.9.0
 
 **`CartHost` now supplies its own GL context**, matching what `CartHostWeb`

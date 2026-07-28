@@ -218,7 +218,7 @@ async function main() {
   // GL frames live in the GPU's framebuffer, so read them back into the same
   // XRGB word layout CartHost hands out for a 2D cart. readPixels' origin is
   // bottom-left while the cart's is top-left, hence the row flip.
-  const glCtx = host._ownedGl;
+  const glCtx = host.getGlContext();
   let glReadback = null;
   if (host.usesGL && glCtx) {
     const gi = host.getInfo();
