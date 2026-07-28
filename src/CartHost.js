@@ -368,8 +368,24 @@ export class CartHost {
     }
 
     if (this.usesGL && !options.glBackend) {
-      // Cart imports GL but no GL backend provided - stub GL imports.
-      // Cart can still use 2D framebuffer.
+      // A GL cart with no GL context is a LOAD ERROR, never a silent stub -
+      // SPEC.md: "a factory that produces no context for a GL cart is a load
+      // error, never a silent stub."
+      //
+      // Stubbing here looks harmless because a hybrid cart can still fill its
+      // 2D framebuffer, but a GL-rendering cart draws into a context that
+      // discards everything: load() reports success and the player sees a
+      // black screen with no error anywhere. That is the worst failure mode
+      // available, and it is indistinguishable from a broken cart.
+      //
+      // Callers that genuinely want the old behaviour - a hybrid cart whose
+      // 2D output is enough - can opt in with allowMissingGL: true.
+      if (!options.allowMissingGL) {
+        throw new Error(
+          'this cart imports the `gl` module but no glBackend was provided. ' +
+          'Pass glBackend (a WebGL2 context, or a factory returning one), or ' +
+          'allowMissingGL: true to stub GL and render only the 2D framebuffer.');
+      }
       this.usesGL = false;
     }
     // If glBackend IS provided, keep usesGL = true even with fbPtr (hybrid cart)

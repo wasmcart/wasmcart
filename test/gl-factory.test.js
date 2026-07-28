@@ -60,13 +60,26 @@ test('GL cart: factory returning nothing is a loud error, not a silent stub', as
   );
 });
 
-test('GL cart with no glBackend at all: documented stub fallback (2D contract survives)', async () => {
-  // Existing behavior, pinned: GL imports are stubbed at instantiation, but
-  // the cart's own gpu_api=1 declaration is authoritative post-init, so
-  // usesGL reports true (this is what launchers key "needs a GL window" off)
-  // while the hybrid framebuffer path still runs against the stubs.
+test('GL cart with no glBackend at all is a load error, not a silent stub', async () => {
+  // SPEC.md: "a factory that produces no context for a GL cart is a load
+  // error, never a silent stub." This case used to stub instead, which is
+  // fine for a hybrid cart that also fills a framebuffer but catastrophic
+  // for a GL-RENDERING one: load() reports success and the player sees a
+  // black screen with no error anywhere.
   const host = new CartHost();
-  await host.load(GLCART, {});
+  await assert.rejects(
+    host.load(GLCART, {}),
+    /no glBackend was provided/,
+  );
+});
+
+test('allowMissingGL opts back into stubbing for hybrid carts', async () => {
+  // The old behaviour is still reachable, deliberately, for a cart whose 2D
+  // framebuffer output is enough. usesGL stays true because the cart's own
+  // gpu_api declaration is authoritative -- that is what launchers key
+  // "needs a GL window" off -- while the framebuffer path runs on stubs.
+  const host = new CartHost();
+  await host.load(GLCART, { allowMissingGL: true });
   assert.equal(host.usesGL, true, 'gpu_api declaration is authoritative');
   const r = host.runFrame([{ connected: true, buttons: 0 }]);
   assert.ok(r.framebuffer && r.width === 64 && r.height === 64, 'fb path intact under stubs');
