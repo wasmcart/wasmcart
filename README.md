@@ -246,7 +246,7 @@ A cart that doesn't use the GPU at all can write pixels directly to a shared-mem
 
 3. **Extensions are informational, not guaranteed.** Hosts pass through real driver extensions via `GL_EXTENSIONS` (some carts like Godot need them for format detection). But extension *function pointers* are only available if the cart declares them as WASM imports. Calling an undeclared extension function traps.
 
-4. **GPU engines with getProcAddress callbacks** (Skia Ganesh, ANGLE, etc.) must override `glGetString(GL_EXTENSIONS)` in their callback to return empty - preventing the engine from probing for extension function pointers that don't exist as WASM imports. The engine then falls back to its core-GL path, which is all the cart can import anyway. See [`docs/gl-surface.md`](docs/gl-surface.md) for what the GL surface guarantees and [`docs/porting.md`](docs/porting.md) for the porting workflow.
+4. **GPU engines with getProcAddress callbacks** (Skia Ganesh, ANGLE, etc.) must override `glGetString(GL_EXTENSIONS)` in their callback to return empty - preventing the engine from probing for extension function pointers that don't exist as WASM imports. The engine then falls back to its core-GL path, which is all the cart can import anyway. See [`docs/gl-surface.md`](docs/gl-surface.md) for what the GL surface guarantees, and the porting guide in [wasmcart-sdl2](https://github.com/wasmcart/wasmcart-sdl2) for the full pattern.
 
 5. **Same `.wasc` runs everywhere.** If a cart works in the browser, it must work on Node.js, native, and RetroArch hosts. Staying within ES 3.0 core guarantees this.
 
@@ -392,8 +392,9 @@ The [`include/`](include/) directory ships reusable C headers:
 | `wc_mat4.h` / `wc_vec3.h` | 4x4 matrix + 3D vector ops |
 | `wc_pcm_mixer.h` | Multi-channel PCM mixer + WAV parser |
 
-For porting *existing* C/SDL games, see [`docs/porting.md`](docs/porting.md) - it
-covers the SDL2 backend, GL 1.x translation, and the porting checklist.
+For porting *existing* C/SDL games, [`docs/porting.md`](docs/porting.md) is the
+short version; the [**wasmcart-sdl2**](https://github.com/wasmcart/wasmcart-sdl2)
+repo has the SDL2 backend itself plus the full porting guide.
 
 ### Threading (wasi-sdk)
 
@@ -443,6 +444,7 @@ are separate repos, all running the *same* carts. Full list:
 | Repo | What it is |
 |------|------------|
 | [**wasmcart**](https://github.com/wasmcart/wasmcart) (this repo) | Spec, JS reference hosts (`CartHost`, `CartHostWeb`), the `wasmcart` CLI + packer |
+| [**wasmcart-sdl2**](https://github.com/wasmcart/wasmcart-sdl2) | SDL2 backend + `stb_*` helpers + the full porting guide - for porting existing C/SDL games |
 | [**wasmcart-mruby**](https://github.com/wasmcart/wasmcart-mruby) | write games in Ruby (mruby runtime, DragonRuby-style API) - prebuilt engine, games ship only Ruby |
 | [**wasmcart-jsgame**](https://github.com/wasmcart/wasmcart-jsgame) | write games in JavaScript - sandboxed QuickJS runtime with Canvas 2D, WebGL2 and Web Audio |
 | [**wasmcart-libretro**](https://github.com/wasmcart/wasmcart-libretro) | libretro core - run carts in RetroArch / RetroDECK |
