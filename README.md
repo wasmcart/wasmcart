@@ -515,7 +515,7 @@ are separate repos, all running the *same* carts. Full list:
 | [**wasmcart-sdl2**](https://github.com/wasmcart/wasmcart-sdl2) | SDL2 backend + `stb_*` helpers + the full porting guide - for porting existing C/SDL games |
 | [**wasmcart-mruby**](https://github.com/wasmcart/wasmcart-mruby) | write games in Ruby (mruby runtime, DragonRuby-style API) - prebuilt engine, games ship only Ruby |
 | [**wasmcart-lua**](https://github.com/wasmcart/wasmcart-lua) | write games in Lua (Lua 5.4, LÖVE-style API, batched GL2D renderer) - prebuilt engine, games ship only Lua |
-| **wasmcart-pygame** | run pygame games as carts - write Python, pack it, run it anywhere *(not yet published)* |
+| [**wasmcart-pygame**](https://github.com/wasmcart/wasmcart-pygame) | write games in Python (CPython 3.13 + pygame-ce) - one reusable runtime, games ship only Python and assets |
 | [**wasmcart-jsgame**](https://github.com/wasmcart/wasmcart-jsgame) | write games in JavaScript - sandboxed QuickJS runtime with Canvas 2D, WebGL2 and Web Audio |
 | [**wasmcart-libretro**](https://github.com/wasmcart/wasmcart-libretro) | libretro core - run carts in RetroArch / RetroDECK |
 | [**wasmcart-native**](https://github.com/wasmcart/wasmcart-native) | native host built on libnode - a standalone player with no Node install |
