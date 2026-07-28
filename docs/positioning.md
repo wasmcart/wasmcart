@@ -22,9 +22,9 @@ ship" is treated as a design smell and kept out of the contract.
 
 ## Native execution is an optional backend, not the destination
 
-The wasmcart org maintains native paths — `wasmcart-native-host` (wasmtime /
-libnode), `wasmcart-sdl2`, `wasmcart-libretro` — for platform edges and
-performance headroom. They are **escape hatches, deliberately downstream**:
+The wasmcart org maintains native paths — `wasmcart-native` (libnode) and
+`wasmcart-libretro` — for platform edges and performance headroom. They are
+**escape hatches, deliberately downstream**:
 
 - The mainline story ships the `.wasc` as-is. Most games never need a native
   backend; GPU calls already hit real hardware and WASM overhead only taxes

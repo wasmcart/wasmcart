@@ -36,7 +36,7 @@ import { CartHostWeb } from 'wasmcart/web';  // browser
 ```
 
 Other hosts in the wasmcart org (own repos) run the *same* carts: a libretro core
-(`wasmcart-libretro`), native players (`wasmcart-native-host`), and the terminal
+(`wasmcart-libretro`), a native player (`wasmcart-native`), and the terminal
 emulator (`retroemu`). See **[The wasmcart org](#the-wasmcart-org)** below.
 
 ## Installation
@@ -87,7 +87,9 @@ Every cart exports three functions:
 
 The cart declares all buffers as static globals. The host reads their locations from `wc_get_info()`, writes input/timing before each frame, and reads pixels/audio after `wc_render()` returns.
 
-See [`examples/hello/wasmcart.h`](examples/hello/wasmcart.h) for the complete ABI header.
+See [SPEC.md](SPEC.md) for the normative struct layouts, [`src/abi.js`](src/abi.js)
+for the machine-readable constants, and [`include/wc_cart.h`](include/wc_cart.h) for
+the C-side boilerplate that fills the struct for you.
 
 ### Rendering Mode
 
@@ -244,7 +246,7 @@ A cart that doesn't use the GPU at all can write pixels directly to a shared-mem
 
 3. **Extensions are informational, not guaranteed.** Hosts pass through real driver extensions via `GL_EXTENSIONS` (some carts like Godot need them for format detection). But extension *function pointers* are only available if the cart declares them as WASM imports. Calling an undeclared extension function traps.
 
-4. **GPU engines with getProcAddress callbacks** (Skia Ganesh, ANGLE, etc.) must override `glGetString(GL_EXTENSIONS)` in their callback to return empty - preventing the engine from probing for extension function pointers that don't exist as WASM imports. See the porting notes in the [wasmcart-sdl2](https://github.com/wasmcart/wasmcart-sdl2) repo for the full pattern.
+4. **GPU engines with getProcAddress callbacks** (Skia Ganesh, ANGLE, etc.) must override `glGetString(GL_EXTENSIONS)` in their callback to return empty - preventing the engine from probing for extension function pointers that don't exist as WASM imports. The engine then falls back to its core-GL path, which is all the cart can import anyway. See [`docs/gl-surface.md`](docs/gl-surface.md) for what the GL surface guarantees and [`docs/porting.md`](docs/porting.md) for the porting workflow.
 
 5. **Same `.wasc` runs everywhere.** If a cart works in the browser, it must work on Node.js, native, and RetroArch hosts. Staying within ES 3.0 core guarantees this.
 
@@ -390,8 +392,8 @@ The [`include/`](include/) directory ships reusable C headers:
 | `wc_mat4.h` / `wc_vec3.h` | 4x4 matrix + 3D vector ops |
 | `wc_pcm_mixer.h` | Multi-channel PCM mixer + WAV parser |
 
-For porting *existing* C/SDL games (the SDL2 backend + `stb_*` decoders), see the
-**wasmcart-sdl2** repo.
+For porting *existing* C/SDL games, see [`docs/porting.md`](docs/porting.md) - it
+covers the SDL2 backend, GL 1.x translation, and the porting checklist.
 
 ### Threading (wasi-sdk)
 
@@ -403,11 +405,15 @@ ${WASI_SDK}/bin/clang --target=wasm32-wasip1-threads -pthread \
   -Wl,--no-entry -nostartfiles -O2 -o cart.wasm cart.c
 ```
 
-See [`examples/hello_threads/`](examples/hello_threads/) and the Threading section in the Porting Guide (in the [wasmcart-sdl2](https://github.com/wasmcart/wasmcart-sdl2) repo).
+The host detects a threaded cart from its wasm imports (shared memory) and wires
+up the worker pool itself - no manifest field, and no change to the three-export
+contract.
 
 ## Examples
 
-34 example carts ranging from minimal (`hello`) to full game ports:
+Example carts range from minimal (`hello`) to full game ports. They live outside
+this repo - the game ports are upstream forks on a `wasmcart` branch, each
+shipping its `.wasc` as a Release artifact:
 
 | Example | Type | Description |
 |---------|------|-------------|
@@ -428,23 +434,21 @@ See [`examples/hello_threads/`](examples/hello_threads/) and the Threading secti
 - **[`docs/`](docs/)** - per-subsystem guides: [input](docs/input.md), [networking](docs/networking.md), [GL surface](docs/gl-surface.md), [framebuffer](docs/bind_framebuffer.md), [fetch](docs/fetch.md), [porting](docs/porting.md)
 - **[`include/`](include/)** - C headers for cart authors (`wc_cart.h` is the contract; `wc_fb.h`/`wc_gl.h`/math/mixer are a lightweight SDK)
 
-Porting existing C/SDL games (the SDL2 backend, `stb_*` helpers, and the full
-porting guide) lives in the **wasmcart-sdl2** repo - see below.
-
 ## The wasmcart org
 
 wasmcart is a small ecosystem. This repo is the spec + JS reference hosts; the rest
-are separate repos, all running the *same* carts:
+are separate repos, all running the *same* carts. Full list:
+**[github.com/orgs/wasmcart/repositories](https://github.com/orgs/wasmcart/repositories)**
 
 | Repo | What it is |
 |------|------------|
-| **wasmcart** (this repo) | Spec, JS reference hosts (`CartHost`, `CartHostWeb`), `wasmcart-pack` |
-| **wasmcart-sdl2** | SDL2 backend + `stb_*` helpers + porting guide - for porting existing C/SDL games |
-| **wasmcart-mruby** | write games in Ruby (mruby runtime, DragonRuby-style API) - prebuilt engine, games ship only Ruby |
-| **wasmcart-native-host** | `libwasmcart` C host + `wasmcart-run` standalone SDL2 player (wasmtime / libnode) |
-| **wasmcart-libretro** | libretro core - run carts in RetroArch / RetroDECK |
-| **retroemu** | terminal + SDL host (libretro cores *and* wasmcart carts) |
-| **wasmcart-website** | wasmcart.org - docs site |
+| [**wasmcart**](https://github.com/wasmcart/wasmcart) (this repo) | Spec, JS reference hosts (`CartHost`, `CartHostWeb`), the `wasmcart` CLI + packer |
+| [**wasmcart-mruby**](https://github.com/wasmcart/wasmcart-mruby) | write games in Ruby (mruby runtime, DragonRuby-style API) - prebuilt engine, games ship only Ruby |
+| [**wasmcart-jsgame**](https://github.com/wasmcart/wasmcart-jsgame) | write games in JavaScript - sandboxed QuickJS runtime with Canvas 2D, WebGL2 and Web Audio |
+| [**wasmcart-libretro**](https://github.com/wasmcart/wasmcart-libretro) | libretro core - run carts in RetroArch / RetroDECK |
+| [**wasmcart-native**](https://github.com/wasmcart/wasmcart-native) | native host built on libnode - a standalone player with no Node install |
+| [**build-libnode**](https://github.com/wasmcart/build-libnode) | precompiled libnode for V8-WASM use, the substrate the native host builds on |
+| [**retroemu**](https://github.com/monteslu/retroemu) | terminal + SDL host (libretro cores *and* wasmcart carts) |
 | game port forks | each an upstream game fork on a `wasmcart` branch (`.wasc` shipped as Release artifacts) |
 
 ## License
