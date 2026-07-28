@@ -130,6 +130,7 @@ export class CartHostWeb {
     this.instance = null;
     this.memory = null;
     this.info = null;
+    this._ownedGl = null;   // GL context created BY this host (see load)
     this.frameCount = 0;
     this.startTime = 0;
     this.lastFrameTime = 0;
@@ -290,17 +291,41 @@ export class CartHostWeb {
     }
 
     if (this.usesGL && !options.glBackend) {
-      // A GL cart with no GL context is a LOAD ERROR, never a silent stub —
-      // SPEC.md, and identical to what CartHost (node) enforces. Stubbing looks
-      // harmless because a hybrid cart can still fill its 2D framebuffer, but a
-      // GL-rendering cart draws into a context that discards everything: load()
-      // reports success and the page shows a black canvas with no error
-      // anywhere, indistinguishable from a broken cart.
-      throw new Error(
-        'this cart imports the `gl` module but no glBackend was provided. ' +
-        'Pass glBackend: a WebGL2 context, or a factory returning one. ' +
-        'GL is part of the wasmcart host contract — a host that cannot supply ' +
-        'a context cannot run GL carts, and stubbing them renders black.');
+      // A browser can ALWAYS produce a WebGL2 context — it has shipped
+      // everywhere for over a decade — so the web host satisfies the "hosts
+      // MUST be able to supply a GL context" rule itself rather than pushing
+      // the requirement onto the page. A caller-supplied glBackend still wins
+      // (that is how you render into your own on-screen canvas); this is the
+      // fallback for a page that just calls load() and reads getFrame().
+      //
+      // Offscreen when available, otherwise a detached <canvas> — neither is
+      // in the document, so nothing renders on screen until the page draws the
+      // frame itself. Only reached for carts that actually import `gl`.
+      // NOTE: this.info is not populated until wc_get_info runs, which is
+      // after this point — use the same preferred* hints the cart is handed.
+      const w = options.preferredWidth || 640;
+      const h = options.preferredHeight || 480;
+      let made = null;
+      try {
+        const surface = (typeof OffscreenCanvas !== 'undefined')
+          ? new OffscreenCanvas(w, h)
+          : (typeof document !== 'undefined' ? Object.assign(
+              document.createElement('canvas'), { width: w, height: h }) : null);
+        made = surface && surface.getContext('webgl2', { alpha: false });
+      } catch { made = null; }
+
+      if (!made) {
+        // WebGL2 genuinely unavailable (ancient browser, blocklisted driver,
+        // GL disabled). Stubbing would render black while reporting success,
+        // so fail loudly and name the actual cause.
+        throw new Error(
+          'this cart imports the `gl` module but a WebGL2 context could not be ' +
+          'created. wasmcart requires WebGL2; check that it is enabled and not ' +
+          'blocked by the driver/browser, or pass your own glBackend.');
+      }
+      this._ownedGl = made;      // created here, so this host owns its lifetime
+      options = { ...options, glBackend: made };
+      glCtx = made;
     }
 
     // Build imports
@@ -634,6 +659,13 @@ export class CartHostWeb {
   }
 
   destroy() {
+    // Release a GL context this host created itself (a caller-supplied
+    // glBackend belongs to the caller and is left alone).
+    if (this._ownedGl) {
+      try { this._ownedGl.getExtension('WEBGL_lose_context')?.loseContext(); } catch {}
+      this._ownedGl = null;
+    }
+
     // Close all WebSocket connections
     for (const [, conn] of this._wsConnections) {
       try { conn.ws.close(); } catch {}

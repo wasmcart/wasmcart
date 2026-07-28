@@ -327,12 +327,18 @@ await cart.load('game.wasc', {
 await cart.load('gl_game.wasm', { glBackend: glContext });
 ```
 
-A GL cart with no usable context is a **load error** — never a silent stub.
-That covers both a factory that returns nothing and no `glBackend` at all:
+A GL cart never runs on stubs. If a context cannot be obtained, the load is a
+**load error** — never a silent success that renders black:
 
 ```js
+// Browser: no glBackend needed, CartHostWeb makes its own WebGL2 context.
 await cart.load('gl_game.wasc', {});
+
+// Node without a GL provider wired up:
 // Error: this cart imports the `gl` module but no glBackend was provided.
+
+// Any host where WebGL2 itself is unavailable:
+// Error: ... a WebGL2 context could not be created.
 ```
 
 Stubbing looks harmless because a hybrid cart can still fill its 2D
@@ -344,9 +350,13 @@ There is **no opt-out**. GL is part of the host contract, not a capability a
 host advertises: a cart author writes against the guarantee that if their cart
 imports `gl`, any conformant host can run it. Most carts never import `gl` and
 never create a context — the factory form below exists precisely so a 2D-only
-session pays nothing — but a host that *cannot* supply a context when asked is
-not a wasmcart host. On Node that guarantee is `native-gles`, which is a
-regular dependency; in a browser it is `canvas.getContext('webgl2')`.
+session pays nothing.
+
+In the **browser**, you do not have to pass anything: `CartHostWeb` creates its
+own WebGL2 context (offscreen where available) when a cart needs one. Pass
+`glBackend` to render into your own on-screen canvas instead. On **Node**, the
+context comes from `native-gles`, a regular dependency — `retroemu` and
+`romdevtools` wire it up for you.
 
 ## CLI Tools
 

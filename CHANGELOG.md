@@ -16,9 +16,22 @@ cannot produce one when asked is not a wasmcart host.
 
 Second, and worse, `CartHostWeb` never got 0.7.0's change at all: it still
 silently stubbed. Since `web.js` is the default export for browsers, the
-breaking change 0.7.0 announced did not actually apply to most consumers. Both
-hosts now throw, with the same message, and a parity test pins them together —
-the web host had no coverage for this, which is how it drifted.
+breaking change 0.7.0 announced did not actually apply to most consumers. The
+web host had no test coverage for this, which is how it drifted; there is now
+a parity test.
+
+### Added
+
+- **`CartHostWeb` supplies its own WebGL2 context.** WebGL2 has shipped in
+  browsers for over a decade, so the web host satisfies the "hosts MUST be able
+  to supply a GL context" rule itself instead of pushing the requirement onto
+  the page: a GL cart loaded with no `glBackend` now gets an offscreen (or
+  detached-canvas) context automatically. Passing `glBackend` still wins and is
+  how you render into your own on-screen canvas — it is an override, not the
+  host's only source of GL. A context the host created is released on
+  `destroy()`; a caller-supplied one is left alone. If WebGL2 genuinely cannot
+  be created, that is an error naming *that* cause rather than blaming the
+  caller for not passing a backend.
 
 ```js
 await cart.load('gl_game.wasc', {});

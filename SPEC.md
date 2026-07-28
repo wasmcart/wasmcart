@@ -121,6 +121,12 @@ guarantee that any conformant host can run a cart importing `gl`. Most carts
 never import it and no context is ever created — that is what the lazy factory
 is for — but a host that cannot produce one when asked is not conformant.
 
+A host SHOULD satisfy this itself rather than requiring its embedder to. A
+browser host can always create a WebGL2 context (offscreen or on a detached
+canvas); a native host links a GL provider. `glBackend` then means "render
+into THIS context instead of one you make" — an override for the common case
+of drawing into an on-screen canvas — not the host's only source of GL.
+
 Consequently, loading a GL cart without a usable context is a load **error**,
 never a silent stub, and there is no opt-out flag. This covers BOTH a factory
 that returns nothing AND no `glBackend` passed at all; the two are the same

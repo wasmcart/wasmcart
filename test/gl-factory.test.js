@@ -101,7 +101,14 @@ test('plain (non-factory) glBackend object still works as before', async () => {
 // in CartHost silently doesn't apply to most consumers. 0.7.0 shipped exactly
 // that divergence: node errored on a GL cart with no context while the web host
 // still stubbed it. Pin both to the same contract.
-test('CartHostWeb enforces the GL contract identically to CartHost', async () => {
+test('CartHostWeb SELF-PROVIDES a context rather than demanding one', async () => {
+  // Both hosts must satisfy "a GL cart always gets a real context", but they
+  // satisfy it differently: node needs native-gles supplied, while a browser
+  // can always create WebGL2 itself (shipped everywhere for over a decade), so
+  // the web host makes its own offscreen context instead of pushing the
+  // requirement onto the page. Under node --test there is no WebGL2 at all, so
+  // what we can assert here is that it does NOT reject for lack of a caller-
+  // supplied backend — it fails, if at all, on the context being unavailable.
   const { CartHostWeb: WebHost } = await import('../web.js');
   const { readFileSync } = await import('node:fs');
   const bytes = new Uint8Array(readFileSync(GLCART));
@@ -109,14 +116,7 @@ test('CartHostWeb enforces the GL contract identically to CartHost', async () =>
   const host = new WebHost();
   await assert.rejects(
     host.load(bytes, {}),
-    /no glBackend was provided/,
-    'web host must reject a GL cart with no context, same as node',
-  );
-
-  const host2 = new WebHost();
-  await assert.rejects(
-    host2.load(bytes, { allowMissingGL: true }),
-    /no glBackend was provided/,
-    'and must not honor an opt-out flag either',
+    /WebGL2 context could not be created/,
+    'must try to create its own context, not blame the caller for not passing one',
   );
 });
