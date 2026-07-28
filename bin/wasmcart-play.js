@@ -221,6 +221,23 @@ async function main() {
     throw e;
   }
 
+  /*
+   * Did a GL readback actually capture a rendered frame?
+   *
+   * An untouched context reads back as pure black, so any non-black pixel
+   * means the cart drew. A cart that deliberately renders a black frame is
+   * indistinguishable from one that never drew at all -- but in that case
+   * both buffers are black and either choice gives the same image, so the
+   * ambiguity costs nothing. Sampled on a stride: this runs per frame, and
+   * scanning two million pixels to answer a yes/no is not worth it.
+   */
+  const hasContent = (buf) => {
+    for (let p = 0; p + 2 < buf.length; p += 4 * 64) {
+      if (buf[p] > 8 || buf[p + 1] > 8 || buf[p + 2] > 8) return true;
+    }
+    return false;
+  };
+
   // GL frames live in the GPU's framebuffer, so read them back into the same
   // XRGB word layout CartHost hands out for a 2D cart. readPixels' origin is
   // bottom-left while the cart's is top-left, hence the row flip.
@@ -261,7 +278,15 @@ async function main() {
   let frame = null;
   const step = () => {
     frame = host.runFrame(pad());
-    if (glReadback) frame = { ...frame, ...glReadback() };
+    // Importing `gl` is not the same as RENDERING through it. An SDK that
+    // links a GL backend into every cart (the pygame shim does) makes
+    // usesGL true even for a cart that only writes the CPU framebuffer, and
+    // reading back the untouched context then yields a black frame over a
+    // perfectly good one. Take the GL readback only when it actually drew.
+    if (glReadback) {
+      const gf = glReadback();
+      if (hasContent(gf.framebuffer)) frame = { ...frame, ...gf };
+    }
     if (opt.wav) {
       const a = toInt16(frame.audio);
       if (a) audioChunks.push(a);
