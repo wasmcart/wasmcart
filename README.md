@@ -8,7 +8,7 @@ audio. No filesystem, no syscalls, no ambient authority. Just pixels, sound, inp
 and opt-in networking.
 
 Because a cart is only WebAssembly + a fixed ABI, **the same cart runs anywhere a
-conforming host exists** - Node.js, the browser, a libretro core in RetroArch, a
+conforming host exists** - Node.js, the browser, a libretro core in [RetroArch](https://www.retroarch.com), a
 native player, a terminal - on any OS and any hardware with enough power. Write the
 game once; it runs on all of them, sandboxed.
 
@@ -16,7 +16,8 @@ This repository is the **specification** and its **reference implementations**.
 
 - 📄 **[SPEC.md](SPEC.md)** - the normative host↔cart contract (current ABI: v3)
 - 🧩 **[`src/abi.js`](src/abi.js)** - the machine-readable contract (constants, layouts)
-- 🖥️ **[`include/wc_cart.h`](include/wc_cart.h)** - the C side of the contract for cart authors
+- 🖥️ **[`include/wasmcart.h`](include/wasmcart.h)** - the C ABI header (structs, flags, GL + host imports)
+- 🧰 **[`include/wc_cart.h`](include/wc_cart.h)** - cart boilerplate macros on top of it
 - 📚 **[`docs/`](docs/)** - per-subsystem guides (input, networking, GL, framebuffer, fetch, porting)
 - 🧭 **[docs/positioning.md](docs/positioning.md)** - ship the artifact you debugged: `.wasc` primary, native backends optional, observability by construction
 
@@ -36,8 +37,10 @@ import { CartHostWeb } from 'wasmcart/web';  // browser
 ```
 
 Other hosts in the wasmcart org (own repos) run the *same* carts: a libretro core
-(`wasmcart-libretro`), a native player (`wasmcart-native`), and the terminal
-emulator (`retroemu`). See **[The wasmcart org](#the-wasmcart-org)** below.
+([`wasmcart-libretro`](https://github.com/wasmcart/wasmcart-libretro)), a native
+player ([`wasmcart-native`](https://github.com/wasmcart/wasmcart-native)), and the
+terminal emulator ([`retroemu`](https://github.com/monteslu/retroemu)). See
+**[The wasmcart org](#the-wasmcart-org)** below.
 
 ## Installation
 
@@ -57,16 +60,18 @@ npx wasmcart game.wasc --seed 7 --frames 60 --shot a.png           # determinist
 npx wasmcart pack --wasm cart.wasm -o game.wasc                    # packing, same front door
 ```
 
-The windowed player runs on the org's own stack — `@kmamal/sdl` (window,
-keyboard, audio queue, game controllers) and `webgl-node` (WebGL2-over-native
-GLES for GL carts, auto-detected from the wasm imports) — with audio-paced frame stepping so sound never
+The windowed player runs on the org's own stack —
+[`@kmamal/sdl`](https://github.com/kmamal/node-sdl) (window, keyboard, audio
+queue, game controllers) and [`webgl-node`](https://github.com/monteslu/webgl-node)
+(WebGL2-over-native GLES for GL carts, auto-detected from the wasm imports) — with
+audio-paced frame stepping so sound never
 stutters. Keys: arrows/WASD d-pad, `x`/`z` = A/B, Enter = Start, Tab = Select,
 Esc/`q` quits; the first plugged-in controller maps automatically. No display?
 It falls back to the terminal player, and headless mode is scriptable: same
 seed → byte-identical PNG, so a shell loop is a regression test. Hosts that
-embed `CartHost` (harnesses like romdevtools) keep supplying their OWN
-backends via `load(..., { glBackend })` — these dependencies power the CLI,
-they are not required by the embedding API.
+embed `CartHost` (harnesses like [romdevtools](https://www.npmjs.com/package/romdevtools))
+keep supplying their OWN backends via `load(..., { glBackend })` — these
+dependencies power the CLI, they are not required by the embedding API.
 
 Requires Node.js >= 22.
 
@@ -343,7 +348,7 @@ npx wasmcart-pack --wasm cart.wasm -o game.wasc --players 4 --ws api.mygame.com 
 
 ## Writing Carts
 
-### Minimal 2D cart (C + Emscripten)
+### Minimal 2D cart (C + [Emscripten](https://emscripten.org))
 
 ```c
 #include "wasmcart.h"
@@ -385,7 +390,8 @@ The [`include/`](include/) directory ships reusable C headers:
 
 | Header | Purpose |
 |--------|---------|
-| `wc_cart.h` | **The C-side contract** - buffer declarations + `WC_FILL_INFO` macro |
+| `wasmcart.h` | **The ABI header** - `wc_info_t`/`wc_pad_t` structs, flags, GL + host imports. Include this first. |
+| `wc_cart.h` | Cart boilerplate - buffer declarations + `WC_FILL_INFO`, plus the opt-in `WC_DEBUG_FIELDS` |
 | `wc_fb.h` | 2D drawing (fill_rect, blit, alpha blend) |
 | `wc_gl.h` / `wc_gl_blit.h` | Shader compile/link, VAO/VBO helpers, CPU→GPU blit |
 | `wc_math.h` | sin, cos, sqrt, atan2 (no libm) |
@@ -396,7 +402,7 @@ For porting *existing* C/SDL games, [`docs/porting.md`](docs/porting.md) is the
 short version; the [**wasmcart-sdl2**](https://github.com/wasmcart/wasmcart-sdl2)
 repo has the SDL2 backend itself plus the full porting guide.
 
-### Threading (wasi-sdk)
+### Threading ([wasi-sdk](https://github.com/WebAssembly/wasi-sdk))
 
 Carts can spawn background threads using standard pthreads. Requires wasi-sdk (not Emscripten):
 
@@ -423,7 +429,7 @@ shipping its `.wasc` as a Release artifact:
 | `hello_threads` | 2D + threads | WASI threads demo |
 | `snake`, `breakout`, `tetris` | 2D | Classic arcade games |
 | `doom` | 2D | DOOM (doomgeneric) |
-| `neverball`, `neverputt` | GL | GL1.x via gl4es |
+| `neverball`, `neverputt` | GL | GL1.x via [gl4es](https://github.com/ptitSeb/gl4es) |
 | `chromium_bsu` | GL | GL1.x shoot-em-up |
 | `etr` | GL | Extreme Tux Racer (SFML port) |
 | `openarena2` | GL | Quake III Arena (ioquake3) |
@@ -455,5 +461,7 @@ are separate repos, all running the *same* carts. Full list:
 
 ## License
 
-MIT - see [LICENSE](LICENSE). Compatible with all dependencies (fflate, yauzl,
-yazl - all MIT).
+MIT - see [LICENSE](LICENSE). Compatible with all dependencies
+([fflate](https://github.com/101arrowz/fflate),
+[yauzl](https://github.com/thejoshwolfe/yauzl),
+[yazl](https://github.com/thejoshwolfe/yazl) - all MIT).

@@ -47,7 +47,18 @@
  * WHAT THIS PROVIDES:
  *   WC_CART_BUFFERS   - declares all standard cart globals
  *   WC_FILL_INFO(f)   - fills wc_info struct fields
- *   WC_EXPORT         - shorthand for __attribute__((export_name(...)))
+ *   WC_EXPORT         - export attribute for wc_get_info ONLY
+ *   WC_EXPORT_INIT    - export attribute for wc_init
+ *   WC_EXPORT_RENDER  - export attribute for wc_render
+ *
+ * NOTE: the three export macros are NOT interchangeable - each hardcodes one
+ * export name. Using WC_EXPORT on wc_init or wc_render exports them as
+ * "wc_get_info" too, and the build fails late in wasm-opt with a confusing
+ * "duplicate export name" parse error. One macro per function:
+ *
+ *   WC_EXPORT        wc_info_t *wc_get_info(void) { ... }
+ *   WC_EXPORT_INIT   void wc_init(void)   { ... }
+ *   WC_EXPORT_RENDER void wc_render(void) { ... }
  *
  * You still write your own wc_init() and wc_render() - those have
  * game-specific logic that can't be templated.
