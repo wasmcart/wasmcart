@@ -24,9 +24,13 @@ import scan says GL. Contract:
 
 - Factory never runs for a 2D cart.
 - Factory returning nothing for a GL cart → **load error** (no silent stub).
-- No `glBackend` at all → GL imports are stubbed; only a hybrid cart's 2D
-  framebuffer renders. `usesGL` still reports true (from `gpu_api`), which is
-  what launchers key "this needs a GL window/context" off.
+- No `glBackend` at all → the host supplies its own context where it can.
+  `CartHostWeb` creates an offscreen (or detached-canvas) WebGL2 context;
+  `CartHost` on Node requires one to be wired up (`native-gles`) and errors
+  without it. GL imports are **never** stubbed — a stubbed GL cart reports a
+  successful load and renders black, which is undetectable from the cart's
+  side. `usesGL` reports true (from `gpu_api`), which is what launchers key
+  "this needs a GL window/context" off.
 - Contexts can be **offscreen** (headless harnesses `readPixels` the results)
   or window-bound (`npx wasmcart` creates the SDL `opengl:true` window inside
   its factory; `--gl` merely forces that up front).

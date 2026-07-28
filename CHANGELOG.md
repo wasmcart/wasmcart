@@ -2,8 +2,8 @@
 
 ## 0.8.0
 
-**Breaking:** `allowMissingGL` is gone, and the browser host now enforces the
-same rule as the Node host.
+**Breaking:** `allowMissingGL` is gone, and the browser host now guarantees a
+GL context instead of silently stubbing.
 
 0.7.0 made "GL cart, no context" a load error but left two holes. First, it
 shipped an `allowMissingGL` opt-out — which was wrong in principle: GL is part
@@ -15,10 +15,13 @@ created — that is what the lazy `glBackend` factory is for — but a host that
 cannot produce one when asked is not a wasmcart host.
 
 Second, and worse, `CartHostWeb` never got 0.7.0's change at all: it still
-silently stubbed. Since `web.js` is the default export for browsers, the
-breaking change 0.7.0 announced did not actually apply to most consumers. The
-web host had no test coverage for this, which is how it drifted; there is now
-a parity test.
+silently stubbed. Since `web.js` is the `browser` export, the breaking change
+0.7.0 announced did not actually apply to most consumers. The web host had no
+test coverage for this, which is how it drifted; there is now a parity test.
+
+Both hosts now guarantee a real context, but they satisfy that differently —
+Node needs one supplied (`native-gles`), while the browser makes its own. See
+Added below.
 
 ### Added
 
