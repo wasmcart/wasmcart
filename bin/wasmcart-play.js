@@ -19,8 +19,11 @@
  * Keys: arrows/WASD = d-pad, x=A z=B a=X s=Y, Enter=Start, Tab=Select,
  *       [ ]=L R, q or Ctrl-C = quit.
  *
- * 2D framebuffer carts only. GL carts need a GL context - use the browser
- * host, wasmcart-native's player, or a harness that supplies one.
+ * GL carts work here too. Rendering on the GPU and displaying as ANSI are
+ * orthogonal: the cart gets an OFFSCREEN WebGL2 context, the result is read
+ * back, and every path below sees the same XRGB framebuffer a 2D cart
+ * produces. The glBackend factory is only invoked when the cart's imports say
+ * it is a GL cart, so a 2D cart never pays for it.
  */
 
 import { CartHost } from '../src/CartHost.js';
@@ -196,11 +199,53 @@ async function main() {
 
   const host = new CartHost();
   const loadOpts = opt.seed !== null ? { deterministic: { seed: opt.seed } } : {};
-  await host.load(cartPath, loadOpts);
 
-  if (host.usesGL) {
-    console.error('wasmcart-play: this is a GL cart; the terminal player only renders 2D framebuffer carts. Use a GL-capable host (browser, wasmcart-native).');
-    process.exit(1);
+  // GL carts render fine here. Rendering on the GPU and displaying as ANSI
+  // are orthogonal: give the cart an OFFSCREEN context, read the result back,
+  // and every path below sees the same XRGB framebuffer a 2D cart produces.
+  // The factory runs only if the cart's imports say it is a GL cart, so a 2D
+  // cart never pays for webgl-node being installed (or missing).
+  let glCtx = null;
+  loadOpts.glBackend = async () => {
+    const { createWebGL2Context } = await import('webgl-node');
+    glCtx = createWebGL2Context(opt.width || 1280, opt.height || 720).gl;
+    return glCtx;
+  };
+
+  try {
+    await host.load(cartPath, loadOpts);
+  } catch (e) {
+    if (/webgl-node|Cannot find module/.test(String(e.message))) {
+      console.error('wasmcart-play: this cart needs a GL context and webgl-node is not available.');
+      console.error('  install it, or run a CPU build of the cart.');
+      process.exit(1);
+    }
+    throw e;
+  }
+
+  // GL frames live in the GPU's framebuffer, so read them back into the same
+  // XRGB word layout CartHost hands out for a 2D cart. readPixels' origin is
+  // bottom-left while the cart's is top-left, hence the row flip.
+  let glReadback = null;
+  if (host.usesGL && glCtx) {
+    const gi = host.getInfo();
+    const gw = gi.width, gh = gi.height;
+    const rgba = new Uint8Array(gw * gh * 4);
+    const out = new Uint8Array(gw * gh * 4);
+    glReadback = () => {
+      glCtx.finish();
+      glCtx.readPixels(0, 0, gw, gh, glCtx.RGBA, glCtx.UNSIGNED_BYTE, rgba);
+      for (let y = 0; y < gh; y++) {
+        const src = (gh - 1 - y) * gw * 4, dst = y * gw * 4;
+        for (let x = 0; x < gw * 4; x += 4) {
+          out[dst + x]     = rgba[src + x + 2];   // B
+          out[dst + x + 1] = rgba[src + x + 1];   // G
+          out[dst + x + 2] = rgba[src + x];       // R
+          out[dst + x + 3] = 255;
+        }
+      }
+      return { framebuffer: out, width: gw, height: gh };
+    };
   }
 
   const info = host.getInfo();
@@ -217,6 +262,7 @@ async function main() {
   let frame = null;
   const step = () => {
     frame = host.runFrame(pad());
+    if (glReadback) frame = { ...frame, ...glReadback() };
     if (opt.wav) {
       const a = toInt16(frame.audio);
       if (a) audioChunks.push(a);
