@@ -394,15 +394,15 @@ export class CartHost {
       // black screen with no error anywhere. That is the worst failure mode
       // available, and it is indistinguishable from a broken cart.
       //
-      // Callers that genuinely want the old behaviour - a hybrid cart whose
-      // 2D output is enough - can opt in with allowMissingGL: true.
-      if (!options.allowMissingGL) {
-        throw new Error(
-          'this cart imports the `gl` module but no glBackend was provided. ' +
-          'Pass glBackend (a WebGL2 context, or a factory returning one), or ' +
-          'allowMissingGL: true to stub GL and render only the 2D framebuffer.');
-      }
-      this.usesGL = false;
+      // There is deliberately no opt-out. GL is part of the host contract:
+      // a host that cannot supply a context cannot run GL carts, and a cart
+      // author must be able to rely on that rather than discover per-host
+      // stubbing at runtime. Most carts never import `gl` and never reach here.
+      throw new Error(
+        'this cart imports the `gl` module but no glBackend was provided. ' +
+        'Pass glBackend: a WebGL2 context, or a factory returning one. ' +
+        'GL is part of the wasmcart host contract — a host that cannot supply ' +
+        'a context cannot run GL carts, and stubbing them renders black.');
     }
     // If glBackend IS provided, keep usesGL = true even with fbPtr (hybrid cart)
 

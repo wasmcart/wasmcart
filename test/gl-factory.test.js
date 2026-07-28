@@ -73,17 +73,17 @@ test('GL cart with no glBackend at all is a load error, not a silent stub', asyn
   );
 });
 
-test('allowMissingGL opts back into stubbing for hybrid carts', async () => {
-  // The old behaviour is still reachable, deliberately, for a cart whose 2D
-  // framebuffer output is enough. usesGL stays true because the cart's own
-  // gpu_api declaration is authoritative -- that is what launchers key
-  // "needs a GL window" off -- while the framebuffer path runs on stubs.
+test('there is NO opt-out: stubbing a GL cart is never reachable', async () => {
+  // GL is part of the host contract, not a capability a host advertises, so a
+  // cart author can rely on it. There is deliberately no flag that re-enables
+  // stubbing -- a stubbed GL cart renders black while reporting success, which
+  // is undetectable from the cart's side.
   const host = new CartHost();
-  await host.load(GLCART, { allowMissingGL: true });
-  assert.equal(host.usesGL, true, 'gpu_api declaration is authoritative');
-  const r = host.runFrame([{ connected: true, buttons: 0 }]);
-  assert.ok(r.framebuffer && r.width === 64 && r.height === 64, 'fb path intact under stubs');
-  host.destroy();
+  await assert.rejects(
+    host.load(GLCART, { allowMissingGL: true }),
+    /no glBackend was provided/,
+    'a flag must not buy back the stub path',
+  );
 });
 
 test('plain (non-factory) glBackend object still works as before', async () => {
@@ -94,4 +94,29 @@ test('plain (non-factory) glBackend object still works as before', async () => {
   host.runFrame([{ connected: true, buttons: 0 }]);
   assert.ok(calls.includes('clear'));
   host.destroy();
+});
+
+// ── Host parity ──────────────────────────────────────────────────────────────
+// The browser host is the DEFAULT export for browsers, so a rule enforced only
+// in CartHost silently doesn't apply to most consumers. 0.7.0 shipped exactly
+// that divergence: node errored on a GL cart with no context while the web host
+// still stubbed it. Pin both to the same contract.
+test('CartHostWeb enforces the GL contract identically to CartHost', async () => {
+  const { CartHostWeb: WebHost } = await import('../web.js');
+  const { readFileSync } = await import('node:fs');
+  const bytes = new Uint8Array(readFileSync(GLCART));
+
+  const host = new WebHost();
+  await assert.rejects(
+    host.load(bytes, {}),
+    /no glBackend was provided/,
+    'web host must reject a GL cart with no context, same as node',
+  );
+
+  const host2 = new WebHost();
+  await assert.rejects(
+    host2.load(bytes, { allowMissingGL: true }),
+    /no glBackend was provided/,
+    'and must not honor an opt-out flag either',
+  );
 });

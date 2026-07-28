@@ -338,13 +338,15 @@ await cart.load('gl_game.wasc', {});
 Stubbing looks harmless because a hybrid cart can still fill its 2D
 framebuffer, but for a cart that *renders* through GL every call becomes a
 no-op, `load()` reports success, and the player sees a black screen with no
-error anywhere. If you specifically want that — a hybrid cart whose 2D output
-is enough — opt in explicitly:
+error anywhere.
 
-```js
-await cart.load('hybrid.wasc', { allowMissingGL: true });
-// GL imports stubbed; usesGL stays true (gpu_api is authoritative)
-```
+There is **no opt-out**. GL is part of the host contract, not a capability a
+host advertises: a cart author writes against the guarantee that if their cart
+imports `gl`, any conformant host can run it. Most carts never import `gl` and
+never create a context — the factory form below exists precisely so a 2D-only
+session pays nothing — but a host that *cannot* supply a context when asked is
+not a wasmcart host. On Node that guarantee is `native-gles`, which is a
+regular dependency; in a browser it is `canvas.getContext('webgl2')`.
 
 ## CLI Tools
 

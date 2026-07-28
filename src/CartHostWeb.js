@@ -290,9 +290,17 @@ export class CartHostWeb {
     }
 
     if (this.usesGL && !options.glBackend) {
-      // Cart imports GL but no GL backend provided - stub GL imports.
-      // Cart can still use 2D framebuffer or GL blit internally.
-      this.usesGL = false;
+      // A GL cart with no GL context is a LOAD ERROR, never a silent stub —
+      // SPEC.md, and identical to what CartHost (node) enforces. Stubbing looks
+      // harmless because a hybrid cart can still fill its 2D framebuffer, but a
+      // GL-rendering cart draws into a context that discards everything: load()
+      // reports success and the page shows a black canvas with no error
+      // anywhere, indistinguishable from a broken cart.
+      throw new Error(
+        'this cart imports the `gl` module but no glBackend was provided. ' +
+        'Pass glBackend: a WebGL2 context, or a factory returning one. ' +
+        'GL is part of the wasmcart host contract — a host that cannot supply ' +
+        'a context cannot run GL carts, and stubbing them renders black.');
     }
 
     // Build imports

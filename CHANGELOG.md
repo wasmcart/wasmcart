@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.8.0
+
+**Breaking:** `allowMissingGL` is gone, and the browser host now enforces the
+same rule as the Node host.
+
+0.7.0 made "GL cart, no context" a load error but left two holes. First, it
+shipped an `allowMissingGL` opt-out — which was wrong in principle: GL is part
+of the host contract, not a capability a host advertises. A cart author writes
+against the guarantee that any conformant host can run a cart importing `gl`;
+a per-host opt-out turns that guarantee into something you discover at runtime,
+as a black screen. Most carts never import `gl` and never cause a context to be
+created — that is what the lazy `glBackend` factory is for — but a host that
+cannot produce one when asked is not a wasmcart host.
+
+Second, and worse, `CartHostWeb` never got 0.7.0's change at all: it still
+silently stubbed. Since `web.js` is the default export for browsers, the
+breaking change 0.7.0 announced did not actually apply to most consumers. Both
+hosts now throw, with the same message, and a parity test pins them together —
+the web host had no coverage for this, which is how it drifted.
+
+```js
+await cart.load('gl_game.wasc', {});
+// Error: this cart imports the `gl` module but no glBackend was provided.
+// (same in Node and in the browser; no flag re-enables stubbing)
+```
+
+If you were passing `allowMissingGL: true`, supply a real context instead. On
+Node that is `native-gles` (a regular dependency, not optional); in a browser
+it is `canvas.getContext('webgl2')`.
+
+SPEC.md now states the requirement normatively. It previously said only that
+"a factory that produces no context is a load error", which left the
+no-`glBackend`-at-all case unspecified — the exact gap a downstream host fell
+into.
+
 ## 0.7.0
 
 **Breaking:** a GL cart loaded with no GL context is now a load **error**

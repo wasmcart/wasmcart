@@ -113,9 +113,20 @@ cart iff its wasm import section imports from the `gl` module — the import
 section is the ground truth a host can read before instantiation; the
 `gpu_api` field confirms it after `wc_get_info` (a manifest field never gates
 GL). Hosts SHOULD accept `glBackend` as a lazy factory (invoked once, only
-for GL carts) so launchers need no advance knowledge of what they're loading;
-a factory that produces no context for a GL cart is a load **error**, never a
-silent stub.
+for GL carts) so launchers need no advance knowledge of what they're loading.
+
+**Hosts MUST be able to supply a GL context.** GL is part of the host
+contract, not an advertised capability: a cart author writes against the
+guarantee that any conformant host can run a cart importing `gl`. Most carts
+never import it and no context is ever created — that is what the lazy factory
+is for — but a host that cannot produce one when asked is not conformant.
+
+Consequently, loading a GL cart without a usable context is a load **error**,
+never a silent stub, and there is no opt-out flag. This covers BOTH a factory
+that returns nothing AND no `glBackend` passed at all; the two are the same
+failure. Stubbing is prohibited because it is undetectable from the cart's
+side: every GL call succeeds, `load()` reports success, and the frame is
+blank — indistinguishable from a broken cart.
 
 ---
 
