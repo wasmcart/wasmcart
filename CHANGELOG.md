@@ -26,6 +26,12 @@ runs too late to size a window that must already exist.
 
 New: `fitRect()` in `src/letterbox.js`, covered by `test/letterbox.test.js`.
 
+Also fixes `--shot` for carts that import `gl` without rendering through it.
+An SDK that links a GL backend into every cart makes `usesGL` true even for a
+cart that only writes the CPU framebuffer, and the player was reading back the
+untouched context and writing a black PNG over a perfectly good frame. The GL
+readback is now used only when it actually captured something.
+
 ## 0.9.1
 
 Adds `getGlContext()` — the live WebGL2 context a cart is rendering through,
