@@ -75,8 +75,15 @@ stretched into one.
 | --- | --- |
 | *(default)* | window opens at the cart's size, resizable, letterboxed |
 | `--zoom n` | open at n× the cart's size (still resizable) |
+| `--fullscreen`, `-f` | fill the display; the frame is letterboxed into it |
 | `--no-resize` | pin the window to the cart's size; no bars, no scaling |
 | `--stretch` | scale to fill the window, distorting the aspect ratio |
+
+The **cart** decides its resolution: the host may ask for a size via
+`preferredWidth`/`preferredHeight`, but whatever `wc_get_info` reports wins,
+and wasmcart dictates neither a resolution nor an aspect ratio. Window size
+is a separate, host-side decision, and letterboxing is what reconciles the
+two — which is why fullscreen needs no special handling.
 
 Letterboxing applies to both rendering paths: 2D carts are scaled on blit, and
 GL carts get a viewport fitted inside the drawable with the surrounding area

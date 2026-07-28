@@ -226,6 +226,16 @@ const MAX_ASSET_SIZE = 256 * 1024 * 1024;
 // Max entries in a .wasc archive
 const MAX_ARCHIVE_ENTRIES = 100000;
 
+// Last-resort size for a host-provisioned offscreen GL context, used only
+// when neither the manifest nor the caller says anything. The context must
+// exist before the cart is instantiated, so this is chosen before
+// wc_get_info can report the truth -- and a mismatch either clips the frame
+// (too small) or lets the cart paint past a cart-sized readback (too large).
+// 720p is the most common cart resolution, so it is the best blind guess;
+// a cart that declares its size in the manifest never relies on it.
+const DEFAULT_GL_W = 1280;
+const DEFAULT_GL_H = 720;
+
 export class CartHost {
   /** Cap per debug-event ring (log / marks) between drains. */
   static MAX_DEBUG_EVENTS = 1000;
@@ -397,16 +407,26 @@ export class CartHost {
       // your own window). Only reached for carts that actually import `gl`,
       // so a 2D cart never causes a context to exist.
       //
-      // NOTE: this.info is not populated until wc_get_info runs, which is
-      // after this point — use the same preferred* hints the cart is handed.
-      // Size from the cart's own declaration where we have one. wc_get_info
-      // has not run yet -- it needs the instance, which needs these imports
-      // -- so the manifest is the only forward-looking source. A cart that
-      // declares 1600x900 and gets a 640x480 context renders into a corner
-      // of it, since wc_gl_blit's viewport is the context, not the frame.
+      // Sizing this context is a chicken-and-egg problem: it is an IMPORT, so
+      // it must exist before instantiation, but only wc_get_info -- which
+      // needs the instance -- knows the cart's resolution. The cart is the
+      // authority there (preferredWidth/Height is the host ASKING, and
+      // wc_get_info is the cart ANSWERING), and wasmcart dictates neither a
+      // resolution nor an aspect ratio, so any size is legal.
+      //
+      // The drawable must therefore match the cart as closely as possible in
+      // BOTH directions. Too small and the frame is clipped into a corner.
+      // Too large is equally wrong: a cart's own renderer sets its viewport
+      // from the drawable, not from wc_gl_blit's glViewport(0, 0, w, h), so
+      // it paints the full drawable and a cart-sized readback crops it.
+      // (Measured against wasmcart-lua: with a 1920x1080 drawable a cart
+      // declaring 1280x720 painted out to x=1918, y=1078.)
+      //
+      // A manifest width/height is the only forward-looking source, so it
+      // wins; the host's own request is the next best guess.
       const m = this._manifest || {};
-      const w = m.width || options.preferredWidth || 640;
-      const h = m.height || options.preferredHeight || 480;
+      const w = m.width || options.preferredWidth || DEFAULT_GL_W;
+      const h = m.height || options.preferredHeight || DEFAULT_GL_H;
       let made = null;
       try {
         const { createWebGL2Context } = await import('webgl-node');

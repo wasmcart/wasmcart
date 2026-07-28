@@ -96,12 +96,29 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
   host.runFrame([{ connected: true, buttons: 0 }]); // settle: final resolution
   const info = host.getInfo();
 
+  const zoom = opt.zoom || (info.height <= 400 ? 2 : 1);
   if (!window) {
-    const zoom = opt.zoom || (info.height <= 400 ? 2 : 1);
     window = sdl.video.createWindow({
       title: 'wasmcart', width: info.width * zoom, height: info.height * zoom,
       resizable: opt.resizable !== false,
     });
+  } else if (!opt.width && !opt.height) {
+    // A GL cart's window had to be created during load(), before wc_get_info
+    // could say how big the cart actually is -- so it opened at a guess. Now
+    // that the cart has answered, adopt its size. The cart is the authority
+    // on resolution; the host only asks. Skipped when the user named an
+    // explicit --width/--height, since that IS the host asking.
+    const want = [info.width * zoom, info.height * zoom];
+    if (window.width !== want[0] || window.height !== want[1]) {
+      try { window.setSize(want[0], want[1]); } catch { /* compositor said no */ }
+    }
+  }
+
+  // Fullscreen is just another window size: the frame is letterboxed into
+  // whatever the drawable turns out to be, so the cart's aspect ratio holds
+  // on a display of any shape.
+  if (opt.fullscreen) {
+    try { window.setFullscreen(true); } catch { /* not supported here */ }
   }
 
   // input: real press/release edges

@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.10.1
+
+Fixes GL carts that declare a resolution the host had to guess at, and adds
+`--fullscreen` / `-f`.
+
+A GL cart's window has to be created *during* `load()`, because the GL context
+is a wasm import and must exist before instantiation — which is before
+`wc_get_info` can say how big the cart is. The window therefore opened at a
+guess and was never corrected, so a cart declaring 1280x720 got a 640x480
+window and rendered into a corner of it. The window now adopts the cart's real
+resolution once `wc_get_info` has answered (skipped when the caller passed an
+explicit `--width`/`--height`, since that is the host legitimately asking).
+
+The offscreen context that `CartHost` provisions for itself had the same
+guess, and it must match the cart in *both* directions: too small clips the
+frame, and too large is equally wrong, because a cart's own renderer sizes its
+viewport from the drawable rather than from `wc_gl_blit`'s
+`glViewport(0, 0, w, h)`. Measured against wasmcart-lua: given a 1920x1080
+drawable, a cart declaring 1280x720 painted all the way out to x=1918, y=1078,
+so a cart-sized readback cropped the frame. It now takes the manifest's
+`width`/`height`, then the caller's preference, then 720p as a blind default.
+
+`--fullscreen` fills the display. It needs no special handling beyond that:
+the frame is letterboxed into whatever the drawable turns out to be, so the
+cart's aspect ratio holds on a screen of any shape.
+
 ## 0.10.0
 
 Resizable windows with aspect-preserving letterboxing, and a GL context sized

@@ -36,7 +36,7 @@ import { deflateSync } from 'zlib';
 const argv = process.argv.slice(2);
 let cartPath = null;
 // resizable + letterbox are the DEFAULTS; --no-resize and --stretch opt out.
-const opt = { frames: 0, shot: null, wav: null, seed: null, scale: 0, fps: 30, term: false, window: false, gl: false, zoom: 0, resizable: true, stretch: false };
+const opt = { frames: 0, shot: null, wav: null, seed: null, scale: 0, fps: 30, term: false, window: false, gl: false, zoom: 0, resizable: true, stretch: false, fullscreen: false };
 
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -53,12 +53,15 @@ for (let i = 0; i < argv.length; i++) {
     case '--zoom':   opt.zoom = parseInt(argv[++i], 10) || 0; break;
     case '--no-resize': opt.resizable = false; break;
     case '--stretch':   opt.stretch = true; break;
+    case '--fullscreen': case '-f': opt.fullscreen = true; break;
     case '-h': case '--help':
-      console.log('Usage: wasmcart-play <cart.wasc | cart-dir> [--frames n] [--shot out.png] [--wav out.wav] [--seed n] [--term] [--window] [--gl] [--zoom n] [--scale cols] [--fps n] [--no-resize] [--stretch]');
+      console.log('Usage: wasmcart-play <cart.wasc | cart-dir> [--frames n] [--shot out.png] [--wav out.wav] [--seed n] [--term] [--window] [--gl] [--zoom n] [--scale cols] [--fps n] [--no-resize] [--stretch] [--fullscreen]');
       console.log('GL carts are auto-detected (the wasm imports tell the player); --gl only FORCES the GL window up front.');
       console.log('The window opens at the cart\'s declared size and is RESIZABLE by default; the frame is');
       console.log('letterboxed (black bars) to preserve the cart\'s aspect ratio. --no-resize pins the window');
       console.log('to the cart size; --stretch fills the window instead, distorting the frame.');
+      console.log('--fullscreen (-f) fills the display; the frame is letterboxed into it, so the');
+      console.log('cart\'s aspect ratio holds on a screen of any shape.');
       process.exit(0);
     default:
       if (!cartPath && !a.startsWith('-')) cartPath = a;
