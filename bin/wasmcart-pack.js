@@ -7,6 +7,14 @@
  *   wasmcart-pack --wasm build/cart.wasm --assets assets/ --output game.wasc
  *   wasmcart-pack --wasm build/cart.wasm --output game.wasc  (no assets)
  *   wasmcart-pack --wasm build/cart.wasm --assets assets/ --name "My Game" --version "1.0.0" --output game.wasc
+ *
+ *   wasmcart-pack --source my-game/ --output game.wasc
+ *     Pack a DEV DIRECTORY that already has its own manifest.json, keeping
+ *     that manifest verbatim -- including `entry` and `assets`. This is the
+ *     layout `npx wasmcart <dir>` runs, so the same tree packs to a .wasc
+ *     without hand-translating it into flags. The flag form above generates a
+ *     manifest instead, which cannot express a cart whose manifest already
+ *     says something specific.
  */
 
 import { createWriteStream, readFileSync, statSync, readdirSync } from 'fs';
@@ -17,6 +25,7 @@ import { ZipFile } from 'yazl';
 const args = process.argv.slice(2);
 let wasmPath = null;
 let assetsDir = null;
+let sourceDir = null;
 let outputPath = null;
 let gameName = null;
 let gameVersion = '1.0.0';
@@ -33,6 +42,9 @@ for (let i = 0; i < args.length; i++) {
       break;
     case '--assets':
       assetsDir = resolve(args[++i]);
+      break;
+    case '--source':
+      sourceDir = resolve(args[++i]);
       break;
     case '--output':
     case '-o':
@@ -76,8 +88,44 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
+if (sourceDir && wasmPath) {
+  console.error('Error: --source and --wasm are alternatives, not both');
+  process.exit(1);
+}
+
+// --source: a dev directory that already carries its own manifest.json.
+// The manifest is kept VERBATIM -- entry, assets, and any field this CLI has
+// no flag for -- because the point is that the tree `npx wasmcart <dir>` runs
+// is the tree that packs.
+let sourceManifest = null;
+if (sourceDir) {
+  let raw;
+  try {
+    raw = readFileSync(join(sourceDir, 'manifest.json'), 'utf8');
+  } catch {
+    console.error(`Error: no manifest.json in ${sourceDir}`);
+    console.error('  (a dev directory needs one; use --wasm to generate a manifest instead)');
+    process.exit(1);
+  }
+  try {
+    sourceManifest = JSON.parse(raw);
+  } catch (e) {
+    console.error(`Error: manifest.json in ${sourceDir} is not valid JSON: ${e.message}`);
+    process.exit(1);
+  }
+  const entry = sourceManifest.entry || 'cart.wasm';
+  wasmPath = resolve(join(sourceDir, entry));
+  try {
+    statSync(wasmPath);
+  } catch {
+    console.error(`Error: manifest entry "${entry}" not found in ${sourceDir}`);
+    process.exit(1);
+  }
+  if (!gameName) gameName = sourceManifest.name || basename(sourceDir);
+}
+
 if (!wasmPath) {
-  console.error('Error: --wasm <path> is required');
+  console.error('Error: --wasm <path> or --source <dir> is required');
   printUsage();
   process.exit(1);
 }
@@ -116,13 +164,19 @@ if (netWebsocket) {
   }
 }
 
-// Build manifest
-const manifest = {
+// Build manifest. In --source mode the cart's own manifest wins outright:
+// rewriting it would defeat the purpose, and it may carry fields this CLI has
+// no flag for.
+const manifest = sourceManifest ? { ...sourceManifest } : {
   name: gameName,
   version: gameVersion,
   abi: 3,
   entry: 'cart.wasm',
 };
+if (sourceManifest) {
+  if (gameName) manifest.name = gameName;
+  manifest.entry = 'cart.wasm';   // the entry is renamed inside the archive
+}
 
 if (players !== null && players > 1) {
   manifest.players = players;
@@ -142,7 +196,7 @@ if (netWebsocket || netDataChannel) {
   if (netDataChannel) manifest.net['data-channel'] = true;
 }
 
-if (assetsDir) {
+if (!sourceManifest && assetsDir) {
   manifest.assets = 'assets/';
 }
 
@@ -185,7 +239,20 @@ zipfile.addFile(wasmPath, 'cart.wasm', { compress: false });
 let assetCount = 0;
 let assetBytes = 0;
 
-if (assetsDir) {
+if (sourceDir) {
+  // Everything in the tree except the manifest and the entry wasm, at its
+  // ORIGINAL path. The manifest's `assets` prefix refers to these paths, so
+  // rewriting them would break the very field we kept verbatim.
+  const entryRel = (sourceManifest.entry || 'cart.wasm').replace(/\\/g, '/');
+  const srcFiles = walkDir(sourceDir, '');
+  for (const { fullPath, relPath } of srcFiles) {
+    if (relPath === 'manifest.json' || relPath === entryRel) continue;
+    zipfile.addFile(fullPath, relPath);
+    const s = statSync(fullPath);
+    assetBytes += s.size;
+    assetCount++;
+  }
+} else if (assetsDir) {
   try {
     statSync(assetsDir);
   } catch {
