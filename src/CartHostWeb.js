@@ -21,6 +21,22 @@ import {
 import { createWebGLImports } from './webgl_imports.js';
 import { inflateSync } from 'fflate';
 
+/* The manifest's asset root is stripped as a PATH PREFIX from packed entries,
+ * so it needs its trailing slash: "app" turns "app/main.lua" into "/main.lua"
+ * and every lookup misses. Dev mode joins the same field as a directory,
+ * where the slash is harmless -- so a cart written and tested from a dev
+ * directory boots fine and then fails the moment it is packed, which is a
+ * miserable way to find out. Normalize once instead of trusting authors to
+ * remember. (Observed in the wild: wasmcart-lua and wasmcart-mruby both
+ * shipped manifests saying "app".) */
+function assetPrefixOf(manifest) {
+  const raw = manifest && manifest.assets;
+  if (raw === undefined || raw === null || raw === '') return 'assets/';
+  const s = String(raw);
+  return s.endsWith('/') ? s : s + '/';
+}
+
+
 // --- Path validation for asset security ---
 
 function validateAssetPath(path) {
@@ -660,7 +676,7 @@ export class CartHostWeb {
     const wasmBytes = readZipEntryFromBuffer(buf, wasmEntry);
 
     // Build asset index
-    const assetsPrefix = manifest.assets || 'assets/';
+    const assetsPrefix = assetPrefixOf(manifest);
     this._assetIndex = new Map();
     for (const [path, entry] of index) {
       if (path === 'manifest.json' || path === wasmName) continue;

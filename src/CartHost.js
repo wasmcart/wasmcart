@@ -28,6 +28,22 @@ import {
 } from './abi.js';
 import { createWebGLImports } from './webgl_imports.js';
 
+/* The manifest's asset root is stripped as a PATH PREFIX from packed entries,
+ * so it needs its trailing slash: "app" turns "app/main.lua" into "/main.lua"
+ * and every lookup misses. Dev mode joins the same field as a directory,
+ * where the slash is harmless -- so a cart written and tested from a dev
+ * directory boots fine and then fails the moment it is packed, which is a
+ * miserable way to find out. Normalize once instead of trusting authors to
+ * remember. (Observed in the wild: wasmcart-lua and wasmcart-mruby both
+ * shipped manifests saying "app".) */
+function assetPrefixOf(manifest) {
+  const raw = manifest && manifest.assets;
+  if (raw === undefined || raw === null || raw === '') return 'assets/';
+  const s = String(raw);
+  return s.endsWith('/') ? s : s + '/';
+}
+
+
 // --- Path validation for asset security ---
 
 function validateAssetPath(path) {
@@ -1141,7 +1157,7 @@ export class CartHost {
     const wasmBytes = readZipEntry(fd, wasmEntry);
 
     // Build asset index (strip 'assets/' prefix if the manifest specifies an assets root)
-    const assetsPrefix = manifest.assets || 'assets/';
+    const assetsPrefix = assetPrefixOf(manifest);
     this._assetIndex = new Map();
     for (const [path, entry] of index) {
       if (path === 'manifest.json' || path === wasmName) continue;
@@ -1194,7 +1210,7 @@ export class CartHost {
     const wasmBytes = readZipEntryFromBuffer(u8, wasmEntry);
 
     // Build asset index
-    const assetsPrefix = manifest.assets || 'assets/';
+    const assetsPrefix = assetPrefixOf(manifest);
     this._assetIndex = new Map();
     for (const [path, entry] of index) {
       if (path === 'manifest.json' || path === wasmName) continue;
@@ -1231,7 +1247,7 @@ export class CartHost {
     const wasmBytes = await readFile(join(dirPath, wasmName));
 
     // Set up directory-based asset loading
-    const assetsDir = join(dirPath, manifest.assets || 'assets');
+    const assetsDir = join(dirPath, assetPrefixOf(manifest));
     this._assetDir = assetsDir;
     this._hasAssets = true;
     // No index needed - we'll read files directly from disk
