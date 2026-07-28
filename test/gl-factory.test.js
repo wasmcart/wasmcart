@@ -60,30 +60,45 @@ test('GL cart: factory returning nothing is a loud error, not a silent stub', as
   );
 });
 
-test('GL cart with no glBackend at all is a load error, not a silent stub', async () => {
-  // SPEC.md: "a factory that produces no context for a GL cart is a load
-  // error, never a silent stub." This case used to stub instead, which is
-  // fine for a hybrid cart that also fills a framebuffer but catastrophic
-  // for a GL-RENDERING one: load() reports success and the player sees a
-  // black screen with no error anywhere.
+test('CartHost SELF-PROVIDES a context rather than demanding one', async () => {
+  // SPEC.md: "A host SHOULD satisfy this itself rather than requiring its
+  // embedder to." webgl-node is already a dependency, so this host can make
+  // its own offscreen context; 0.8.0 threw here instead, which enforced the
+  // rule's letter while still failing carts the host was perfectly capable of
+  // running. A caller-supplied glBackend still wins.
   const host = new CartHost();
-  await assert.rejects(
-    host.load(GLCART, {}),
-    /no glBackend was provided/,
-  );
+  await host.load(GLCART, {});
+  assert.equal(host.usesGL, true);
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  host.destroy();
 });
 
 test('there is NO opt-out: stubbing a GL cart is never reachable', async () => {
   // GL is part of the host contract, not a capability a host advertises, so a
   // cart author can rely on it. There is deliberately no flag that re-enables
   // stubbing -- a stubbed GL cart renders black while reporting success, which
-  // is undetectable from the cart's side.
+  // is undetectable from the cart's side. The flag is now simply ignored: the
+  // host provides a real context either way.
   const host = new CartHost();
-  await assert.rejects(
-    host.load(GLCART, { allowMissingGL: true }),
-    /no glBackend was provided/,
-    'a flag must not buy back the stub path',
-  );
+  await host.load(GLCART, { allowMissingGL: true });
+  assert.equal(host.usesGL, true, 'a flag must not buy back the stub path');
+  host.destroy();
+});
+
+test('a host-created context is released on destroy, a caller-supplied one is not', async () => {
+  // The host owns only what it made. Losing a context the caller passed would
+  // break a page that is still drawing into its own canvas.
+  const h1 = new CartHost();
+  await h1.load(GLCART, {});
+  assert.ok(h1._ownedGl, 'self-provisioned context is tracked as owned');
+  h1.destroy();
+  assert.equal(h1._ownedGl, null, 'released on destroy');
+
+  const calls = [];
+  const h2 = new CartHost();
+  await h2.load(GLCART, { glBackend: mockGl(calls) });
+  assert.equal(h2._ownedGl, null, 'a caller-supplied context is never owned');
+  h2.destroy();
 });
 
 test('plain (non-factory) glBackend object still works as before', async () => {

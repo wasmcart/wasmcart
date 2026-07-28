@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.9.0
+
+**`CartHost` now supplies its own GL context**, matching what `CartHostWeb`
+started doing in 0.8.0. Loading a GL cart with no `glBackend` used to throw on
+Node; it now creates an offscreen context through `webgl-node` — already a
+regular dependency — and runs.
+
+```js
+const cart = new CartHost();
+await cart.load('gl_game.wasc', {});   // 0.8.0: threw. 0.9.0: works.
+```
+
+This finishes what 0.8.0 started. SPEC says *"a host SHOULD satisfy this itself
+rather than requiring its embedder to"*, and the browser host does; Node did
+not, so the same call succeeded in a browser and failed under Node. The 0.8.0
+parity test pinned the two hosts to the same **error**; they are now pinned to
+the same **behaviour**, which is the property that actually matters.
+
+`glBackend` keeps its 0.8.0 meaning: an **override** — "render into THIS
+context instead of one you make" — for drawing into an on-screen canvas or an
+SDL window. It is not the host's only source of GL, and most callers should
+pass nothing.
+
+Scope worth being precise about: **the CLI was never affected.** `npx wasmcart`
+plays GL carts on 0.8.0 and earlier because `bin/wasmcart-play.js` wired up its
+own context. What was broken is the **library** API for anyone embedding
+`CartHost` directly. That player no longer special-cases GL, since the host
+handles it.
+
+A context the host creates is owned by the host and released with
+`WEBGL_lose_context` on `destroy()`; a caller-supplied one is left alone. If GL
+genuinely cannot be obtained — no driver, a headless box with no EGL, an
+install where the native addon did not build — that is still a load error
+naming that cause, not a silent stub.
+
+`allowMissingGL` remains gone and is simply ignored if passed: the host
+provides a real context either way.
+
+45 tests pass (44 existing + context-ownership coverage).
+
+
 ## 0.8.0
 
 **Breaking:** `allowMissingGL` is gone, and the browser host now guarantees a

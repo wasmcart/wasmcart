@@ -281,6 +281,7 @@ export class CartHost {
 
     // Asset index for .wasc carts
     this._assetIndex = null;   // Map<path, entry>
+    this._ownedGl = null;      // a GL context this host created (not the caller's)
     this._assetFd = null;      // file descriptor for on-disk zip reading
     this._assetBuf = null;     // in-memory zip buffer (for Uint8Array source)
     this._assetDir = null;     // directory path for dev-mode loading
@@ -384,25 +385,37 @@ export class CartHost {
     }
 
     if (this.usesGL && !options.glBackend) {
-      // A GL cart with no GL context is a LOAD ERROR, never a silent stub -
-      // SPEC.md: "a factory that produces no context for a GL cart is a load
-      // error, never a silent stub."
+      // Satisfy the "hosts MUST be able to supply a GL context" rule here
+      // rather than pushing it onto the embedder. webgl-node is already a
+      // dependency, so this host can always make an offscreen context; a
+      // caller-supplied glBackend still wins (that is how you render into
+      // your own window). Only reached for carts that actually import `gl`,
+      // so a 2D cart never causes a context to exist.
       //
-      // Stubbing here looks harmless because a hybrid cart can still fill its
-      // 2D framebuffer, but a GL-rendering cart draws into a context that
-      // discards everything: load() reports success and the player sees a
-      // black screen with no error anywhere. That is the worst failure mode
-      // available, and it is indistinguishable from a broken cart.
-      //
-      // There is deliberately no opt-out. GL is part of the host contract:
-      // a host that cannot supply a context cannot run GL carts, and a cart
-      // author must be able to rely on that rather than discover per-host
-      // stubbing at runtime. Most carts never import `gl` and never reach here.
-      throw new Error(
-        'this cart imports the `gl` module but no glBackend was provided. ' +
-        'Pass glBackend: a WebGL2 context, or a factory returning one. ' +
-        'GL is part of the wasmcart host contract — a host that cannot supply ' +
-        'a context cannot run GL carts, and stubbing them renders black.');
+      // NOTE: this.info is not populated until wc_get_info runs, which is
+      // after this point — use the same preferred* hints the cart is handed.
+      const w = options.preferredWidth || 640;
+      const h = options.preferredHeight || 480;
+      let made = null;
+      try {
+        const { createWebGL2Context } = await import('webgl-node');
+        made = createWebGL2Context(w, h)?.gl || null;
+      } catch { made = null; }
+
+      if (!made) {
+        // GL genuinely unavailable (no driver, headless box with no EGL, an
+        // install that could not build the native addon). Stubbing would
+        // render black while reporting success, so fail loudly and name the
+        // actual cause rather than blaming the caller for not passing a
+        // context they should not have had to pass.
+        throw new Error(
+          'this cart imports the `gl` module but a WebGL2 context could not be ' +
+          'created. wasmcart requires GL; check that webgl-node installed and ' +
+          'that a GL driver is available, or pass glBackend to supply your own.');
+      }
+      this._ownedGl = made;
+      options = { ...options, glBackend: made };
+      this.usesGL = true;
     }
     // If glBackend IS provided, keep usesGL = true even with fbPtr (hybrid cart)
 
@@ -1098,6 +1111,13 @@ export class CartHost {
    * Clean up resources (close file descriptor if open, terminate threads)
    */
   destroy() {
+    // Release a GL context this host created itself (a caller-supplied
+    // glBackend belongs to the caller and is left alone).
+    if (this._ownedGl) {
+      try { this._ownedGl.getExtension('WEBGL_lose_context')?.loseContext(); } catch {}
+      this._ownedGl = null;
+    }
+
     // Terminate all worker threads
     for (const [tid, worker] of this._workers) {
       worker.terminate();

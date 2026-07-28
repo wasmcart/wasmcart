@@ -201,23 +201,15 @@ async function main() {
   const loadOpts = opt.seed !== null ? { deterministic: { seed: opt.seed } } : {};
 
   // GL carts render fine here. Rendering on the GPU and displaying as ANSI
-  // are orthogonal: give the cart an OFFSCREEN context, read the result back,
-  // and every path below sees the same XRGB framebuffer a 2D cart produces.
-  // The factory runs only if the cart's imports say it is a GL cart, so a 2D
-  // cart never pays for webgl-node being installed (or missing).
-  let glCtx = null;
-  loadOpts.glBackend = async () => {
-    const { createWebGL2Context } = await import('webgl-node');
-    glCtx = createWebGL2Context(opt.width || 1280, opt.height || 720).gl;
-    return glCtx;
-  };
-
+  // are orthogonal: the frame is read back and every path below sees the same
+  // XRGB framebuffer a 2D cart produces. CartHost supplies the context itself
+  // for a cart that imports `gl`, so there is nothing to pass, and a 2D cart
+  // never causes one to exist.
   try {
     await host.load(cartPath, loadOpts);
   } catch (e) {
-    if (/webgl-node|Cannot find module/.test(String(e.message))) {
-      console.error('wasmcart-play: this cart needs a GL context and webgl-node is not available.');
-      console.error('  install it, or run a CPU build of the cart.');
+    if (/WebGL2 context could not be created/.test(String(e.message))) {
+      console.error(`wasmcart-play: ${e.message}`);
       process.exit(1);
     }
     throw e;
@@ -226,6 +218,7 @@ async function main() {
   // GL frames live in the GPU's framebuffer, so read them back into the same
   // XRGB word layout CartHost hands out for a 2D cart. readPixels' origin is
   // bottom-left while the cart's is top-left, hence the row flip.
+  const glCtx = host._ownedGl;
   let glReadback = null;
   if (host.usesGL && glCtx) {
     const gi = host.getInfo();

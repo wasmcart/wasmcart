@@ -292,7 +292,9 @@ cart.destroy();
 
 ```js
 await cart.load('game.wasc', {
-  glBackend: gl,                // WebGL2 context OR a factory returning one (see GL Carts)
+  glBackend: gl,                // OPTIONAL override: render into THIS context
+                                // (a WebGL2 context, or a factory returning one)
+                                // instead of the one the host makes itself
   preferredWidth: 800,          // hint for resolution negotiation
   preferredHeight: 600,
   saveData: existingSaveBuffer,  // restore previous save
@@ -331,13 +333,11 @@ A GL cart never runs on stubs. If a context cannot be obtained, the load is a
 **load error** — never a silent success that renders black:
 
 ```js
-// Browser: no glBackend needed, CartHostWeb makes its own WebGL2 context.
+// Either host: no glBackend needed, the host makes its own context.
 await cart.load('gl_game.wasc', {});
 
-// Node without a GL provider wired up:
-// Error: this cart imports the `gl` module but no glBackend was provided.
-
-// Any host where WebGL2 itself is unavailable:
+// Where GL genuinely cannot be obtained (no driver, headless box with no
+// EGL, ancient browser, blocklisted driver):
 // Error: ... a WebGL2 context could not be created.
 ```
 
@@ -352,11 +352,11 @@ imports `gl`, any conformant host can run it. Most carts never import `gl` and
 never create a context — the factory form below exists precisely so a 2D-only
 session pays nothing.
 
-In the **browser**, you do not have to pass anything: `CartHostWeb` creates its
-own WebGL2 context (offscreen where available) when a cart needs one. Pass
-`glBackend` to render into your own on-screen canvas instead. On **Node**, the
-context comes from `native-gles`, a regular dependency — `retroemu` and
-`romdevtools` wire it up for you.
+**You do not have to pass anything on either host.** `CartHostWeb` creates its
+own WebGL2 context (offscreen where available); `CartHost` creates one through
+`webgl-node`, a regular dependency. `glBackend` is an **override** meaning
+"render into THIS context instead of one you make" — the common case being an
+on-screen canvas or an SDL window — not the host's only source of GL.
 
 ## CLI Tools
 
@@ -492,6 +492,8 @@ are separate repos, all running the *same* carts. Full list:
 | [**wasmcart**](https://github.com/wasmcart/wasmcart) (this repo) | Spec, JS reference hosts (`CartHost`, `CartHostWeb`), the `wasmcart` CLI + packer |
 | [**wasmcart-sdl2**](https://github.com/wasmcart/wasmcart-sdl2) | SDL2 backend + `stb_*` helpers + the full porting guide - for porting existing C/SDL games |
 | [**wasmcart-mruby**](https://github.com/wasmcart/wasmcart-mruby) | write games in Ruby (mruby runtime, DragonRuby-style API) - prebuilt engine, games ship only Ruby |
+| [**wasmcart-lua**](https://github.com/wasmcart/wasmcart-lua) | write games in Lua (Lua 5.4, LÖVE-style API, batched GL2D renderer) - prebuilt engine, games ship only Lua |
+| **wasmcart-pygame** | run pygame games as carts - write Python, pack it, run it anywhere *(not yet published)* |
 | [**wasmcart-jsgame**](https://github.com/wasmcart/wasmcart-jsgame) | write games in JavaScript - sandboxed QuickJS runtime with Canvas 2D, WebGL2 and Web Audio |
 | [**wasmcart-libretro**](https://github.com/wasmcart/wasmcart-libretro) | libretro core - run carts in RetroArch / RetroDECK |
 | [**wasmcart-native**](https://github.com/wasmcart/wasmcart-native) | native host built on libnode - a standalone player with no Node install |
