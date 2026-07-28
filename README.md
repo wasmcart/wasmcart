@@ -54,7 +54,7 @@ npm install wasmcart
 npx wasmcart game.wasc              # SDL window + audio + gamepad (the default)
 npx wasmcart game.wasc              # GL carts too - auto-detected, OpenGL window via webgl-node
 npx wasmcart my-cart-dir/           # dev mode: manifest.json + cart.wasm + assets, straight off disk
-npx wasmcart game.wasc --term       # ANSI terminal player (SSH-friendly fallback)
+npx wasmcart game.wasc --term       # ANSI terminal player (GL carts too, via offscreen readback)
 npx wasmcart game.wasc --frames 300 --shot out.png --wav out.wav   # headless: step, dump, exit
 npx wasmcart game.wasc --seed 7 --frames 60 --shot a.png           # deterministic replay run
 npx wasmcart pack --wasm cart.wasm -o game.wasc                    # packing, same front door
@@ -327,9 +327,24 @@ await cart.load('game.wasc', {
 await cart.load('gl_game.wasm', { glBackend: glContext });
 ```
 
-A factory that returns nothing for a GL cart is a **load error** — never a
-silent stub. Without any `glBackend` at all, GL imports are stubbed and only
-the cart's 2D framebuffer path (if it has one) renders.
+A GL cart with no usable context is a **load error** — never a silent stub.
+That covers both a factory that returns nothing and no `glBackend` at all:
+
+```js
+await cart.load('gl_game.wasc', {});
+// Error: this cart imports the `gl` module but no glBackend was provided.
+```
+
+Stubbing looks harmless because a hybrid cart can still fill its 2D
+framebuffer, but for a cart that *renders* through GL every call becomes a
+no-op, `load()` reports success, and the player sees a black screen with no
+error anywhere. If you specifically want that — a hybrid cart whose 2D output
+is enough — opt in explicitly:
+
+```js
+await cart.load('hybrid.wasc', { allowMissingGL: true });
+// GL imports stubbed; usesGL stays true (gpu_api is authoritative)
+```
 
 ## CLI Tools
 
@@ -345,6 +360,19 @@ npx wasmcart-pack --wasm cart.wasm --assets assets/ -o game.wasc --name "My Game
 npx wasmcart-pack --wasm cart.wasm -o game.wasc --pointer --keyboard
 npx wasmcart-pack --wasm cart.wasm -o game.wasc --players 4 --ws api.mygame.com --data-channel
 ```
+
+Or pack a **dev directory** that already has its own `manifest.json` — the
+same layout `npx wasmcart <dir>` runs — keeping that manifest verbatim:
+
+```bash
+npx wasmcart-pack --source my-game/ -o game.wasc
+```
+
+The flag form above *generates* a manifest, so it cannot express a cart whose
+manifest already says something specific (a custom `assets` root, a field
+with no flag). `--source` resolves the wasm through the manifest's own
+`entry`, packs every other file at its original path, and rewrites only
+`entry` to the archive's `cart.wasm`.
 
 ## Writing Carts
 
