@@ -194,9 +194,11 @@ The host and cart negotiate resolution through a two-step process:
 
 1. **Host → Cart**: Before calling `wc_init()`, the host writes its preferred resolution to `wc_host_info_t.preferred_width` and `preferred_height`. This is a *suggestion* - the host's display capability, not a requirement. A value of 0 means "no preference."
 
-2. **Cart → Host**: During `wc_init()`, the cart reads the host's preference and decides its actual rendering resolution. It may use the preference directly, scale it, clamp it, or ignore it entirely. The cart writes its chosen resolution to `wc_info_t.width` and `wc_info_t.height`.
+2. **Cart → Host**: the cart reads the host's preference and decides its actual rendering resolution, writing it to `wc_info_t.width` / `wc_info_t.height`. It may use the preference directly, scale it, clamp it, or ignore it entirely.
 
-After `wc_init()` returns, the host reads the cart's actual width/height. These dimensions define:
+The host reads those dimensions from `wc_get_info()`, which it calls **before** `wc_init()` (it needs `save_size` to stage save data first). A cart whose resolution depends on work done in `wc_init` — an interpreted cart whose script calls something like `set_mode()`, say — must therefore report a sensible size from `wc_get_info` up front, or declare `width`/`height` in its manifest; a host cannot wait for `wc_init` to size a window or a GL context that has to exist before the cart is even instantiated.
+
+These dimensions define:
 - **2D carts**: the framebuffer size in pixels (ARGB8888, `width × height × 4` bytes)
 - **GL carts**: the viewport/render target dimensions for GL calls
 
@@ -243,6 +245,8 @@ The `manifest.json` inside a `.wasc` archive describes the cart:
   "version": "1.0.0",
   "abi": 3,
   "entry": "cart.wasm",
+  "width": 640,
+  "height": 480,
   "players": 2,
   "pointer": true,
   "keyboard": true,
@@ -254,6 +258,15 @@ The `manifest.json` inside a `.wasc` archive describes the cart:
 ```
 
 All fields except `name`, `abi`, and `entry` are optional. `pointer`, `keyboard`, and `net` are ABI v3 features - gamepad input is always available regardless.
+
+`width` / `height` declare the cart's resolution *ahead of time*. `wc_get_info()`
+remains authoritative — this does not override it — but a host has to size a
+window, and a GL context, **before** the cart is instantiated, and at that
+point nothing has run yet. Without a declaration the host guesses, and a
+wrong guess strands a GL cart's frame in a corner of an undersized drawable.
+Declare it whenever the cart's resolution is not the host's default, and
+always for a cart whose script picks the resolution at init time.
+`wasmcart pack --width W --height H` writes these fields.
 
 ### ABI v3: Networking & Extended Input
 

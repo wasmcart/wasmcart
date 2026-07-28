@@ -26,6 +26,13 @@ so a cart-sized readback cropped the frame. It now takes the manifest's
 the frame is letterboxed into whatever the drawable turns out to be, so the
 cart's aspect ratio holds on a screen of any shape.
 
+Docs: "Resolution Negotiation" said the cart picks its resolution *during*
+`wc_init()`. The host actually reads it from `wc_get_info()`, which it calls
+**before** `wc_init()` — that inversion is exactly what makes this a hard
+problem for carts whose script chooses the resolution at init time, so the
+section now says so and points at the manifest as the way out. The manifest's
+`width`/`height` fields, added in 0.10.0, are documented for the first time.
+
 ## 0.10.0
 
 Resizable windows with aspect-preserving letterboxing, and a GL context sized
