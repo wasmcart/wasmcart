@@ -17,6 +17,7 @@
  */
 
 import { BUTTON } from '../src/abi.js';
+import { fitRect } from '../src/letterbox.js';
 import { readFileSync, writeFileSync, statSync } from 'node:fs';
 
 function savPathFor(cartPath) {
@@ -51,6 +52,10 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
   const analog = { leftX: 0, leftY: 0, rightX: 0, rightY: 0, leftTrigger: 0, rightTrigger: 0 };
   let window = null;
   let swapBuffers = null;
+  // GL letterboxing: the viewport is only recomputed when the drawable size
+  // actually changes, so the steady-state frame costs nothing.
+  let glForResize = null;
+  let glLastW = -1, glLastH = -1;
 
   const loadOpts = {};
   if (opt.seed !== null) loadOpts.deterministic = { seed: opt.seed };
@@ -66,15 +71,22 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
   // must NOT get an opengl window (separate-GL-context fights, see playtest).
   const makeGlWindow = async () => {
     const { createWebGL2Context } = await import('webgl-node');
+    // Size from the cart's own declaration, not a fixed 720p. The cart draws
+    // at its declared resolution and wc_gl_blit's viewport is the context, so
+    // a mismatch here puts the frame in a corner rather than scaling it.
+    const m = host.getManifest() || {};
+    const w = opt.width || m.width || 1280;
+    const h = opt.height || m.height || 720;
     window = sdl.video.createWindow({
-      title: 'wasmcart', width: opt.width || 1280, height: opt.height || 720,
-      resizable: false, opengl: true,
+      title: 'wasmcart', width: w, height: h,
+      resizable: opt.resizable !== false, opengl: true,
     });
     const nativeGL = window.native?.gl;
     if (!nativeGL) throw new Error('no native GL window handle from SDL (try a different video driver)');
     const glResult = createWebGL2Context(window.pixelWidth, window.pixelHeight, { nativeWindow: nativeGL });
     swapBuffers = glResult.swapBuffers;
     glResult.setSwapInterval?.(0);
+    glForResize = glResult.gl;
     return glResult.gl;
   };
   // --gl forces the GL window up front (hybrid carts, debugging); default is lazy.
@@ -87,7 +99,8 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
   if (!window) {
     const zoom = opt.zoom || (info.height <= 400 ? 2 : 1);
     window = sdl.video.createWindow({
-      title: 'wasmcart', width: info.width * zoom, height: info.height * zoom, resizable: true,
+      title: 'wasmcart', width: info.width * zoom, height: info.height * zoom,
+      resizable: opt.resizable !== false,
     });
   }
 
@@ -145,11 +158,43 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
     }
   };
 
+  /*
+   * Present the frame scaled into the current window.
+   *
+   * The window opens at the cart's declared size and is resizable; the frame
+   * is letterboxed so the cart's aspect ratio survives the resize. A cart that
+   * declares 480x600 is making a choice about SHAPE, so the leftover area goes
+   * black rather than the frame being stretched to fit. --stretch opts out,
+   * --no-resize pins the window to the cart's size (making this a no-op).
+   */
   const present = async () => {
-    if (swapBuffers) { swapBuffers(); return; }
+    if (swapBuffers) {
+      // The cart rendered into a context sized to ITS resolution, and
+      // wc_gl_blit's viewport is the context, so scaling to a resized window
+      // is a viewport concern: shrink the viewport to the letterboxed rect and
+      // clear the bars around it. Recomputed only when the drawable size
+      // actually changes, so a steady-state frame costs nothing extra.
+      if (glForResize && !opt.stretch) {
+        const gl = glForResize;
+        const pw = window.pixelWidth, ph = window.pixelHeight;
+        if (pw !== glLastW || ph !== glLastH) {
+          glLastW = pw; glLastH = ph;
+          const r = fitRect(info.width, info.height, pw, ph);
+          gl.viewport(r.x, r.y, r.width, r.height);
+          gl.disable(gl.SCISSOR_TEST);
+          gl.clearColor(0, 0, 0, 1);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+        }
+      }
+      swapBuffers();
+      return;
+    }
     if (!frame) return;
+    const opts = opt.stretch ? undefined
+      : { dstRect: fitRect(frame.width, frame.height, window.width, window.height) };
     await window.render(frame.width, frame.height, frame.width * 4, 'bgra32',
-      Buffer.from(frame.framebuffer.buffer, frame.framebuffer.byteOffset, frame.framebuffer.byteLength));
+      Buffer.from(frame.framebuffer.buffer, frame.framebuffer.byteOffset, frame.framebuffer.byteLength),
+      opts);
   };
 
   let closing = false;

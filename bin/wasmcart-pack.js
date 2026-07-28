@@ -26,6 +26,8 @@ const args = process.argv.slice(2);
 let wasmPath = null;
 let assetsDir = null;
 let sourceDir = null;
+let cartWidth = 0;
+let cartHeight = 0;
 let outputPath = null;
 let gameName = null;
 let gameVersion = '1.0.0';
@@ -45,6 +47,12 @@ for (let i = 0; i < args.length; i++) {
       break;
     case '--source':
       sourceDir = resolve(args[++i]);
+      break;
+    case '--width':
+      cartWidth = parseInt(args[++i], 10) || 0;
+      break;
+    case '--height':
+      cartHeight = parseInt(args[++i], 10) || 0;
       break;
     case '--output':
     case '-o':
@@ -200,6 +208,14 @@ if (!sourceManifest && assetsDir) {
   manifest.assets = 'assets/';
 }
 
+// A cart's own resolution, declared up front. A host sizes its window -- and
+// a self-provisioned GL context -- before the cart runs, so without this a
+// 1600x900 game gets a 640x480 context and renders into a corner of it.
+if (cartWidth > 0 && cartHeight > 0) {
+  manifest.width = cartWidth;
+  manifest.height = cartHeight;
+}
+
 // Collect asset files
 function walkDir(dir, base) {
   const files = [];
@@ -306,6 +322,8 @@ function printUsage() {
   console.log(`  --output, -o       Output .wasc file path (default: <name>.wasc)`);
   console.log(`  --name <name>      Game name for manifest (default: wasm filename)`);
   console.log(`  --version <ver>    Game version for manifest (default: 1.0.0)`);
+  console.log(`  --width <px>       Cart resolution width (hosts size their window to it)`);
+  console.log(`  --height <px>      Cart resolution height`);
   console.log(`  --players <n>      Number of local players (1-4, default: 1)`);
   console.log(`  --ws <domain>      Allow WebSocket to domain (repeatable)`);
   console.log(`  --data-channel     Enable data channel (peer-to-peer)`);

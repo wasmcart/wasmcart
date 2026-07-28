@@ -399,8 +399,14 @@ export class CartHost {
       //
       // NOTE: this.info is not populated until wc_get_info runs, which is
       // after this point — use the same preferred* hints the cart is handed.
-      const w = options.preferredWidth || 640;
-      const h = options.preferredHeight || 480;
+      // Size from the cart's own declaration where we have one. wc_get_info
+      // has not run yet -- it needs the instance, which needs these imports
+      // -- so the manifest is the only forward-looking source. A cart that
+      // declares 1600x900 and gets a 640x480 context renders into a corner
+      // of it, since wc_gl_blit's viewport is the context, not the frame.
+      const m = this._manifest || {};
+      const w = m.width || options.preferredWidth || 640;
+      const h = m.height || options.preferredHeight || 480;
       let made = null;
       try {
         const { createWebGL2Context } = await import('webgl-node');

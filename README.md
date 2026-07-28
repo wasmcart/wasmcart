@@ -57,8 +57,30 @@ npx wasmcart my-cart-dir/           # dev mode: manifest.json + cart.wasm + asse
 npx wasmcart game.wasc --term       # ANSI terminal player (GL carts too, via offscreen readback)
 npx wasmcart game.wasc --frames 300 --shot out.png --wav out.wav   # headless: step, dump, exit
 npx wasmcart game.wasc --seed 7 --frames 60 --shot a.png           # deterministic replay run
+npx wasmcart game.wasc --no-resize  # pin the window to the cart's declared size
+npx wasmcart game.wasc --stretch    # fill the window, distorting the aspect ratio
 npx wasmcart pack --wasm cart.wasm -o game.wasc                    # packing, same front door
 ```
+
+### Window sizing
+
+The window opens at the size the **cart** declares — that is the cart's call,
+not the player's — and is **resizable** from there. As you resize, the frame is
+scaled up to the largest rect that still fits and **letterboxed**: black bars
+fill whatever is left over, so a cart's aspect ratio survives any window shape.
+A cart that declares 480x600 stays portrait in a wide window instead of being
+stretched into one.
+
+| flag | effect |
+| --- | --- |
+| *(default)* | window opens at the cart's size, resizable, letterboxed |
+| `--zoom n` | open at n× the cart's size (still resizable) |
+| `--no-resize` | pin the window to the cart's size; no bars, no scaling |
+| `--stretch` | scale to fill the window, distorting the aspect ratio |
+
+Letterboxing applies to both rendering paths: 2D carts are scaled on blit, and
+GL carts get a viewport fitted inside the drawable with the surrounding area
+cleared to black.
 
 The windowed player runs on the org's own stack —
 [`@kmamal/sdl`](https://github.com/kmamal/node-sdl) (window, keyboard, audio

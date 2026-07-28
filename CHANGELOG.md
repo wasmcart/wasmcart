@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.10.0
+
+Resizable windows with aspect-preserving letterboxing, and a GL context sized
+from the cart rather than from a guess.
+
+The window still opens at the size the cart declares, which stays the cart's
+call. What is new is that it can be resized from there: the frame scales up to
+the largest rect that fits and the leftover area is filled with black bars, so
+a cart's aspect ratio survives any window shape. A cart declaring 480x600 stays
+portrait in a wide window instead of stretching into one. This applies to both
+paths — 2D carts scale on blit via SDL's `dstRect`, GL carts get a viewport
+fitted inside the drawable with the surround cleared.
+
+Two new flags opt out: `--no-resize` pins the window to the cart's size, and
+`--stretch` fills the window and lets the frame distort.
+
+Also fixes a real rendering bug for GL carts that declare a resolution larger
+than the old fixed default. The GL window was hardcoded to 1280x720 and the
+self-provisioned context to 640x480, but `wc_gl_blit`'s viewport is the
+*context*, not the frame — so a cart declaring 1600x900 rendered into a corner
+of a too-small context. Both now size from the manifest's `width`/`height`.
+`wasmcart-pack` gained `--width`/`--height` to record them, since `wc_get_info`
+runs too late to size a window that must already exist.
+
+New: `fitRect()` in `src/letterbox.js`, covered by `test/letterbox.test.js`.
+
 ## 0.9.1
 
 Adds `getGlContext()` — the live WebGL2 context a cart is rendering through,
