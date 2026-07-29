@@ -84,6 +84,14 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      # Needed here too, not just in `test`: package.json's prepublishOnly hook
+      # runs the full suite, so `npm publish` fails on a runner without GL even
+      # though the test job already passed on one that had it.
+      - name: Install headless GL (Mesa software rasterizer)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgles2 libgl1-mesa-dri libglvnd0
       - run: npm ci
       - run: npm publish --provenance --access public
         env:
