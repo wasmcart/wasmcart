@@ -55,6 +55,21 @@ jobs:
           "
       - run: npm test
 
+      # The browser suite is the only thing that exercises CartHostWeb in the
+      # environment it actually ships into. Left out of CI it would rot, and it
+      # has already caught something the node suite structurally cannot: a bare
+      # "fflate" specifier that no browser can resolve.
+      #
+      # Chromium only -- this tests OUR host against a real browser engine, not
+      # cross-browser compatibility, so the other two would cost minutes to tell
+      # us the same thing. `--with-deps` because a bare runner lacks the shared
+      # libraries Chromium needs.
+      - name: Install Chromium for the browser suite
+        run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+        env:
+          REQUIRE_BROWSER: "1"   # a skip must not read as a pass in CI
+
   pack-guard:
     name: npm pack (files field)
     runs-on: ubuntu-latest

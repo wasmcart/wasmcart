@@ -31,10 +31,18 @@ const ROOT = join(HERE, '..');
 const WS_PORT = 8794;
 const HTTP_PORT = 8795;
 
+// Skipping keeps a machine without browsers from going red, but in CI a skip
+// is indistinguishable from a pass -- which is exactly how a suite rots. CI
+// sets REQUIRE_BROWSER=1 so a missing Playwright is a failure there.
+const required = process.env.REQUIRE_BROWSER === '1';
 let chromium;
 try {
   ({ chromium } = await import('playwright'));
-} catch {
+} catch (e) {
+  if (required) {
+    console.error('browser test REQUIRED but playwright is not installed:', e.message);
+    process.exit(1);
+  }
   console.log('browser test SKIPPED: playwright not installed');
   process.exit(0);
 }
