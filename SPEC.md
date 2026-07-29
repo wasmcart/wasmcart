@@ -204,6 +204,30 @@ read by the cart ONCE at init — never per frame):
 
 ---
 
+## Resolution changes
+
+A cart MAY change its resolution at runtime by writing new `width`/`height` into
+its `wc_info_t`. The host re-reads both after every `wc_render()` and adopts the
+new size for that frame's returned framebuffer.
+
+**The cart MUST grow its framebuffer before enlarging its resolution.** These
+fields live in cart memory, so they are untrusted input: the host MUST verify
+that `fb_ptr + width * height * 4` fits within the cart's memory, and MUST
+reject a change it cannot back, keeping the previous size.
+
+Rejecting rather than clamping is normative, and the reason is that the failure
+is otherwise invisible. Reading the framebuffer with a clamped view succeeds and
+returns a short buffer, so a host that skips this check reports a resolution
+whose pixels do not exist, and every consumer that indexes by the reported width
+reads past the real data. A host MUST guarantee that the frame it reports and
+the bytes it returns agree.
+
+The size computation MUST NOT overflow: `width * height * 4` can exceed 2^32
+(65536x65536 is 17GB, which wraps to 0 in 32-bit math), so a host computing it
+in 32-bit integers would turn an absurd request into a small, plausible one.
+
+A host SHOULD warn on rejection, and SHOULD do so once rather than per frame.
+
 ## Debug state
 
 **Opt-in, default OFF.** A cart MAY expose named game state to a host or
@@ -730,6 +754,16 @@ responsibility, through a fixed shared-memory region:
 - The cart never chooses *where* or *whether* data is stored; it only reads and
   writes its own in-memory save blob. This keeps saving safe (no filesystem write
   authority) and portable (the same cart saves correctly on every host).
+
+Because the host owns persistence, the host also owns **durability**. A host that
+persists saves SHOULD do so on every ordinary exit path, not only a graceful one:
+Ctrl-C (`SIGINT`) and `kill` (`SIGTERM`) are normal ways to stop a game, and a
+save that survives only a clean shutdown will lose player progress in practice.
+
+A host writing an all-zero save region SHOULD distinguish two cases that look
+identical byte-for-byte: a cart that has *never* saved (skip the write, so a
+`.sav` is not created merely by running the cart) versus a player who *cleared*
+their data (write it, or the previous save silently resurrects on next load).
 
 ### Networking
 

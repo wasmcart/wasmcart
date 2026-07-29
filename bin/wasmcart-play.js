@@ -28,6 +28,7 @@
 
 import { CartHost } from '../src/CartHost.js';
 import { BUTTON } from '../src/abi.js';
+import { savPathFor, loadSave, makeSaver } from '../src/save.js';
 import { writeFileSync } from 'fs';
 import { deflateSync } from 'zlib';
 
@@ -209,6 +210,13 @@ async function main() {
   const host = new CartHost();
   const loadOpts = opt.seed !== null ? { deterministic: { seed: opt.seed } } : {};
 
+  // The terminal player used to neither load nor save, so a cart's progress was
+  // invisible here in both directions and playing in the terminal silently
+  // discarded it. Same .sav path as the windowed player, so a cart resumes
+  // wherever it was last played.
+  const savPath = savPathFor(cartPath);
+  loadOpts.saveData = loadSave(savPath);
+
   // GL carts render fine here. Rendering on the GPU and displaying as ANSI
   // are orthogonal: the frame is read back and every path below sees the same
   // XRGB framebuffer a 2D cart produces. CartHost supplies the context itself
@@ -313,12 +321,21 @@ async function main() {
     console.error('wasmcart-play: not a TTY — use --frames N (with --shot/--wav) for headless runs.');
     process.exit(1);
   }
+  const persistSave = makeSaver(host, savPath);
+  let cleaned = false;
   const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    persistSave(); // before destroy() -- getSaveData reads the cart's memory
     process.stdout.write('\x1b[?25h\x1b[0m\x1b[2J\x1b[H'); // cursor back, clear
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
     host.destroy();
   };
   process.on('SIGINT', () => { cleanup(); process.exit(0); });
+  process.on('SIGTERM', () => { cleanup(); process.exit(0); });
+  // An uncaught throw still gets one attempt at the save. Losing progress on
+  // top of a crash is strictly worse than trying and failing.
+  process.on('uncaughtException', (err) => { console.error(err); cleanup(); process.exit(1); });
 
   process.stdin.setRawMode(true);
   process.stdin.resume();

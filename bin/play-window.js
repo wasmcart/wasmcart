@@ -18,17 +18,7 @@
 
 import { BUTTON } from '../src/abi.js';
 import { fitRect } from '../src/letterbox.js';
-import { readFileSync, writeFileSync, statSync } from 'node:fs';
-
-function savPathFor(cartPath) {
-  try {
-    return statSync(cartPath).isDirectory()
-      ? cartPath.replace(/\/+$/, '') + '.sav'
-      : cartPath + '.sav';
-  } catch {
-    return cartPath + '.sav';
-  }
-}
+import { savPathFor, loadSave, makeSaver } from '../src/save.js';
 
 const KEYMAP = {
   up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT',
@@ -61,7 +51,7 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
   if (opt.seed !== null) loadOpts.deterministic = { seed: opt.seed };
   // cart SRAM: a .sav next to the cart, loaded before wc_init, written on quit
   const savPath = savPathFor(cartPath);
-  try { loadOpts.saveData = new Uint8Array(readFileSync(savPath)); } catch { /* first run */ }
+  loadOpts.saveData = loadSave(savPath);
 
   // GL is AUTO-DETECTED: this factory is handed to CartHost, which invokes it
   // only if the cart's wasm actually imports from the "gl" module - the
@@ -231,19 +221,32 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
       opts);
   };
 
+  // Split out of quit() so every exit path can reach it: a save that only
+  // survives a graceful window close is not a save.
+  const persistSave = makeSaver(host, savPath);
+
   let closing = false;
   function quit() {
     if (closing) return;
     closing = true;
-    try {
-      const sav = host.getSaveData();
-      if (sav && sav.some((b) => b !== 0)) writeFileSync(savPath, sav);
-    } catch { /* save is best-effort */ }
+    persistSave();
     try { audioDev?.close(); } catch { /* already gone */ }
     try { window?.destroy(); } catch { /* already gone */ }
     host.destroy();
     process.exit(0);
   }
+
+  // Ctrl-C and `kill` are ordinary ways to stop a game, not crashes, so they
+  // must not cost the player their progress. quit() is idempotent via `closing`.
+  process.on('SIGINT', quit);
+  process.on('SIGTERM', quit);
+  // Last-ditch: an uncaught throw still gets one attempt at the save before the
+  // process dies. Best-effort by definition -- the host may be mid-corruption --
+  // but losing a save on top of a crash is strictly worse than trying.
+  process.on('uncaughtException', (err) => {
+    console.error(err);
+    quit();
+  });
 
   // pacing: audio-paced when the cart has an audio ring, timer otherwise
   const hasAudio = !!(audioDev && info.audioCap > 0);

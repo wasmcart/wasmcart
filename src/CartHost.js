@@ -899,8 +899,7 @@ export class CartHost {
     const newW = this._u32[base + 1];
     const newH = this._u32[base + 2];
     if (newW > 0 && newH > 0 && (newW !== this.info.width || newH !== this.info.height)) {
-      this.info.width = newW;
-      this.info.height = newH;
+      this._applyResize(newW, newH);
     }
 
     this.frameCount++;
@@ -2033,6 +2032,45 @@ export class CartHost {
     this._f64[f64Base + 1] = deltaMs;
     // u32 frame at byte offset ptr + 16
     this._u32[(ptr + 16) >> 2] = frame;
+  }
+
+  /**
+   * Adopt a cart-requested resolution, but only if the cart's framebuffer
+   * actually backs it.
+   *
+   * The cart writes width/height into its own memory, so the numbers are
+   * untrusted input: they may be larger than the buffer at fb_ptr, or large
+   * enough to overflow when multiplied. Taking them on faith is worse than it
+   * looks -- subarray() silently CLAMPS to the end of memory, so the host would
+   * report e.g. 4096x4096 while handing back a quarter of the pixels, and any
+   * consumer indexing by the reported width reads far past the real data.
+   *
+   * So the reported size and the returned bytes must agree by construction:
+   * either the memory backs the new size and we take it, or we keep the old
+   * one. Rejecting is the safe direction -- the cart keeps rendering at a size
+   * that works rather than the host describing a frame that does not exist.
+   */
+  _applyResize(newW, newH) {
+    // Multiply in floats first: w*h*4 can exceed 2^32 and wrap in int math,
+    // which would turn an absurd size into a small, plausible-looking one.
+    const needed = newW * newH * 4;
+    const available = this._u8.length - this.info.fbPtr;
+    if (!Number.isFinite(needed) || needed > available) {
+      if (!this._resizeRejected) {
+        // Warn once: a cart doing this every frame must not flood the log.
+        this._resizeRejected = true;
+        console.warn(
+          `wasmcart: cart requested ${newW}x${newH} (${needed} bytes) but its ` +
+          `framebuffer only has ${available} bytes at fb_ptr; keeping ` +
+          `${this.info.width}x${this.info.height}. The cart must grow its ` +
+          `framebuffer before changing resolution.`
+        );
+      }
+      return false;
+    }
+    this.info.width = newW;
+    this.info.height = newH;
+    return true;
   }
 
   _writePads(pads) {

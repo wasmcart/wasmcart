@@ -634,8 +634,7 @@ export class CartHostWeb {
     const newW = this._u32[base + 1];
     const newH = this._u32[base + 2];
     if (newW > 0 && newH > 0 && (newW !== this.info.width || newH !== this.info.height)) {
-      this.info.width = newW;
-      this.info.height = newH;
+      this._applyResize(newW, newH);
     }
 
     this.frameCount++;
@@ -1419,6 +1418,35 @@ export class CartHostWeb {
       this._u8[offset + 12] = 1; // connected
       this._u8[offset + 13] = 0; // padding
     }
+  }
+
+  /**
+   * Adopt a cart-requested resolution, but only if the cart's framebuffer
+   * actually backs it. See the node host for the full rationale: the cart
+   * writes these numbers into its own memory, so they are untrusted, and
+   * subarray() silently CLAMPS rather than throwing -- which would leave the
+   * host reporting a resolution whose pixels do not exist.
+   */
+  _applyResize(newW, newH) {
+    // Float math first: w*h*4 can exceed 2^32 and wrap in int math, turning an
+    // absurd size into a small, plausible-looking one.
+    const needed = newW * newH * 4;
+    const available = this._u8.length - this.info.fbPtr;
+    if (!Number.isFinite(needed) || needed > available) {
+      if (!this._resizeRejected) {
+        this._resizeRejected = true;
+        console.warn(
+          `wasmcart: cart requested ${newW}x${newH} (${needed} bytes) but its ` +
+          `framebuffer only has ${available} bytes at fb_ptr; keeping ` +
+          `${this.info.width}x${this.info.height}. The cart must grow its ` +
+          `framebuffer before changing resolution.`
+        );
+      }
+      return false;
+    }
+    this.info.width = newW;
+    this.info.height = newH;
+    return true;
   }
 
   _padName(padId, bufPtr, bufLen) {

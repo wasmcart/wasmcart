@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.12.1
+
+Two correctness fixes: saves that only survived a graceful exit, and a resize
+path that reported pixels it did not return.
+
+**Save durability.** Saves were persisted only from the windowed player's
+`quit()` (window close, Esc/Q), so Ctrl-C -- an ordinary way to stop a game --
+discarded the player's progress. The terminal player was worse: it neither
+loaded nor saved, so progress was invisible there in both directions and playing
+in the terminal silently threw it away. Both players now load an existing save on
+start and persist on `SIGINT`, `SIGTERM`, and `uncaughtException` as well as
+normal exit. Path handling moved to `src/save.js` so the two players cannot
+disagree about where a cart's `.sav` lives.
+
+The all-zero check that guards the first write also had a data-loss bug: it
+treated "never saved" and "player cleared their data" as the same state, so
+clearing your data and quitting silently resurrected the old save. It is now a
+first-write guard only -- once a `.sav` exists, an all-zero region overwrites it.
+
+**Resize validation.** A cart can change resolution by writing `width`/`height`
+into its `wc_info_t`, and the host adopted whatever it found. Those fields live
+in cart memory, so they are untrusted: a cart poking 4096x4096 was *reported* as
+4096x4096 while `subarray()` silently clamped the framebuffer to the end of
+memory, returning 17,169,312 of the 67,108,864 bytes implied. Nothing threw --
+the host simply described a frame whose pixels did not exist, and any consumer
+indexing by the reported width read ~50MB past the real data.
+
+The host now verifies that `fb_ptr + w*h*4` fits in the cart's memory and keeps
+the previous resolution otherwise, so the reported size and the returned bytes
+agree by construction. The check computes in floats because `w*h*4` can exceed
+2^32 (65536x65536 is 17GB, which wraps to 0 in 32-bit math and would make an
+absurd request look tiny). Legitimate resizes are unaffected. Rejection warns
+once, not per frame.
+
+SPEC.md gains a normative "Resolution changes" section and a durability
+requirement under host-managed saving.
+
 ## 0.12.0
 
 Adds rumble, and documents the security boundary that was already there.

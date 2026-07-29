@@ -5,8 +5,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { CartHost } from '../index.js';
+import { makeSaver } from '../src/save.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELLO = join(HERE, 'fixtures', 'hello.wasc');
@@ -194,5 +196,138 @@ test('both hosts expose the same three rumble imports', async () => {
     for (const imp of ['wc_pad_has_rumble', 'wc_pad_rumble', 'wc_pad_rumble_stop']) {
       assert.ok(src.includes(imp), `${f} must provide ${imp}`);
     }
+  }
+});
+
+// --- Resize validation ---
+// The cart writes width/height into its own memory, so they are untrusted. The
+// danger is not a throw but a silent one: subarray() CLAMPS, so an unchecked
+// host reports a resolution whose pixels do not exist.
+
+test('a resize the framebuffer cannot back is rejected, not silently clamped', async () => {
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/hello.wasc'));
+  const base = host._infoPtr >> 2;
+  const first = host.runFrame([{ connected: true, buttons: 0 }]);
+  const { width: w0, height: h0 } = first;
+
+  // Poke an absurd resolution, as a buggy or hostile cart would. 4096x4096
+  // needs 64MB; the cart's memory is ~17MB.
+  host._u32[base + 1] = 4096;
+  host._u32[base + 2] = 4096;
+  const r = host.runFrame([{ connected: true, buttons: 0 }]);
+
+  assert.equal(r.width, w0, 'keeps the last good width');
+  assert.equal(r.height, h0, 'keeps the last good height');
+  assert.equal(r.framebuffer.length, r.width * r.height * 4,
+    'the reported size and the returned bytes MUST agree');
+  host.destroy();
+});
+
+test('w*h*4 overflowing 32 bits is caught', async () => {
+  // 65536x65536x4 is 17GB and wraps to 0 in int32 math, which would make an
+  // absurd request look like a tiny one.
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/hello.wasc'));
+  const base = host._infoPtr >> 2;
+  const { width: w0, height: h0 } = host.runFrame([{ connected: true, buttons: 0 }]);
+  host._u32[base + 1] = 65536;
+  host._u32[base + 2] = 65536;
+  const r = host.runFrame([{ connected: true, buttons: 0 }]);
+  assert.equal(r.width, w0);
+  assert.equal(r.height, h0);
+  assert.equal(r.framebuffer.length, r.width * r.height * 4);
+  host.destroy();
+});
+
+test('a resize the framebuffer DOES back is still accepted', async () => {
+  // The guard must not be so strict that legitimate resolution changes break.
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/hello.wasc'));
+  const base = host._infoPtr >> 2;
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  host._u32[base + 1] = 640;
+  host._u32[base + 2] = 480;
+  const r = host.runFrame([{ connected: true, buttons: 0 }]);
+  assert.equal(r.width, 640);
+  assert.equal(r.height, 480);
+  assert.equal(r.framebuffer.length, 640 * 480 * 4);
+  host.destroy();
+});
+
+test('both hosts validate resize the same way', async () => {
+  // Divergence here means a cart sized correctly in the browser and wrong in a
+  // window, or vice versa.
+  for (const f of ['../src/CartHost.js', '../src/CartHostWeb.js']) {
+    const src = readFileSync(join(HERE, f), 'utf8');
+    assert.ok(/_applyResize\(newW, newH\)/.test(src),
+      `${f} must route the post-render resize through _applyResize`);
+    // The per-frame path must call the validator, never assign directly. The
+    // validator's own body legitimately contains that assignment, so anchor on
+    // the caller: the newW/newH read must be followed by the call.
+    const caller = src.slice(src.indexOf('const newW = this._u32[base + 1];'));
+    const upToCall = caller.slice(0, caller.indexOf('_applyResize(newW, newH)'));
+    assert.ok(!/this\.info\.width\s*=/.test(upToCall),
+      `${f} must not assign a cart-supplied size before validating it`);
+  }
+});
+
+// --- Save durability ---
+// savecart writes a magic word plus a per-frame counter into its save region,
+// so a reload is provable rather than merely plausible.
+
+test('a save round-trips through the host', async () => {
+  const first = new CartHost();
+  await first.load(join(HERE, 'fixtures/savecart.wasc'));
+  for (let i = 0; i < 5; i++) first.runFrame([{ connected: true, buttons: 0 }]);
+  const blob = first.getSaveData();
+  first.destroy();
+
+  assert.ok(blob && blob.length === 8, 'cart declares an 8-byte save region');
+  const counter = new Uint32Array(blob.buffer, blob.byteOffset, 2)[1];
+  assert.equal(counter, 5, 'counter reflects the frames that ran');
+
+  // A second host handed that blob must RESUME, not restart.
+  const second = new CartHost();
+  await second.load(join(HERE, 'fixtures/savecart.wasc'), { saveData: blob });
+  second.runFrame([{ connected: true, buttons: 0 }]);
+  const after = new Uint32Array(
+    second.getSaveData().buffer, second.getSaveData().byteOffset, 2)[1];
+  assert.equal(after, 6, 'resumed from the saved counter instead of resetting to 1');
+  second.destroy();
+});
+
+test('the save writer skips a never-written region but not a cleared one', async () => {
+  // Two distinct cases that a naive `if (nonzero)` check conflates: never
+  // saving (do not litter a .sav next to every cart) versus the player
+  // clearing their data (must overwrite, or the old save resurrects).
+  const dir = mkdtempSync(join(tmpdir(), 'wasmcart-save-'));
+  try {
+    const savPath = join(dir, 'x.sav');
+    const zeroHost = { getSaveData: () => new Uint8Array(8) };
+
+    makeSaver(zeroHost, savPath)();
+    assert.ok(!existsSync(savPath), 'an all-zero region on first run writes nothing');
+
+    // Now a real save exists...
+    writeFileSync(savPath, Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]));
+    makeSaver(zeroHost, savPath)();
+    const after = readFileSync(savPath);
+    assert.ok(after.every((b) => b === 0),
+      'once a save exists, an all-zero region must overwrite it (cleared data)');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('both players persist saves on every exit path', async () => {
+  // The bug this guards: saves that survived only a graceful window close.
+  // Ctrl-C and `kill` are ordinary ways to stop a game.
+  for (const f of ['../bin/play-window.js', '../bin/wasmcart-play.js']) {
+    const src = readFileSync(join(HERE, f), 'utf8');
+    assert.ok(/makeSaver\(/.test(src), `${f} must build a save writer`);
+    assert.ok(/process\.on\('SIGINT'/.test(src), `${f} must persist on SIGINT`);
+    assert.ok(/process\.on\('SIGTERM'/.test(src), `${f} must persist on SIGTERM`);
+    assert.ok(/loadSave\(/.test(src), `${f} must load an existing save on start`);
   }
 });
