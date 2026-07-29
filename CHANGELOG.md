@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.16.0
+
+Merges the WebSocket and data-channel families into one peer-connection family.
+
+BREAKING at the package level, but **ABI version stays 3**. A cart is a
+connection to a peer: open it, send bytes, receive bytes, learn when it opens or
+closes. `wc_ws_send` and `wc_dc_send` were the same function under two names,
+and the split forced a cart to care how a connection was established -- a cart
+written against a relay server could not run over a serial cable without a
+rewrite. Transport (WebSocket, WebRTC, TCP, MQTT, serial) is the host's business
+and stays opaque.
+
+- `wc_ws_*` and `wc_dc_*` are replaced by `wc_peer_*`.
+- `FLAG_NET_WS` / `FLAG_NET_DC` become `FLAG_NET_PEER`. Bit `1 << 2` is reserved
+  and unused, with a test asserting nothing reclaims it.
+- `net.domains` replaces `net.websocket` in the manifest. The old key is still
+  read, so existing manifests keep working.
+- Text frames are gone. They are meaningless on a serial cable, so framing
+  belongs to the cart; a server's text frame now arrives as its UTF-8 bytes
+  rather than being dropped.
+
+The ABI version is deliberately NOT bumped to 4. Nothing outside this org
+consumes wasmcart yet, so the only carts affected are ones we control, and a
+version bump exists to protect third parties who do not yet exist. Checked
+before deciding: no sibling project actually calls the old imports -- the hits
+across wasmcart-lua, -mruby, -jsgame, -native and the examples are all stale
+vendored copies of `wasmcart.h`, not live usage.
+
+Two defects found while wiring it up, both fixed:
+
+- `peer_name` could truncate the NUL terminator on a short buffer, handing the
+  cart an unterminated string. It now truncates the text and always terminates.
+- The dual gate SPEC.md describes was not enforced anywhere. `_peerOpen` now
+  requires both the cart's `WC_FLAG_NET_PEER` and a manifest net grant, and a
+  `net.lan` grant no longer opens a `wss://` address.
+
+`peernet.c` is a real cart importing the family and exporting the four
+callbacks, so the ABI is exercised end to end rather than mocked. 102/102.
+
 ## 0.15.1
 
 Clamps `delta_ms`, which is the general fix for a problem 0.14.0 only solved
