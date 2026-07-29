@@ -226,8 +226,10 @@ typedef struct {
 
 ```c
 #define WC_FLAG_AUDIO_F32   0x01  // audio ring buffer uses float32
-#define WC_FLAG_NET_WS      0x02  // cart wants WebSocket imports
-#define WC_FLAG_NET_DC      0x04  // cart wants data channel imports
+#define WC_FLAG_NET_PEER    0x02  // cart wants peer-connection imports
+                                  // 0x04 RESERVED AND UNUSED (was WC_FLAG_NET_DC
+                                  // before the two net families merged; hosts
+                                  // MUST ignore it, carts MUST NOT set it)
 #define WC_FLAG_POINTER     0x08  // cart wants pointer input
 #define WC_FLAG_KEYBOARD    0x10  // cart wants raw keyboard input
 #define WC_FLAG_DEBUG       0x20  // cart exports wc_debug_state() (opt-in, default off)
