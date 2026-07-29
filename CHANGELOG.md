@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.13.0
+
+Fixes loop-inverted carts hanging the browser, and makes silent import stubbing
+audible.
+
+`CartHostWeb` had none of the asyncify machinery behind `wc_frame_yield` -- the
+protocol ported engines use when they own their main loop (`wc_render()` never
+returns; it yields once per iteration and the host unwinds the whole engine
+stack out of it, rewinding to the same point next frame).
+
+The failure was not a load error, which is what made it invisible. The web
+host's auto-stub backfilled the missing import as `() => -1`, so the cart linked
+cleanly and then the yield did nothing: the engine's infinite main loop never
+unwound, and the **first `runFrame()` never returned**, hanging the tab. Carts
+affected are exactly the ported engines that need loop inversion.
+
+`CartHostWeb` now implements the full protocol -- unwind state, `wc_yield_buffer`
+resolution after `wc_init`, and rewind/suspend around `wc_render` -- matching
+`CartHost` behaviour for behaviour. The two hosts are now at complete import
+parity. `cartWorker.js` and `cartWorkerWeb.js` also declare `wc_frame_yield` (a
+no-op there, since only the main thread can unwind out of `wc_render`) because a
+threaded cart instantiates the same module in a worker, where a missing import
+IS a hard LinkError.
+
+The auto-stub that hid this now warns when it fires. It stays -- it keeps carts
+built against a newer ABI loadable -- but a silently stubbed import is a real
+incompatibility that surfaces later as inexplicable runtime behaviour, so it
+should never again be silent.
+
 ## 0.12.2
 
 Documents rumble in `docs/input.md`, the dedicated input reference, which had no

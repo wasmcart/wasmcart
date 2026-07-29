@@ -331,3 +331,67 @@ test('both players persist saves on every exit path', async () => {
     assert.ok(/loadSave\(/.test(src), `${f} must load an existing save on start`);
   }
 });
+
+// --- Loop inversion (wc_frame_yield / asyncify) ---
+// yieldcart models a ported engine that owns its main loop: wc_render() runs
+// forever and yields once per iteration. `counter` advances per iteration and
+// `entered` counts fresh entries into wc_render, so resuming (correct) and
+// restarting (wrong) are distinguishable.
+
+const yieldFieldPtrs = (host) => {
+  const p = {};
+  for (const f of host.readDebugState()) p[f.name] = f.valuePtr;
+  return p;
+};
+
+test('a loop-owning cart is suspended and resumed, not restarted', async () => {
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/yieldcart.wasc'));
+  const ptrs = yieldFieldPtrs(host);
+  const rd = (n) => new DataView(host._u8.buffer).getUint32(ptrs[n], true);
+
+  for (let i = 1; i <= 5; i++) {
+    host.runFrame([{ connected: true, buttons: 0 }]);
+    assert.equal(rd('counter'), i, `frame ${i}: engine advanced exactly one iteration`);
+    assert.equal(rd('entered'), 1,
+      'wc_render must be entered ONCE — a second entry means the engine restarted');
+  }
+  host.destroy();
+});
+
+test('the web host inverts the loop identically to the node host', async () => {
+  // The bug this guards: CartHostWeb had none of the asyncify machinery, and
+  // its auto-stub backfilled wc_frame_yield as `() => -1`. That turned the
+  // yield into a no-op, so the cart's infinite main loop never unwound and the
+  // first runFrame() hung the tab forever. It did NOT fail to load, which is
+  // why nothing caught it.
+  const { CartHostWeb } = await import('../src/CartHostWeb.js');
+
+  const ref = new CartHost();
+  await ref.load(join(HERE, 'fixtures/yieldcart.wasc'));
+  const ptrs = yieldFieldPtrs(ref);
+  ref.destroy();
+
+  const web = new CartHostWeb();
+  await web.load(new Uint8Array(readFileSync(join(HERE, 'fixtures/yieldcart.wasc'))), {});
+  const rd = (n) => new DataView(web._u8.buffer).getUint32(ptrs[n], true);
+
+  for (let i = 1; i <= 5; i++) {
+    web.runFrame([{ connected: true, buttons: 0 }]);
+    assert.equal(rd('counter'), i, `web frame ${i}: same advance as the node host`);
+    assert.equal(rd('entered'), 1, 'web host must resume, not restart');
+  }
+  web.destroy();
+});
+
+test('wc_frame_yield is a real import on every instantiation path', async () => {
+  // It must be declared explicitly, not left to the web host's auto-stub:
+  // a stub links fine and then hangs on the first frame. The workers matter
+  // too, since a threaded cart instantiates the same module there.
+  for (const f of ['../src/CartHost.js', '../src/CartHostWeb.js',
+                   '../src/cartWorker.js', '../src/cartWorkerWeb.js']) {
+    const src = readFileSync(join(HERE, f), 'utf8');
+    assert.ok(/wc_frame_yield:\s*\(/.test(src),
+      `${f} must declare wc_frame_yield explicitly`);
+  }
+});

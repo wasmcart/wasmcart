@@ -85,6 +85,13 @@ self.onmessage = async function(e) {
       wc_asset_size: assetSize,
       wc_load_asset: loadAsset,
       wc_debug_mark: () => {}, // debug-ABI annotation — main-thread host captures; workers no-op
+      // Loop inversion is a MAIN-THREAD protocol: only the thread inside
+      // wc_render can unwind out of it. A spawned pthread never yields, so
+      // this is a no-op here -- but it must still be PRESENT, because the
+      // worker instantiates the same module and a missing import is a
+      // LinkError, which would make every loop-inverted threaded cart fail
+      // to spawn threads at all.
+      wc_frame_yield: () => {},
       emscripten_notify_memory_growth: () => {},
       emscripten_asm_const_int: () => 0,
       emscripten_asm_const_double: () => 0.0,

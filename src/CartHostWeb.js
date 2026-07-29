@@ -184,6 +184,10 @@ export class CartHostWeb {
     // Pad names (populated each frame from pad objects)
     this._padNames = ['', '', '', ''];
     this._rumbleHandler = null; // set by the embedder via setRumbleHandler()
+
+    // Asyncify loop-inversion state (wc_frame_yield protocol). buf is the
+    // cart-provided unwind stack (wc_yield_buffer export), resolved lazily.
+    this._asyncify = { buf: 0, suspended: false, rewinding: false, unwound: false };
   }
 
   /**
@@ -350,6 +354,28 @@ export class CartHostWeb {
         // Debug-ABI frame annotation — no-op stub on the play host (the intent
         // is zero call sites in a release cart; a debug build still instantiates).
         wc_debug_mark: () => {},
+        // Loop-inversion protocol for ported engines that own their main
+        // loop: the cart is post-processed with binaryen's asyncify pass
+        // (asyncify-imports = env.wc_frame_yield) and calls this once per
+        // frame from inside its loop. Unwind suspends the whole engine
+        // stack out of wc_render; the next runFrame rewinds back to this
+        // exact point. A cart without asyncify exports never triggers it.
+        //
+        // This import must exist even for carts that never call it: a wasm
+        // module importing a function the host does not supply fails to
+        // instantiate with a LinkError, so omitting it made every
+        // loop-inverted cart unloadable rather than merely degraded.
+        wc_frame_yield: () => {
+          const ex = this.instance?.exports;
+          if (!ex?.asyncify_start_unwind) return; // not an asyncify cart: no-op
+          if (this._asyncify.rewinding) {
+            ex.asyncify_stop_rewind();
+            this._asyncify.rewinding = false;
+            return; // arrived back at the yield point; engine continues
+          }
+          ex.asyncify_start_unwind(this._asyncify.buf);
+          this._asyncify.unwound = true;
+        },
         wc_asset_size: (pathPtr, pathLen) => {
           return this._assetSize(pathPtr, pathLen);
         },
@@ -467,10 +493,19 @@ export class CartHostWeb {
       }
     }
 
-    // Auto-stub missing env functions
+    // Auto-stub missing env functions. This keeps carts built against a newer
+    // ABI loadable, but it is a blunt instrument: a stub links cleanly and then
+    // misbehaves at runtime, which is how the missing wc_frame_yield went
+    // unnoticed -- the yield became `() => -1`, the cart's main loop never
+    // unwound, and the first frame hung the tab. So warn: a silently stubbed
+    // import is a real incompatibility, not a nothing.
     for (const imp of moduleImports) {
       if (imp.module === 'env' && imp.kind === 'function') {
         if (!(imp.name in imports.env)) {
+          console.warn(
+            `wasmcart: cart imports env.${imp.name}, which this host does not ` +
+            `provide; stubbing it as () => -1. The cart may misbehave.`
+          );
           imports.env[imp.name] = () => -1;
         }
       }
@@ -583,6 +618,12 @@ export class CartHostWeb {
     // Re-read info (cart may have changed resolution)
     this.info = this._readInfo(this._infoPtr);
 
+    // Asyncify loop-inversion carts export their unwind-stack descriptor
+    // (a pre-initialized {current, end} pair followed by the stack area).
+    if (typeof exports.wc_yield_buffer === 'function' && typeof exports.asyncify_start_unwind === 'function') {
+      this._asyncify.buf = exports.wc_yield_buffer();
+    }
+
     // Set up FBO redirect for GL carts (same as wasmcart-native)
     if (this.usesGL && this._glFuncs?._setupRedirectFBO) {
       this._glFuncs._setupRedirectFBO(this.info.width, this.info.height);
@@ -621,7 +662,19 @@ export class CartHostWeb {
     this._deliverPointerEvents();
     this._deliverKeyEvents();
 
-    this.instance.exports.wc_render();
+    // Call wc_render (with asyncify resume/suspend for loop-owning carts)
+    const asyncEx = this.instance.exports;
+    if (this._asyncify.suspended) {
+      asyncEx.asyncify_start_rewind(this._asyncify.buf);
+      this._asyncify.rewinding = true;
+      this._asyncify.suspended = false;
+    }
+    asyncEx.wc_render();
+    if (this._asyncify.unwound) {
+      asyncEx.asyncify_stop_unwind();
+      this._asyncify.suspended = true;
+      this._asyncify.unwound = false;
+    }
     this._updateViews();
 
     // Blit redirect FBO → canvas (GL carts render to redirect, not canvas directly)

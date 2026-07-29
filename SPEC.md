@@ -204,6 +204,35 @@ read by the cart ONCE at init — never per frame):
 
 ---
 
+## Loop inversion (`wc_frame_yield`)
+
+Engines ported from native code usually own their main loop: they call
+`while (running) { ... }` internally and never return. The wasmcart contract is
+the opposite -- the host calls `wc_render()` once per frame and expects it back.
+
+`wc_frame_yield` bridges the two. The cart is post-processed with binaryen's
+asyncify pass (`asyncify-imports=env.wc_frame_yield`) and calls the import once
+per iteration of its own loop. The host unwinds the entire engine stack out of
+`wc_render()`, and on the next `runFrame()` rewinds back to exactly that point.
+From the engine's perspective its loop never stopped; from the host's, every
+frame returned.
+
+A cart using it MUST export `wc_yield_buffer()`, returning a pointer to a
+pre-initialized asyncify stack descriptor (a `{current, end}` pair followed by
+the stack area), plus the four `asyncify_*` functions the pass emits. The host
+resolves the buffer once, after `wc_init()`.
+
+**Hosts MUST provide `wc_frame_yield` explicitly, and MUST NOT satisfy it with a
+generic stub.** A host that stubs unknown imports will link such a cart happily
+and then hang on the first frame: the yield does nothing, so the engine's
+infinite loop never unwinds and `wc_render()` never returns. Because the cart
+loads successfully, this presents as a freeze with no diagnostic. A host that
+stubs unknown imports at all SHOULD warn when it does so, for the same reason.
+
+A cart that does not export the asyncify functions never triggers any of this;
+the import is a no-op for it, and hosts MUST still provide it, since a wasm
+module importing a function the host omits fails to instantiate outright.
+
 ## Resolution changes
 
 A cart MAY change its resolution at runtime by writing new `width`/`height` into
