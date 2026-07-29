@@ -1994,8 +1994,15 @@ export class CartHost {
     if (!hostInfoPtr) return;
     const u32 = this._u32;
     const base = hostInfoPtr >> 2;
-    u32[base + 0] = options.preferredWidth || 0;
-    u32[base + 1] = options.preferredHeight || 0;
+    // A manifest width/height is the cart author stating the size the cart
+    // wants, so pass it along as the host's preference when the caller has no
+    // opinion of its own. Without this a runtime that sizes itself from
+    // preferred_width -- Godot reads it to pick its viewport -- ignores the
+    // declaration entirely and falls back to its own default. An explicit
+    // preferredWidth from the caller still wins: that is the host asking.
+    const m = this._manifest || {};
+    u32[base + 0] = options.preferredWidth || m.width || 0;
+    u32[base + 1] = options.preferredHeight || m.height || 0;
     u32[base + 2] = 0; // reserved (was hostFps - unused, carts use delta_ms)
     u32[base + 3] = options.audioSampleRate || 48000;
     u32[base + 4] = options.flags || 0;

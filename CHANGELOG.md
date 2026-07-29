@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.2
+
+Passes a manifest's `width`/`height` through as the host's preferred
+resolution when the caller has no opinion of its own.
+
+`_writeHostInfo` only ever wrote `options.preferredWidth`, so a runtime that
+sizes itself from `preferred_width` never saw a cart's own declaration. Godot
+does exactly that -- it picks its viewport from the host preference -- so
+every Godot cart rendered at its built-in default no matter what the manifest
+said: a 1920x1080 game came out 640x480. An explicit `preferredWidth` from the
+caller still wins, since that is the host legitimately asking.
+
 ## 0.10.1
 
 Fixes GL carts that declare a resolution the host had to guess at, and adds
