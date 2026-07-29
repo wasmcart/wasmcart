@@ -395,3 +395,116 @@ test('wc_frame_yield is a real import on every instantiation path', async () => 
       `${f} must declare wc_frame_yield explicitly`);
   }
 });
+
+// --- Lifecycle ---
+// The lifecycle fixture tallies each callback and appends a digit per event
+// (1=suspend 2=resume 3=focus_lost 4=focus_gained), so delivery AND ordering
+// are provable rather than inferred.
+
+const lifecycleReader = (host) => {
+  const p = {};
+  for (const f of host.readDebugState()) p[f.name] = f.valuePtr;
+  return (n) => new DataView(host._u8.buffer).getUint32(p[n], true);
+};
+
+test('a suspended cart does not run, and resumes where it left off', async () => {
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/lifecycle.wasc'));
+  const rd = lifecycleReader(host);
+
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  assert.equal(rd('frames'), 2);
+
+  host.suspend();
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  assert.equal(rd('frames'), 2,
+    'wc_render must not be called while suspended -- this is what makes a cart ' +
+    'that ignores lifecycle entirely still correct');
+
+  host.resume();
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  assert.equal(rd('frames'), 3, 'frames resume after resume()');
+  host.destroy();
+});
+
+test('lifecycle callbacks fire in a balanced order', async () => {
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/lifecycle.wasc'));
+  const rd = lifecycleReader(host);
+
+  host.suspend();
+  host.resume();
+  // focus_lost -> suspend -> resume -> focus_gained
+  assert.equal(rd('sequence'), 3124,
+    'suspend implies focus loss, and resume must restore it');
+  assert.equal(rd('focus_lost'), 1);
+  assert.equal(rd('focus_gained'), 1, 'the focus pair balances across a round trip');
+  assert.equal(host.focused, true, 'a resumed cart is not left permanently unfocused');
+  host.destroy();
+});
+
+test('lifecycle transitions are idempotent', async () => {
+  // Hosts get duplicate visibility events routinely; a doubled suspend must
+  // not deliver two callbacks.
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/lifecycle.wasc'));
+  const rd = lifecycleReader(host);
+
+  assert.equal(host.suspend(), true, 'first suspend transitions');
+  assert.equal(host.suspend(), false, 'second is a no-op');
+  assert.equal(rd('suspend'), 1, 'the cart saw exactly one wc_on_suspend');
+
+  host.resume();
+  assert.equal(host.resume(), false);
+  assert.equal(rd('resume'), 1);
+  host.destroy();
+});
+
+test('the clock is rebased across a suspend, not spiked', async () => {
+  // The bug this prevents: delta_ms is now - lastFrameTime, so a ten-minute
+  // background stint arrives as a 600000ms delta and teleports anything
+  // integrating velocity by dt straight through the world.
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/hello.wasc'));
+  const deltaMs = () =>
+    new DataView(host._u8.buffer).getFloat64(host.info.timePtr + 8, true);
+
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  host.runFrame([{ connected: true, buttons: 0 }]);
+
+  host.suspend();
+  host.lastFrameTime -= 600000; // simulate ten minutes suspended
+  host.resume();
+  host.runFrame([{ connected: true, buttons: 0 }]);
+
+  assert.ok(deltaMs() < 1000,
+    `first resumed frame reported ${deltaMs()}ms; the suspended gap is not elapsed game time`);
+  host.destroy();
+});
+
+test('a cart with no lifecycle exports is unaffected', async () => {
+  // hello.wasc exports none of them. Suspension must still work, because the
+  // host owns it -- the callbacks are notification, not mechanism.
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/hello.wasc'));
+  host.suspend();
+  assert.equal(host.runFrame([{ connected: true, buttons: 0 }]), host._lastFrame,
+    'suspended runFrame replays the last frame rather than throwing');
+  host.resume();
+  const r = host.runFrame([{ connected: true, buttons: 0 }]);
+  assert.ok(r.width > 0 && r.framebuffer.length === r.width * r.height * 4);
+  host.destroy();
+});
+
+test('both hosts implement the same lifecycle surface', async () => {
+  for (const f of ['../src/CartHost.js', '../src/CartHostWeb.js']) {
+    const src = readFileSync(join(HERE, f), 'utf8');
+    for (const m of ['suspend()', 'resume()', 'blur()', 'focus()', '_rebaseClock', '_callLifecycle']) {
+      assert.ok(src.includes(m), `${f} must implement ${m}`);
+    }
+    assert.ok(/if \(this\._suspended\) return this\._lastFrame/.test(src),
+      `${f}: runFrame must be a no-op while suspended`);
+  }
+});

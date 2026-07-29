@@ -241,6 +241,38 @@ static inline int wc_pad_name(unsigned int pad_id, char* buf, unsigned int buf_l
 }
 #endif
 
+// --- Lifecycle (ABI v3) ---
+// Optional cart exports. Export any subset; the host skips the ones you omit.
+//
+//   void wc_on_suspend(void);       host is about to STOP calling wc_render
+//   void wc_on_resume(void);        host is about to start calling it again
+//   void wc_on_focus_lost(void);    still running, no longer the active window
+//   void wc_on_focus_gained(void);  active window again
+//
+// Suspend and focus are deliberately separate. Minimizing a window or hiding a
+// tab suspends the cart -- it stops running entirely. Alt-tabbing only takes
+// focus: the cart keeps rendering, which is what lets a game pause gameplay
+// without going dark. Conflating them means a game either cannot auto-pause on
+// alt-tab, or wrongly freezes when it should still be drawing.
+//
+// The host owns suspension. While suspended it does not call wc_render at all,
+// so a cart that exports NONE of these still behaves correctly -- it is simply
+// not running. You never have to handle lifecycle to be correct; you handle it
+// to be polite (pause audio, drop a netplay connection, flush state).
+//
+// The host also rebases the clock across a suspend, so the first resumed frame
+// reports a normal wc_time_t.delta_ms rather than the whole gap. Without that a
+// ten-minute background stint would arrive as a 600000ms delta and teleport
+// anything integrating velocity by dt straight through the world.
+//
+// Ordering is guaranteed: suspending emits wc_on_focus_lost before
+// wc_on_suspend, and resuming emits wc_on_resume before wc_on_focus_gained, so
+// the focus pair is always balanced across a round trip.
+//
+// Declare them like any other export:
+//   __attribute__((export_name("wc_on_suspend")))
+//   void wc_on_suspend(void) { audio_pause(); }
+
 // --- Loop inversion (ABI v3) ---
 // For engines ported from native code that own their main loop: they run
 // `while (running) { ... }` internally and never return, while wasmcart expects

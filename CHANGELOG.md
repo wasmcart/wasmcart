@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.14.0
+
+Adds lifecycle events, and fixes the clock spike that made suspension unsafe.
+
+Four new optional cart exports: `wc_on_suspend`, `wc_on_resume`,
+`wc_on_focus_lost`, `wc_on_focus_gained`. No flag, no manifest entry -- export
+any subset and the host skips the rest.
+
+**Suspension is host-owned.** While suspended the host does not call
+`wc_render()` at all, so a cart exporting none of these is still correct: it is
+simply not running. You handle lifecycle to be polite (pause audio, drop a
+netplay connection, flush state), never to be correct. `runFrame()` replays the
+last frame while suspended rather than throwing, so a host whose loop keeps
+ticking stays correct without knowing about lifecycle.
+
+**Suspend and focus are separate on purpose.** Minimize or hide suspends the
+cart; alt-tab only moves focus and the cart keeps rendering. Conflating them
+means a game either cannot auto-pause on alt-tab, or wrongly freezes when it
+should still draw.
+
+**The clock is now rebased across a suspend.** `delta_ms` is the time since the
+last *rendered* frame, so without this the first resumed frame reported the
+entire gap -- a ten-minute background stint arrived as a 600000ms delta and
+teleported anything integrating velocity by dt straight through the world.
+Measured before the fix: exactly 600000. `time_ms` stays continuous for the
+same reason; it measures time the cart has been running.
+
+Ordering is guaranteed and balanced: suspend emits focus_lost then suspend,
+resume emits resume then focus_gained, so a cart is never left permanently
+unfocused after a round trip. Transitions are idempotent, since hosts get
+duplicate visibility events routinely.
+
+`CartHostWeb` gains `autoWireLifecycle()`, driving the pairs from
+`visibilitychange` and window focus/blur, and adopting the current state on
+attach so a cart loaded into an already-hidden tab starts suspended rather than
+running one stray frame. `bin/play-window.js` wires the SDL window events, and
+persists the save on suspend -- a backgrounded app can be killed by the OS
+without ever reaching a graceful quit, so that is often the last chance to write
+one.
+
 ## 0.13.2
 
 CI and README only. No runtime changes -- the published code is identical to

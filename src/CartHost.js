@@ -319,6 +319,14 @@ export class CartHost {
     // Pad names (populated each frame from pad objects)
     this._padNames = ['', '', '', ''];
     this._rumbleHandler = null; // set by the embedder via setRumbleHandler()
+
+    // Lifecycle. `suspended` means the host has stopped driving frames
+    // entirely; `focused` means the cart is running but is not the active
+    // window. They are deliberately distinct -- alt-tab should let a game
+    // auto-pause while still rendering, minimize should stop it dead.
+    this._suspended = false;
+    this._focused = true;
+    this._lastFrame = null; // replayed while suspended
   }
 
   /**
@@ -848,6 +856,12 @@ export class CartHost {
    * @returns {{ framebuffer: Uint8Array, width: number, height: number, audio: Int16Array|Float32Array|null }}
    */
   runFrame(pads) {
+    // A suspended cart does not run. Returning the last frame rather than
+    // throwing means a host that keeps its loop ticking (rAF still fires in
+    // some browsers, a timer-driven host may not check) stays correct without
+    // having to know about lifecycle at all.
+    if (this._suspended) return this._lastFrame ?? null;
+
     let timeMs, deltaMs;
     if (this._fixedStepMs > 0) {
       // Deterministic clock: a host (e.g. an automated harness) drives frames
@@ -911,12 +925,13 @@ export class CartHost {
     // Drain audio ring buffer
     const audio = this._drainAudio();
 
-    return {
+    this._lastFrame = {
       framebuffer,
       width: this.info.width,
       height: this.info.height,
       audio,
     };
+    return this._lastFrame;
   }
 
   /**
@@ -2071,6 +2086,108 @@ export class CartHost {
     this.info.width = newW;
     this.info.height = newH;
     return true;
+  }
+
+  /**
+   * Suspend the cart: the host is about to stop driving frames (tab hidden,
+   * window minimized, handheld sleep).
+   *
+   * The host owns this, not the cart. Once suspended, runFrame() is a no-op --
+   * a cart that never implements a single lifecycle export still behaves
+   * correctly, because it simply is not running. That is the whole point: the
+   * naive cart must not be breakable by a suspend it never handled.
+   *
+   * This is also the moment to persist: a save that only survives a graceful
+   * quit is no use when the OS kills a backgrounded app.
+   *
+   * Idempotent -- hosts get duplicate visibility events all the time.
+   */
+  suspend() {
+    if (this._suspended) return false;
+    this._suspended = true;
+    // A suspended cart is not the focused one either. Emit focus loss first so
+    // a cart handling only focus still pauses, and so the pair stays ordered.
+    if (this._focused) this.blur();
+    this._callLifecycle('wc_on_suspend');
+    return true;
+  }
+
+  /**
+   * Resume: the host is about to start driving frames again.
+   *
+   * Crucially this rebases the clock. `delta_ms` is `now - lastFrameTime`, so
+   * without this the first resumed frame reports the entire suspended gap --
+   * ten minutes in a background tab becomes a 600000ms delta, and any cart
+   * integrating velocity by dt teleports through the world. The gap is not
+   * elapsed GAME time; nothing ran during it.
+   */
+  resume() {
+    if (!this._suspended) return false;
+    this._suspended = false;
+    // Rebase before notifying, so a cart that inspects wc_time_t inside
+    // wc_on_resume sees the corrected clock rather than the spike.
+    this._rebaseClock();
+    this._callLifecycle('wc_on_resume');
+    // suspend() implies focus loss, so resume() must restore it -- otherwise a
+    // cart is left permanently unfocused after a suspend/resume round trip,
+    // having seen wc_on_focus_lost with no matching gained. A host that knows
+    // it resumed WITHOUT focus (restored to a background window) calls blur()
+    // straight after; that is the rarer case and it can say so explicitly.
+    this.focus();
+    return true;
+  }
+
+  /** The cart is running but is no longer the active window (alt-tab). */
+  blur() {
+    if (!this._focused) return false;
+    this._focused = false;
+    this._callLifecycle('wc_on_focus_lost');
+    return true;
+  }
+
+  /** The cart is the active window again. */
+  focus() {
+    if (this._focused) return false;
+    this._focused = true;
+    this._callLifecycle('wc_on_focus_gained');
+    return true;
+  }
+
+  /** True while the host has stopped driving frames. */
+  get suspended() { return this._suspended; }
+
+  /** True while the cart is the active window. */
+  get focused() { return this._focused; }
+
+  /**
+   * Discount elapsed wall-clock that the cart did not run through, so the next
+   * frame reports a normal delta instead of the whole gap.
+   */
+  _rebaseClock() {
+    if (this._fixedStepMs > 0) return; // deterministic clock has no wall-clock gap
+    const now = performance.now();
+    const gap = now - this.lastFrameTime;
+    if (gap > 0) {
+      // Shift startTime by the same amount so time_ms stays continuous: it is
+      // "time the cart has been running", and it did not run during the gap.
+      this.startTime += gap;
+      this.lastFrameTime = now;
+    }
+  }
+
+  /**
+   * Call an optional lifecycle export. All are optional, matching every other
+   * cart-side callback in the ABI, and a throwing cart must not take the host
+   * down mid-transition.
+   */
+  _callLifecycle(name) {
+    const fn = this.instance?.exports?.[name];
+    if (typeof fn !== 'function') return;
+    try {
+      fn();
+    } catch (e) {
+      console.warn(`wasmcart: cart's ${name}() threw:`, e?.message ?? e);
+    }
   }
 
   _writePads(pads) {

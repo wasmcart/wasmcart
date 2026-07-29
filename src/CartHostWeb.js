@@ -185,6 +185,14 @@ export class CartHostWeb {
     this._padNames = ['', '', '', ''];
     this._rumbleHandler = null; // set by the embedder via setRumbleHandler()
 
+    // Lifecycle. See CartHost for the rationale; the split is the same.
+    // `suspended` = the host has stopped driving frames; `focused` = running
+    // but not the active window.
+    this._suspended = false;
+    this._focused = true;
+    this._lastFrame = null;   // replayed while suspended
+    this._visListener = null; // bound document listeners, if auto-wired
+
     // Asyncify loop-inversion state (wc_frame_yield protocol). buf is the
     // cart-provided unwind stack (wc_yield_buffer export), resolved lazily.
     this._asyncify = { buf: 0, suspended: false, rewinding: false, unwound: false };
@@ -645,6 +653,11 @@ export class CartHostWeb {
    * @returns {{ framebuffer: Uint8Array|null, width: number, height: number, audio: Int16Array|Float32Array|null }}
    */
   runFrame(pads) {
+    // A suspended cart does not run. Returning the last frame rather than
+    // throwing keeps a host whose rAF loop is still ticking correct without it
+    // having to know about lifecycle.
+    if (this._suspended) return this._lastFrame ?? null;
+
     const now = performance.now();
     const deltaMs = now - this.lastFrameTime;
     const timeMs = now - this.startTime;
@@ -701,12 +714,13 @@ export class CartHostWeb {
 
     const audio = this._drainAudio();
 
-    return {
+    this._lastFrame = {
       framebuffer,
       width: this.info.width,
       height: this.info.height,
       audio,
     };
+    return this._lastFrame;
   }
 
   /**
@@ -1500,6 +1514,95 @@ export class CartHostWeb {
     this.info.width = newW;
     this.info.height = newH;
     return true;
+  }
+
+  // --- Lifecycle ---
+  // Same contract as the node host. The browser is the one environment that
+  // can source these itself, so autoWireLifecycle() exists; a host embedding
+  // the cart in a larger app drives them manually instead.
+
+  suspend() {
+    if (this._suspended) return false;
+    this._suspended = true;
+    if (this._focused) this.blur();
+    this._callLifecycle('wc_on_suspend');
+    return true;
+  }
+
+  resume() {
+    if (!this._suspended) return false;
+    this._suspended = false;
+    this._rebaseClock();
+    this._callLifecycle('wc_on_resume');
+    this.focus();
+    return true;
+  }
+
+  blur() {
+    if (!this._focused) return false;
+    this._focused = false;
+    this._callLifecycle('wc_on_focus_lost');
+    return true;
+  }
+
+  focus() {
+    if (this._focused) return false;
+    this._focused = true;
+    this._callLifecycle('wc_on_focus_gained');
+    return true;
+  }
+
+  get suspended() { return this._suspended; }
+  get focused() { return this._focused; }
+
+  /**
+   * Drive lifecycle from the browser's own signals: visibilitychange for
+   * suspend/resume, window focus/blur for the focus pair.
+   *
+   * Opt-in rather than automatic, because a cart embedded in a larger page is
+   * not necessarily suspended just because the tab is hidden, and the embedder
+   * may have its own idea of when the cart should stop. Returns a teardown fn.
+   */
+  autoWireLifecycle(target = globalThis) {
+    const doc = target.document;
+    const onVis = () => (doc.hidden ? this.suspend() : this.resume());
+    const onBlur = () => this.blur();
+    const onFocus = () => this.focus();
+    doc?.addEventListener('visibilitychange', onVis);
+    target.addEventListener?.('blur', onBlur);
+    target.addEventListener?.('focus', onFocus);
+    // Adopt the CURRENT state rather than assuming visible+focused: a cart
+    // loaded into an already-hidden tab should start suspended, not run one
+    // stray frame and then stop.
+    if (doc?.hidden) this.suspend();
+    this._visListener = () => {
+      doc?.removeEventListener('visibilitychange', onVis);
+      target.removeEventListener?.('blur', onBlur);
+      target.removeEventListener?.('focus', onFocus);
+      this._visListener = null;
+    };
+    return this._visListener;
+  }
+
+  _rebaseClock() {
+    // This host has no deterministic fixed-step clock (that is a node-side
+    // harness feature), so there is only the wall-clock case to correct.
+    const now = performance.now();
+    const gap = now - this.lastFrameTime;
+    if (gap > 0) {
+      this.startTime += gap;
+      this.lastFrameTime = now;
+    }
+  }
+
+  _callLifecycle(name) {
+    const fn = this.instance?.exports?.[name];
+    if (typeof fn !== 'function') return;
+    try {
+      fn();
+    } catch (e) {
+      console.warn(`wasmcart: cart's ${name}() threw:`, e?.message ?? e);
+    }
   }
 
   _padName(padId, bufPtr, bufLen) {

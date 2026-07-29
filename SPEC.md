@@ -204,6 +204,51 @@ read by the cart ONCE at init — never per frame):
 
 ---
 
+## Lifecycle
+
+Four optional cart exports. A cart MAY export any subset; the host skips those
+it does not find.
+
+```c
+void wc_on_suspend(void);       // host is about to STOP calling wc_render
+void wc_on_resume(void);        // host is about to start calling it again
+void wc_on_focus_lost(void);    // still running, no longer the active window
+void wc_on_focus_gained(void);  // active window again
+```
+
+**Suspension is host-owned.** While a cart is suspended the host MUST NOT call
+`wc_render()`. This is what makes the callbacks optional in practice: a cart
+that exports none of them is still correct under suspension, because it is
+simply not running. A cart handles lifecycle to be polite -- pause audio, drop a
+netplay connection, flush state -- never to be correct.
+
+**Suspend and focus are distinct, deliberately.** Hiding a tab or minimizing a
+window suspends; alt-tabbing only moves focus, and a focused-but-not-suspended
+cart keeps rendering. Conflating them means a game either cannot auto-pause on
+alt-tab, or wrongly freezes when it should still be drawing.
+
+**The host MUST rebase the clock across a suspend** so the first resumed frame
+reports a normal `wc_time_t.delta_ms`. `delta_ms` is the time since the last
+*rendered* frame, and a suspended cart renders nothing, so the gap is not
+elapsed game time. Without this a ten-minute background stint arrives as a
+600000ms delta and teleports anything integrating velocity by dt through the
+world. `time_ms` MUST stay continuous for the same reason: it measures time the
+cart has been *running*.
+
+**Ordering is guaranteed.** Suspending emits `wc_on_focus_lost` before
+`wc_on_suspend`; resuming emits `wc_on_resume` before `wc_on_focus_gained`. The
+focus pair is therefore always balanced across a suspend/resume round trip, and
+a cart is never left permanently unfocused. A host resuming into a background
+window drops focus again explicitly afterwards.
+
+**Transitions are idempotent.** Hosts receive duplicate visibility events
+routinely, so a second `suspend()` with no intervening `resume()` MUST NOT
+deliver a second callback.
+
+A host SHOULD treat suspend as a persistence point. A backgrounded application
+can be killed by the OS without ever reaching a graceful quit, so this is often
+the last moment a save can be written.
+
 ## Loop inversion (`wc_frame_yield`)
 
 Engines ported from native code usually own their main loop: they call

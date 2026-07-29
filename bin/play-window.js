@@ -122,7 +122,28 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
     const name = KEYMAP[(e.key ?? e.scancode ?? '').toString().toLowerCase()];
     if (name) held.delete(name);
   });
+  // Split out of quit() so every exit path can reach it: a save that only
+  // survives a graceful window close is not a save. Defined HERE, above the
+  // lifecycle handlers, because those reference it -- a `const` declared later
+  // in the same scope would throw a TDZ ReferenceError if a minimize arrived
+  // before initialization.
+  const persistSave = makeSaver(host, savPath);
+
   window.on('close', quit);
+
+  // Lifecycle. minimize/hide means the host stops driving frames entirely;
+  // focus/blur means the game is still rendering but is not the active window,
+  // which is what lets a cart auto-pause on alt-tab without going dark.
+  //
+  // Persisting on suspend is the point of having it: a backgrounded app can be
+  // killed by the OS without ever reaching quit(), so this is often the last
+  // moment a save can be written at all.
+  window.on('minimize', () => { host.suspend(); persistSave(); });
+  window.on('hide',     () => { host.suspend(); persistSave(); });
+  window.on('restore',  () => host.resume());
+  window.on('show',     () => host.resume());
+  window.on('blur',     () => host.blur());
+  window.on('focus',    () => host.focus());
 
   // first plugged-in game controller, if any
   let ctrl = null;
@@ -221,9 +242,6 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
       opts);
   };
 
-  // Split out of quit() so every exit path can reach it: a save that only
-  // survives a graceful window close is not a save.
-  const persistSave = makeSaver(host, savPath);
 
   let closing = false;
   function quit() {
