@@ -241,6 +241,39 @@ static inline int wc_pad_name(unsigned int pad_id, char* buf, unsigned int buf_l
 }
 #endif
 
+// --- Loop inversion (ABI v3) ---
+// For engines ported from native code that own their main loop: they run
+// `while (running) { ... }` internally and never return, while wasmcart expects
+// wc_render() back once per frame.
+//
+// Build the cart with binaryen's asyncify pass targeting this import:
+//   emcc ... -s ASYNCIFY=1 -s ASYNCIFY_IMPORTS=wc_frame_yield
+// then call wc_frame_yield() once per iteration of your own loop. The host
+// unwinds the whole engine stack out of wc_render() and rewinds back to exactly
+// that point next frame: your loop never notices, and the host gets its frame.
+//
+// A cart using this MUST also export wc_yield_buffer(), returning a pointer to
+// a pre-initialized asyncify stack descriptor -- a {current, end} uint32 pair
+// pointing at a stack area big enough for the deepest yield. For example:
+//
+//   static uint8_t  yield_stack[4096];
+//   static uint32_t yield_desc[2];
+//   __attribute__((export_name("wc_yield_buffer")))
+//   uint32_t wc_yield_buffer(void) {
+//       yield_desc[0] = (uint32_t)yield_stack;
+//       yield_desc[1] = (uint32_t)yield_stack + sizeof(yield_stack);
+//       return (uint32_t)yield_desc;
+//   }
+//
+// A cart that does not export the asyncify functions never triggers any of
+// this; the call is a no-op. Hosts always provide the import.
+#ifdef __wasm__
+__attribute__((import_module("env"), import_name("wc_frame_yield")))
+extern void wc_frame_yield(void);
+#else
+static inline void wc_frame_yield(void) {}
+#endif
+
 // --- Rumble (ABI v3) ---
 // Rumble runs the opposite way to the rest of input: the cart drives it, so it
 // is a host import rather than a field in wc_pad_t.

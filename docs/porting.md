@@ -49,7 +49,55 @@ See [gl-surface.md](gl-surface.md#gl4es-legacy-compatibility) for details.
 5. **Assets via .wasc** - Pack with `wasmcart-pack`, load via `wc_asset_size`/`wc_load_asset`
 6. **Audio** - Write to ring buffer, set sample rate + format flags
 7. **Input** - Read `wc_pad_t` array (Xbox/W3C button layout)
-8. **Test on all hosts** - Browser, Node.js, wasmcart-native, RetroArch
+8. **Invert the main loop** - if the engine owns its loop, see below
+9. **Test on all hosts** - Browser, Node.js, wasmcart-native, RetroArch
+
+## Inverting the Main Loop
+
+Most ported engines own their main loop: `while (running) { input(); update(); draw(); }`,
+which never returns. wasmcart is the other way round -- the host calls
+`wc_render()` once per frame and expects it back. Restructuring a large engine
+into a per-frame step function is usually the hardest part of a port, and
+`wc_frame_yield` exists so you do not have to.
+
+Build with binaryen's asyncify pass pointed at the import:
+
+```bash
+emcc ... -s ASYNCIFY=1 -s ASYNCIFY_IMPORTS=wc_frame_yield \
+     -s EXPORTED_FUNCTIONS='[..., "_wc_yield_buffer"]'
+```
+
+Then call `wc_frame_yield()` once per iteration of your existing loop and leave
+the loop otherwise untouched. The host unwinds the whole engine stack out of
+`wc_render()` and rewinds back to exactly that point next frame: the engine
+never notices, and the host gets a frame every call.
+
+You must also export `wc_yield_buffer()`, returning a pre-initialized asyncify
+stack descriptor -- a `{current, end}` `uint32` pair pointing at a stack area
+large enough for your deepest call chain at the yield point:
+
+```c
+static uint8_t  yield_stack[64 * 1024];   /* size for YOUR call depth */
+static uint32_t yield_desc[2];
+
+__attribute__((export_name("wc_yield_buffer")))
+uint32_t wc_yield_buffer(void) {
+    yield_desc[0] = (uint32_t)yield_stack;
+    yield_desc[1] = (uint32_t)yield_stack + sizeof(yield_stack);
+    return (uint32_t)yield_desc;
+}
+```
+
+So `wc_render()` becomes, in effect, "run the engine until it yields".
+
+Two things to watch:
+
+- **Size the stack for your engine.** 4KB suits a toy loop; a real engine
+  yielding from inside several layers of update/draw needs far more. Too small
+  corrupts the unwind rather than failing cleanly.
+- **Asyncify instruments every function that can reach the yield,** which costs
+  size and speed. Keep `ASYNCIFY_IMPORTS` to `wc_frame_yield` alone, and prefer
+  yielding from as shallow a point in the loop as you can.
 
 ## Shared Porting Libraries
 

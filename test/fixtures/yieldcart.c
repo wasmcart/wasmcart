@@ -42,8 +42,7 @@ WC_DEBUG_FIELDS(
 static uint8_t yield_stack[4096];
 static uint32_t yield_desc[2];
 
-__attribute__((import_module("env"), import_name("wc_frame_yield")))
-extern void wc_frame_yield(void);
+/* wc_frame_yield now comes from wasmcart.h */
 
 __attribute__((export_name("wc_yield_buffer")))
 uint32_t wc_yield_buffer(void) {

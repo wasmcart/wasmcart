@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.13.1
+
+Documents loop inversion for the people who need it. No code changes.
+
+0.13.0 implemented `wc_frame_yield` in the web host but only specified it in
+SPEC.md, which left two gaps for cart authors:
+
+- **`include/wasmcart.h` did not declare it.** A cart using loop inversion had
+  to hand-write the `import_module`/`import_name` attributes, which is exactly
+  the boilerplate the header exists to remove. Now declared, with the
+  `wc_yield_buffer` contract and a worked example in the comment.
+- **`docs/porting.md` did not mention it.** That is the one document a porter
+  reads, and inverting the main loop is usually the hardest part of a port. It
+  now has a section covering the asyncify build flags, the yield-buffer export,
+  and the two traps: sizing the unwind stack for the real call depth, and
+  keeping `ASYNCIFY_IMPORTS` narrow so instrumentation stays cheap.
+
+Also adds loop inversion to the README's ABI v3 feature list, where it was the
+only v3 feature missing.
+
 ## 0.13.0
 
 Fixes loop-inverted carts hanging the browser, and makes silent import stubbing
