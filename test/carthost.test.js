@@ -694,3 +694,64 @@ test('both hosts clamp delta the same way', async () => {
       `${f} must absorb the discarded time so time_ms stays consistent`);
   }
 });
+
+// --- Host payload staging (scratch aliasing) ---
+// Carts without malloc/free need somewhere for the host to stage inbound
+// payloads. The old approach reused the top 64KB of EXISTING linear memory and
+// assumed nothing lived there. For a cart linked at the wasm-ld default of
+// 128KB that is false: its statics run straight through that window, so every
+// delivered message silently overwrote them. No trap, no error -- just corrupt
+// cart data surfacing later as something unrelated.
+
+test('delivering a payload never overwrites cart memory', async () => {
+  // smallmem pins its maximum, so the host cannot grow a scratch page and must
+  // fall back -- which is exactly the case the old code got wrong. guard[] is
+  // 0xAB from wc_init and overlaps the old scratch window by ~9KB.
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/smallmem.wasc'));
+
+  const guardByte = () => host._u8[65536]; // inside the legacy scratch window
+  assert.equal(guardByte(), 0xAB, 'fixture precondition: guard is initialised');
+
+  host.instance.exports.wc_begin();
+  host.textInput('X'.repeat(2000));
+  host.runFrame([{ connected: true, buttons: 0 }]);
+
+  assert.equal(guardByte(), 0xAB,
+    'cart memory was overwritten by payload staging (0x58 = the ASCII X we sent)');
+  host.destroy();
+});
+
+test('a payload that cannot be staged safely is dropped, not forced through', async () => {
+  // Dropping a message is recoverable; corrupting the cart is not. The cart
+  // must still be running and coherent afterwards.
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/smallmem.wasc'));
+  host.instance.exports.wc_begin();
+  host.textInput('Y'.repeat(2000));
+  const f = host.runFrame([{ connected: true, buttons: 0 }]);
+  assert.ok(f.width > 0 && f.framebuffer.length === f.width * f.height * 4,
+    'the cart keeps running normally after a dropped payload');
+  host.destroy();
+});
+
+test('a growable cart gets its payload, staged beyond its own data', async () => {
+  // The control for the two above: proving the host REFUSES is worthless
+  // unless delivery still works where it is safe.
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/textcart.wasc'));
+  host.instance.exports.wc_begin();
+  host.textInput('hello');
+  host.runFrame([{ connected: true, buttons: 0 }]);
+
+  const p = {};
+  for (const f of host.readDebugState()) p[f.name] = f.valuePtr;
+  const len = new DataView(host._u8.buffer).getUint32(p.buf_len, true);
+  assert.equal(len, 5, 'payload delivered');
+
+  if (host._scratchBase !== null) {
+    assert.ok(host._scratchBase >= host._cartDataEnd() - 65536,
+      'the staging region must sit at or beyond the cart data high-water mark');
+  }
+  host.destroy();
+});

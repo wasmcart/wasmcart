@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.16.1
+
+Fixes silent cart-memory corruption when the host delivers a payload to a cart
+with no allocator.
+
+For carts exporting no `malloc`/`free`, the host staged inbound payloads (peer
+messages, text input) in **the top 64KB of existing linear memory**, assuming
+nothing lived there. For a cart linked at the wasm-ld default of 128KB that is
+false -- its statics run straight through that window. Reproduced: 9472 bytes of
+a cart's array sat inside the region, and a 2000-byte message overwrote them.
+`0xAB` became `0x58`, the ASCII `X` we sent.
+
+There was no trap and no error. The corruption surfaced later as something
+unrelated -- in the report that found this, a nonsense `cart requested
+6647407x32` resize warning pointing nowhere near the cause. It only triggers
+once networking or text input is used, so it presents as "my cart broke when I
+added multiplayer".
+
+The host now grows a dedicated scratch page onto the END of linear memory, past
+everything the cart owns, so staging cannot alias cart data. If the cart pinned
+its memory maximum and growth is impossible, the host falls back to the tail of
+existing memory **only after proving** it sits above the cart's declared
+high-water mark (framebuffer, save region, input/time/pointer/keys structs, plus
+a margin). Failing that it drops the payload and says why: a dropped message is
+recoverable, corrupted cart memory is not.
+
+Reported by the agent who wrote the `wc_peer_*` merge, who hit it in their own
+fixture, fixed the fixture, and left the host alone on the grounds that it
+affects every cart. That was the right call -- the hazard is general and the
+existing suite could not have caught it, because every fixture was large enough
+to escape.
+
+`smallmem.wasc` is a fixture built to fail: 128KB memory, pinned maximum,
+statics crossing the 64KB line, and a guard array that shows the overwrite.
+Three tests cover it, including a control proving delivery still works where it
+is safe.
+
 ## 0.16.0
 
 Merges the WebSocket and data-channel families into one peer-connection family.

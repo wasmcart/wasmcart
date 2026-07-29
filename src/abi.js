@@ -52,6 +52,13 @@ export const MAX_RUMBLE_MS = 5000;
 // across a gap reads time_ms, which stays continuous.
 export const MAX_DELTA_MS = 250;
 
+// Staging region for host->cart payloads (peer messages, text input) when the
+// cart exports no malloc/free. Grown onto the END of linear memory so it can
+// never alias cart statics -- the previous approach reused the top 64KB of
+// existing memory, which silently overwrote the statics of any cart small
+// enough to reach into it.
+export const SCRATCH_BYTES = 65536;
+
 /** Clamp to 0..1, mapping NaN to 0 (NaN would otherwise pass `<` and `>`). */
 export function clamp01(v) {
   return v > 0 ? (v < 1 ? v : 1) : 0;

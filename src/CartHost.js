@@ -12,6 +12,7 @@ import {
   PAD_SIZE,
   MAX_PADS,
   TIME_SIZE,
+  INPUT_REGION_SIZE,
   FLAG_NET_PEER,
   PEER_OPEN,
   PEER_CLOSED,
@@ -29,6 +30,7 @@ import {
   MAX_POINTERS,
   KEYS_STATE_SIZE,
   MAX_DELTA_MS,
+  SCRATCH_BYTES,
   MAX_RUMBLE_MS,
   clamp01,
 } from './abi.js';
@@ -324,6 +326,8 @@ export class CartHost {
     // Pad names (populated each frame from pad objects)
     this._padNames = ['', '', '', ''];
     this._rumbleHandler = null; // set by the embedder via setRumbleHandler()
+    this._scratchBase = null;   // grown-on-demand staging region (see _scratchPtr)
+    this._scratchWarned = false;
 
     // Lifecycle. `suspended` means the host has stopped driving frames
     // entirely; `focused` means the cart is running but is not the active
@@ -1661,15 +1665,99 @@ export class CartHost {
       this._u8.set(bytes, ptr);
       try { callback(ptr, len); } finally { free(ptr); }
     } else {
-      // Fallback: write to end of memory (risky but acceptable for small payloads)
-      // Use the last 64KB of memory as scratch space
-      const memSize = this.memory.buffer.byteLength;
-      const scratchStart = memSize - 65536;
-      if (len > 65536 || len === 0) return;
+      // No allocator. The old fallback wrote into the top 64KB of linear memory
+      // and assumed nothing lived there. For a small cart that is FALSE: a cart
+      // linked at the wasm-ld default of 128KB has its statics running straight
+      // through that window, so every delivered message silently overwrote them.
+      // Reproduced: 9472 bytes of a cart's array sat inside the window and a
+      // 2000-byte message overwrote them. No trap, no error -- just corrupted
+      // statics surfacing later as nonsense somewhere unrelated.
+      //
+      // So: claim a scratch page by GROWING memory, past anything the cart owns.
+      // If the cart pinned its maximum and growth fails, refuse the delivery and
+      // say so, rather than corrupting it.
+      if (len === 0) return;
+      const ptr = this._scratchPtr(len);
+      if (ptr === null) return;
       this._updateViews();
-      this._u8.set(bytes, scratchStart);
-      callback(scratchStart, len);
+      this._u8.set(bytes, ptr);
+      callback(ptr, len);
     }
+  }
+
+  /**
+   * A region safe to stage host->cart payloads in, for carts with no allocator.
+   *
+   * Grown onto the end of linear memory and cached, so it lies beyond every
+   * static the cart declared and cannot alias them. Returns null if the cart
+   * fixed its maximum size and growth is impossible -- the caller must then drop
+   * the payload, because the only alternative is overwriting cart data.
+   */
+  _scratchPtr(len) {
+    if (len > SCRATCH_BYTES) {
+      console.warn(
+        `wasmcart: dropping a ${len}-byte host payload; the scratch region is ` +
+        `${SCRATCH_BYTES} bytes. Export malloc/free to receive larger payloads.`
+      );
+      return null;
+    }
+    if (this._scratchBase !== null) return this._scratchBase;
+
+    const pages = Math.ceil(SCRATCH_BYTES / 65536);
+    try {
+      const prevPages = this.memory.grow(pages);
+      this._scratchBase = prevPages * 65536; // starts where memory used to end
+      this._updateViews();
+      return this._scratchBase;
+    } catch {
+      // Cart pinned its maximum, so we cannot claim new space. Fall back to the
+      // tail of existing memory -- but only after PROVING nothing of the cart's
+      // lives there. The old code assumed that and was wrong for small carts.
+      //
+      // The cart's own declarations give a usable high-water mark: its
+      // framebuffer, save region, input/time/debug structs. Anything at or past
+      // the end of all of them is unclaimed as far as the ABI is concerned.
+      const memSize = this.memory.buffer.byteLength;
+      const tail = memSize - SCRATCH_BYTES;
+      if (tail >= this._cartDataEnd()) {
+        this._scratchBase = tail;
+        return tail;
+      }
+      if (!this._scratchWarned) {
+        this._scratchWarned = true;
+        console.warn(
+          'wasmcart: cannot stage host payloads for this cart. It exports no ' +
+          'malloc/free, its memory cannot grow, and its own data reaches into ' +
+          'the only staging space left, so writing there would corrupt it. ' +
+          'Messages will be dropped. Fix: export malloc/free, or do not pin ' +
+          'the memory maximum.'
+        );
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Highest address the cart has told us it owns, from wc_info_t. Not a true
+   * data end -- a cart may hold statics it never declares -- so it is used only
+   * as a floor for the fallback path, never to justify writing below it.
+   */
+  _cartDataEnd() {
+    const i = this.info;
+    if (!i) return Infinity; // nothing declared yet: refuse rather than guess
+    let end = 0;
+    const bump = (ptr, size) => { if (ptr) end = Math.max(end, ptr + size); };
+    bump(i.fbPtr, i.width * i.height * 4);
+    bump(i.audioPtr, (i.audioCap || 0) * 8);
+    bump(i.savePtr, i.saveSize || 0);
+    bump(i.inputPtr, INPUT_REGION_SIZE);
+    bump(i.timePtr, TIME_SIZE);
+    bump(i.pointerPtr, POINTER_SIZE * MAX_POINTERS);
+    bump(i.keysPtr, KEYS_STATE_SIZE);
+    bump(i.hostInfoPtr, 20);
+    // Safety margin: a cart's statics are laid out around these, not neatly
+    // below them, and we only see the ones it declared.
+    return end + 65536;
   }
 
   /**
