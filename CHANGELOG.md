@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.11.0
+
+The manifest is now optional, and it no longer gates anything the cart
+declares about itself.
+
+Two rules, both now normative in SPEC.md:
+
+**A cart with no `manifest.json` loads and runs.** `entry` falls back to
+`cart.wasm` and every other field takes its default. Previously all three
+loader paths threw `.wasc archive missing manifest.json`, which made the
+smallest possible valid cart -- a single wasm file in a zip -- unloadable for
+no reason the format required.
+
+**A manifest field never gates a capability the cart declares itself.**
+Pointer and keyboard delivery were gated on `WC_FLAG_POINTER`/`WC_FLAG_KEYBOARD`
+*and* on `manifest.pointer`/`manifest.keyboard` -- eight sites across the two
+hosts. Since the flags are the cart's own statement of what it handles, the
+manifest field could never usefully agree and could only disagree, and when it
+did the failure was silent: a cart that set the flag but shipped a manifest
+without the field just stopped receiving input, with nothing logged. The flags
+are now the only gate. The `pointer` and `keyboard` manifest fields are
+removed, and `wasmcart pack --pointer` / `--keyboard` are accepted no-ops that
+warn.
+
+`net` is deliberately not covered by the second rule. An allowlist is a
+permission the cart cannot grant itself, so it stays manifest-only and fails
+closed: no manifest, or no `net` entry, means no network access.
+
+BREAKING: a cart relying on `manifest.pointer` / `manifest.keyboard` to *enable*
+input must set the corresponding `WC_FLAG_*` in `wc_info_t` instead. A cart that
+already sets the flags is unaffected, and gains input it may have been silently
+losing.
+
 ## 0.10.2
 
 Passes a manifest's `width`/`height` through as the host's preferred

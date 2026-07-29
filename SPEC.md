@@ -19,6 +19,28 @@ shared-memory regions; the cart owns its own memory and reaches nothing else.
 
 ## Manifest
 
+**The manifest is OPTIONAL.** A cart with no `manifest.json` runs: every field
+has a default, and `entry` defaults to `cart.wasm`. A host MUST NOT refuse a
+cart for lacking one.
+
+**A manifest field never gates a capability the cart declares about itself.**
+The cart's `wc_info_t.flags` and its wasm import section are the ground truth,
+and both are visible to the host without the packager's cooperation. Requiring
+the manifest to *also* say yes creates a capability that is on in one place and
+off in the other, whose failure mode is silence: the cart loads, the feature
+does nothing, and no error is reported anywhere. That is the worst outcome
+available, and it has now been fixed twice — once for GL detection, once for
+pointer and keyboard input.
+
+So the manifest carries only what the cart cannot state for itself:
+
+- **Deployment policy** the packager decides, not the code — the network
+  allowlist above all. A cart asserting its own permission to reach any host
+  would defeat the point of having one.
+- **Presentation hints** a launcher wants before instantiation, like
+  `width`/`height` (see Resolution) — advisory, never binding.
+- **Human metadata**: `name`, `version`.
+
 ```json
 {
   "name": "Game Name",
@@ -26,8 +48,6 @@ shared-memory regions; the cart owns its own memory and reaches nothing else.
   "abi": 3,
   "entry": "cart.wasm",
   "players": 4,
-  "pointer": true,
-  "keyboard": true,
   "net": {
     "websocket": ["api.mygame.com", "leaderboard.example.com"],
     "data-channel": true
@@ -40,13 +60,11 @@ shared-memory regions; the cart owns its own memory and reaches nothing else.
 **`players`** (integer, optional, default: 1)
 - How many gamepad inputs the game uses (1-4)
 
-**`pointer`** (boolean, optional, default: false)
-- If true, host writes pointer state (unified mouse/touch) and delivers pointer event callbacks
-- If false, pointer state is not updated
-
-**`keyboard`** (boolean, optional, default: false)
-- If true, host writes raw key state and delivers key event callbacks
-- If false, host does not deliver raw key input to the cart
+**`pointer`** / **`keyboard`** — **REMOVED.** These were the double gate
+described above: the cart set `WC_FLAG_POINTER`/`WC_FLAG_KEYBOARD` and the
+manifest had to independently agree, or input was silently dropped. The flag
+alone now governs. Hosts MUST ignore these fields if present in an older
+manifest; carts MUST NOT rely on them.
 
 **`debug`** (boolean, optional, default: false)
 - If true, the cart exports `wc_debug_state()` naming values it chooses to expose
@@ -368,7 +386,7 @@ void wc_dc_on_message(int32_t peer_id, const void* data, uint32_t len);
 
 ## Pointer Input
 
-Unified mouse + touch. Opt-in via `"pointer": true` in manifest. Both shared-memory state and event callbacks.
+Unified mouse + touch. Opt-in by setting `WC_FLAG_POINTER` in `wc_info_t.flags`. Both shared-memory state and event callbacks. **The flag is the only gate** — a manifest field never gates a capability the cart declares about itself (see Manifest below).
 
 ### Shared memory (host writes every frame)
 
@@ -406,7 +424,7 @@ void wc_ptr_on_up(uint32_t id, uint8_t button);
 
 ## Keyboard Input
 
-Opt-in via `"keyboard": true` in manifest. Both shared-memory state and event callbacks.
+Opt-in by setting `WC_FLAG_KEYBOARD` in `wc_info_t.flags`. Both shared-memory state and event callbacks. **The flag is the only gate** (see Manifest below).
 
 ### Shared memory (host writes every frame)
 
@@ -561,7 +579,7 @@ All keycodes follow USB HID Usage Tables. SDL provides these natively. Browser `
 ### Notes
 - Host delivers events before `wc_render()`
 - State bitmask is always up to date regardless of whether cart exports callbacks
-- When `"keyboard": true` is in manifest, host does not map keyboard keys to gamepad
+- When the cart sets `WC_FLAG_KEYBOARD`, the host does not map keyboard keys to gamepad
 
 ---
 

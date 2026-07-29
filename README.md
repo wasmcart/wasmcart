@@ -248,8 +248,6 @@ The `manifest.json` inside a `.wasc` archive describes the cart:
   "width": 640,
   "height": 480,
   "players": 2,
-  "pointer": true,
-  "keyboard": true,
   "net": {
     "websocket": ["api.mygame.com"],
     "data-channel": true
@@ -257,7 +255,20 @@ The `manifest.json` inside a `.wasc` archive describes the cart:
 }
 ```
 
-All fields except `name`, `abi`, and `entry` are optional. `pointer`, `keyboard`, and `net` are ABI v3 features - gamepad input is always available regardless.
+**The manifest as a whole is optional.** A `.wasc` with no `manifest.json` loads
+and runs: `entry` falls back to `cart.wasm` and every other field takes its
+default. A host must not refuse a cart for lacking one.
+
+Every field is optional, and none of them gate a capability the cart declares
+about itself. Pointer and keyboard input are governed *only* by `WC_FLAG_POINTER`
+and `WC_FLAG_KEYBOARD` in the cart's own `wc_info_t` — there are no `"pointer"` /
+`"keyboard"` manifest fields any more. A field that had to agree with the cart
+could only ever disagree with it, and the failure was silent: input simply
+stopped arriving. Gamepad input is always available regardless.
+
+`net` is the exception, and deliberately so. It is not a restatement of a cart
+flag, it is a *permission* the cart cannot grant itself, so it fails closed: no
+manifest, or no `net` entry, means no network access.
 
 `width` / `height` declare the cart's resolution *ahead of time*. `wc_get_info()`
 remains authoritative — this does not override it — but a host has to size a
@@ -272,8 +283,8 @@ always for a cart whose script picks the resolution at init time.
 
 ABI v3 adds opt-in features beyond the core framebuffer/audio/gamepad loop:
 
-- **Pointer input** (`"pointer": true`) - host writes `wc_pointer_t[10]` state (unified mouse + multitouch) and optionally calls `wc_ptr_on_down`, `wc_ptr_on_move`, `wc_ptr_on_up` exports
-- **Keyboard input** (`"keyboard": true`) - host writes `uint8_t[32]` key state bitmask (USB HID scancodes) and optionally calls `wc_kb_on_down`, `wc_kb_on_up` exports
+- **Pointer input** (`WC_FLAG_POINTER`) - host writes `wc_pointer_t[10]` state (unified mouse + multitouch) and optionally calls `wc_ptr_on_down`, `wc_ptr_on_move`, `wc_ptr_on_up` exports
+- **Keyboard input** (`WC_FLAG_KEYBOARD`) - host writes `uint8_t[32]` key state bitmask (USB HID scancodes) and optionally calls `wc_kb_on_down`, `wc_kb_on_up` exports
 - **WebSocket** (`"net": {"websocket": [...]}`) - cart calls `wc_ws_open`/`send`/`close` imports, host delivers events via `wc_ws_on_open`/`on_message`/`on_close` exports
 - **Data channels** (`"net": {"data-channel": true}`) - peer-to-peer via `wc_dc_send`/`broadcast` imports and `wc_dc_on_connect`/`on_message`/`on_disconnect` exports
 

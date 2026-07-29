@@ -99,3 +99,35 @@ test('debug ABI: FLAG_DEBUG set but no export → null (conformance catches it),
   host.instance = { exports: {} }; // claims debug but didn't export the table
   assert.equal(host.readDebugState(), null);
 });
+
+// ── Manifest is optional, and never gates a cart's own capabilities ──────────
+// Two rules from SPEC "Manifest", both of which had silent-failure modes:
+//   1. A cart with no manifest.json must run (it used to be refused outright).
+//   2. A manifest field must never gate a capability the cart declares in
+//      wc_info_t.flags. pointer/keyboard were double-gated: the flag AND the
+//      manifest had to agree, so a cart with WC_FLAG_KEYBOARD whose manifest
+//      omitted "keyboard" got no input and no error — the same silent failure
+//      that GL detection was fixed for earlier.
+test('a cart with NO manifest.json loads and runs', async () => {
+  const bytes = new Uint8Array(readFileSync(join(HERE, 'fixtures', 'nomanifest.wasc')));
+  const host = new CartHost();
+  await host.load(bytes, {});
+  assert.equal(host.getManifest(), null, 'no manifest is reported as null, not an error');
+  const r = host.runFrame([{ connected: true, buttons: 0 }]);
+  assert.ok(r.width > 0 && r.height > 0, 'cart still reports its own resolution');
+  assert.equal(r.framebuffer.length, r.width * r.height * 4);
+  host.destroy();
+});
+
+test('pointer/keyboard are gated by the FLAG alone, not the manifest', async () => {
+  // Guards against reintroducing the double gate. The delivery paths must
+  // consult wc_info_t only; grep is the cheapest reliable check that no
+  // manifest field crept back into them.
+  for (const f of ['../src/CartHost.js', '../src/CartHostWeb.js']) {
+    const src = readFileSync(join(HERE, f), 'utf8');
+    assert.ok(!/_manifest\?\.pointer/.test(src),
+      `${f}: pointer delivery must not consult the manifest`);
+    assert.ok(!/_manifest\?\.keyboard/.test(src),
+      `${f}: keyboard delivery must not consult the manifest`);
+  }
+});

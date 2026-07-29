@@ -190,12 +190,18 @@ if (players !== null && players > 1) {
   manifest.players = players;
 }
 
-if (usePointer) {
-  manifest.pointer = true;
-}
-
-if (useKeyboard) {
-  manifest.keyboard = true;
+// --pointer / --keyboard used to write manifest fields that gated input
+// delivery. They no longer do: WC_FLAG_POINTER / WC_FLAG_KEYBOARD in the
+// cart's own wc_info_t is the only gate, so a manifest field could only ever
+// disagree with the cart and silently drop its input. The flags are kept as
+// accepted no-ops so existing build scripts do not break, but they warn
+// rather than writing a field nothing reads.
+if (usePointer || useKeyboard) {
+  const names = [usePointer && '--pointer', useKeyboard && '--keyboard'].filter(Boolean);
+  const which = names.join(' and ');
+  const verb = names.length > 1 ? 'do' : 'does';
+  console.warn(`wasmcart-pack: ${which} no longer ${verb} anything. The cart declares ` +
+    `pointer/keyboard input itself, via WC_FLAG_POINTER / WC_FLAG_KEYBOARD in wc_info_t.`);
 }
 
 if (netWebsocket || netDataChannel) {
@@ -248,8 +254,18 @@ const zipfile = new ZipFile();
 const manifestJson = JSON.stringify(manifest, null, 2);
 zipfile.addBuffer(Buffer.from(manifestJson), 'manifest.json');
 
-// Add cart.wasm (store without compression - wasm is already compact)
-zipfile.addFile(wasmPath, 'cart.wasm', { compress: false });
+// Add cart.wasm.
+//
+// Small carts are stored uncompressed: a hand-written C cart really is
+// already compact, and storing it keeps load cheap. But that assumption
+// breaks badly for a language runtime -- a CPython cart deflates to 35% and
+// the Godot runtime to 16% (56 MB -> 9 MB), so storing those was costing
+// tens of megabytes per cart for nothing. Above the threshold, compress.
+const WASM_COMPRESS_THRESHOLD = 4 * 1024 * 1024;
+const wasmSize = statSync(wasmPath).size;
+zipfile.addFile(wasmPath, 'cart.wasm', {
+  compress: wasmSize > WASM_COMPRESS_THRESHOLD,
+});
 
 // Add asset files
 let assetCount = 0;
@@ -327,8 +343,8 @@ function printUsage() {
   console.log(`  --players <n>      Number of local players (1-4, default: 1)`);
   console.log(`  --ws <domain>      Allow WebSocket to domain (repeatable)`);
   console.log(`  --data-channel     Enable data channel (peer-to-peer)`);
-  console.log(`  --pointer          Enable pointer input (mouse/touch)`);
-  console.log(`  --keyboard         Enable raw keyboard input`);
+  console.log(`  --pointer          (deprecated, no-op: the cart sets WC_FLAG_POINTER)`);
+  console.log(`  --keyboard         (deprecated, no-op: the cart sets WC_FLAG_KEYBOARD)`);
   console.log(`  -h, --help         Show this help`);
   console.log(``);
   console.log(`The .wasc file is a ZIP archive containing:`);

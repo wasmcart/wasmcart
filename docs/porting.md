@@ -85,4 +85,4 @@ Use the reusable `sdl2_wc/` backends for SDL2 games:
 The SDL2 backend provides video (GL surface), audio (ring buffer),
 and input (gamepad) - all wired to the wasmcart ABI.
 
-Validated on: Neverball ES, Neverputt ES, Celeste Classic ES, Flare ES.
+Validated on: Neverball ES, Neverputt ES, Flare ES, and a 2D platformer port.

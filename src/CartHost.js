@@ -1202,13 +1202,15 @@ export class CartHost {
 
     // Read manifest.json
     const manifestEntry = index.get('manifest.json');
-    if (!manifestEntry) {
-      closeSync(fd);
-      throw new Error('.wasc archive missing manifest.json');
+    // The manifest is OPTIONAL (SPEC: "a host MUST NOT refuse a cart for
+    // lacking one"). Absent it, every field takes its default and `entry`
+    // falls back to cart.wasm.
+    let manifest = {};
+    if (manifestEntry) {
+      const manifestBuf = readZipEntry(fd, manifestEntry);
+      manifest = JSON.parse(manifestBuf.toString('utf8'));
     }
-    const manifestBuf = readZipEntry(fd, manifestEntry);
-    const manifest = JSON.parse(manifestBuf.toString('utf8'));
-    this._manifest = manifest;
+    this._manifest = manifestEntry ? manifest : null;
 
     // Read cart.wasm (or whatever entry is specified)
     const wasmName = manifest.entry || 'cart.wasm';
@@ -1261,10 +1263,13 @@ export class CartHost {
 
     // Read manifest
     const manifestEntry = index.get('manifest.json');
-    if (!manifestEntry) throw new Error('.wasc archive missing manifest.json');
-    const manifestBuf = readZipEntryFromBuffer(u8, manifestEntry);
-    const manifest = JSON.parse(new TextDecoder().decode(manifestBuf));
-    this._manifest = manifest;
+    // Optional — see the note in the fd-based loader above.
+    let manifest = {};
+    if (manifestEntry) {
+      const manifestBuf = readZipEntryFromBuffer(u8, manifestEntry);
+      manifest = JSON.parse(new TextDecoder().decode(manifestBuf));
+    }
+    this._manifest = manifestEntry ? manifest : null;
 
     // Read wasm
     const wasmName = manifest.entry || 'cart.wasm';
@@ -1852,7 +1857,10 @@ export class CartHost {
 
   _writePointerState() {
     if (!this.info || !this.info.pointerPtr || !this.info.wantsPointer) return;
-    if (!this._manifest?.pointer) return;
+    // The cart's WC_FLAG_POINTER is the ground truth — a manifest field
+    // never gates a capability the cart already declares (the double-gate
+    // lesson that GL detection already learned).
+    if (!this.info?.wantsPointer) return;
     this._updateViews();
     const base = this.info.pointerPtr;
     for (let i = 0; i < MAX_POINTERS; i++) {
@@ -1868,7 +1876,7 @@ export class CartHost {
   }
 
   _deliverPointerEvents() {
-    if (!this.info?.wantsPointer || !this._manifest?.pointer) return;
+    if (!this.info?.wantsPointer) return;
     const exports = this.instance.exports;
     while (this._pointerEvents.length > 0) {
       const evt = this._pointerEvents.shift();
@@ -1906,13 +1914,14 @@ export class CartHost {
 
   _writeKeyState() {
     if (!this.info || !this.info.keysPtr || !this.info.wantsKeyboard) return;
-    if (!this._manifest?.keyboard) return;
+    // WC_FLAG_KEYBOARD is the ground truth; see the pointer note above.
+    if (!this.info?.wantsKeyboard) return;
     this._updateViews();
     this._u8.set(this._keyState, this.info.keysPtr);
   }
 
   _deliverKeyEvents() {
-    if (!this.info?.wantsKeyboard || !this._manifest?.keyboard) return;
+    if (!this.info?.wantsKeyboard) return;
     const exports = this.instance.exports;
     while (this._keyEvents.length > 0) {
       const evt = this._keyEvents.shift();

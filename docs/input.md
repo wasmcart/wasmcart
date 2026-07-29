@@ -95,8 +95,8 @@ Without `mapping: 'standard'`, the gamepad is invisible to the game even though 
 
 ## Pointer Input (Opt-In, ABI v3)
 
-Unified mouse + multitouch. Cart declares `"pointer": true` in manifest. Host writes `wc_pointer_t[10]` state each frame.
+Unified mouse + multitouch. Cart declares it by setting `WC_FLAG_POINTER` in `wc_info_t.flags` — the flag is the only gate, no manifest field is involved. Host writes `wc_pointer_t[10]` state each frame.
 
 ## Keyboard Input (Opt-In, ABI v3)
 
-256-bit key state bitmask using USB HID scancodes. Cart declares `"keyboard": true` in manifest. Host writes `uint8_t[32]` bitmask each frame.
+256-bit key state bitmask using USB HID scancodes. Cart declares it by setting `WC_FLAG_KEYBOARD` in `wc_info_t.flags` — the flag is the only gate, no manifest field is involved. Host writes `uint8_t[32]` bitmask each frame.
