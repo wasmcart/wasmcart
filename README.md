@@ -249,8 +249,7 @@ The `manifest.json` inside a `.wasc` archive describes the cart:
   "height": 480,
   "players": 2,
   "net": {
-    "websocket": ["api.mygame.com"],
-    "data-channel": true
+    "domains": ["api.mygame.com"],
   }
 }
 ```
@@ -289,8 +288,8 @@ ABI v3 adds opt-in features beyond the core framebuffer/audio/gamepad loop:
 - **Text input** (no flag needed) - optional `wc_on_text(utf8, len)` export plus `wc_text_input_begin` / `end` imports. The host delivers characters the OS already composed (layout, dead keys, IME), so a cart never implements a keyboard layout
 - **Lifecycle** (no flag needed) - optional `wc_on_suspend` / `wc_on_resume` / `wc_on_focus_lost` / `wc_on_focus_gained` exports. The host stops calling `wc_render` while suspended and rebases the clock on resume, so a cart that ignores them is still correct
 - **Loop inversion** (no flag needed) - for ported engines that own their main loop: call `wc_frame_yield()` from inside your existing `while` loop and the host suspends the whole engine stack out of `wc_render()`, resuming it next frame. Requires an asyncify build; see [docs/porting.md](docs/porting.md)
-- **WebSocket** (`"net": {"websocket": [...]}`) - cart calls `wc_ws_open`/`send`/`close` imports, host delivers events via `wc_ws_on_open`/`on_message`/`on_close` exports
-- **Data channels** (`"net": {"data-channel": true}`) - peer-to-peer via `wc_dc_send`/`broadcast` imports and `wc_dc_on_connect`/`on_message`/`on_disconnect` exports
+- **Peer connections** (`"net": {"domains": [...]}`) - cart calls `wc_peer_open`/`send`/`close`; the host delivers events via `wc_peer_on_open`/`on_message`/`on_close`. Only connections the CART opens are allowlisted
+- **Host-supplied peers** (no manifest grant needed) - the host may hand the cart a peer it established itself (data channel, LAN socket, serial link). The cart sees it through the same `wc_peer_*` family and cannot tell which transport it is
 
 All v3 exports are optional - the host silently skips events if the cart doesn't export the callbacks. Existing v2 carts work unchanged.
 
@@ -427,7 +426,7 @@ npx wasmcart-pack --wasm cart.wasm --assets assets/ -o game.wasc --name "My Game
 
 # With ABI v3 features
 npx wasmcart-pack --wasm cart.wasm -o game.wasc --pointer --keyboard
-npx wasmcart-pack --wasm cart.wasm -o game.wasc --players 4 --ws api.mygame.com --data-channel
+npx wasmcart-pack --wasm cart.wasm -o game.wasc --players 4 --ws api.mygame.com
 ```
 
 Or pack a **dev directory** that already has its own `manifest.json` — the

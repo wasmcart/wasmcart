@@ -206,8 +206,18 @@ if (usePointer || useKeyboard) {
 
 if (netWebsocket || netDataChannel) {
   manifest.net = {};
-  if (netWebsocket) manifest.net.websocket = netWebsocket;
-  if (netDataChannel) manifest.net['data-channel'] = true;
+  // net.domains is the allowlist for cart-initiated connections. (--ws is kept
+  // as an alias because the flag predates the wc_peer_* merge.)
+  if (netWebsocket) manifest.net.domains = netWebsocket;
+  // --data-channel used to write net['data-channel'], which enabled
+  // host-registered peers. Nothing reads it now: a peer the HOST establishes
+  // needs no cart-side grant, because the host already chose it. Kept as an
+  // accepted no-op so existing build scripts do not break.
+  if (netDataChannel) {
+    console.warn('wasmcart-pack: --data-channel no longer does anything. Peers the ' +
+      'host establishes need no manifest grant; net.domains gates only the ' +
+      'connections a cart opens itself.');
+  }
 }
 
 if (!sourceManifest && assetsDir) {
@@ -342,7 +352,7 @@ function printUsage() {
   console.log(`  --height <px>      Cart resolution height`);
   console.log(`  --players <n>      Number of local players (1-4, default: 1)`);
   console.log(`  --ws <domain>      Allow WebSocket to domain (repeatable)`);
-  console.log(`  --data-channel     Enable data channel (peer-to-peer)`);
+  console.log(`  --data-channel     (deprecated, no-op: host-supplied peers need no grant)`);
   console.log(`  --pointer          (deprecated, no-op: the cart sets WC_FLAG_POINTER)`);
   console.log(`  --keyboard         (deprecated, no-op: the cart sets WC_FLAG_KEYBOARD)`);
   console.log(`  -h, --help         Show this help`);

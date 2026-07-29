@@ -10,7 +10,7 @@ Carts currently load local assets via `wc_load_asset` (synchronous, from .wasc b
 - Dynamic content updates
 - Analytics
 
-The WebSocket ABI (`wc_ws_*`) exists but is wrong for request/response patterns. A proper fetch ABI gives carts standard HTTP semantics.
+The peer-connection ABI (`wc_peer_*`) exists but is wrong for request/response patterns. A proper fetch ABI gives carts standard HTTP semantics.
 
 ## Design
 

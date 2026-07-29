@@ -82,7 +82,6 @@ So the manifest carries only what the cart cannot state for itself:
   "players": 4,
   "net": {
     "websocket": ["api.mygame.com", "leaderboard.example.com"],
-    "data-channel": true
   }
 }
 ```
@@ -111,14 +110,22 @@ manifest; carts MUST NOT rely on them.
 - If present, host provides the corresponding network imports to the cart
 - Host MAY refuse to provide networking (e.g., offline device) - cart must handle gracefully
 
-**`net.websocket`** (array of strings, optional)
-- Domain allowlist for WebSocket connections
-- Host enforces - connection attempts to unlisted domains fail
+**`net.domains`** (array of strings, optional)
+- Domain allowlist for peer connections addressed by URL
+- Host enforces - `wc_peer_open` to an unlisted domain returns -1
 - No wildcards, no raw IPs, no localhost
+- `net.websocket` is the superseded spelling and is still read, so manifests
+  written before the `wc_peer_*` merge keep working
 
-**`net.data-channel`** (boolean, optional)
-- If true, cart gets binary data channel imports
-- Host manages peer connections and signaling (opaque to cart)
+This is a **permission, not a capability declaration**, which is why it lives in
+the manifest rather than in `wc_info_t.flags`. Everywhere else in this ABI the
+cart is the authority on what it wants (see Manifest), but a cart cannot be
+trusted to grant itself network reach: that decision belongs to whoever packaged
+it. So it fails closed - no manifest, or no `net` entry, means no networking.
+
+Opening a connection requires **both** gates: the cart's `WC_FLAG_NET_PEER`
+(it asked for the imports) **and** a manifest grant covering the address (it is
+allowed to reach that host). Either alone is insufficient.
 
 ---
 
@@ -508,88 +515,149 @@ base boilerplate so a non-deterministic cart emits none of it. Pair it with
 
 ---
 
-## WebSocket
+## Peer Connection
+
+The **only** networking primitive. A cart opens connections to peers, sends and
+receives bytes, and is told when a connection opens or closes. That is the whole
+surface.
+
+Opt-in by setting `WC_FLAG_NET_PEER` in `wc_info_t.flags` **and** having the
+packager grant the relevant transport class in the manifest `net` object.
+Networking is the one capability where both are required (see Manifest).
+
+### The transport is opaque
+
+A connection may be a WebSocket to a server, a WebRTC data channel, direct TCP,
+a relay, MQTT, or a serial cable — whatever the host implements. **The cart
+cannot tell and MUST NOT care.** This is what makes a cart portable: the same
+binary runs on a host with a matchmaking service and on a host where the player
+types an IP address.
+
+**There is no client/server split in the ABI.** Which end dialed which is a
+host-side fact. Both ends simply have connections. A cart may of course *behave*
+as a server or a client — that is game logic, expressed in the messages it sends
+— and may hold as many connections as it chooses to accept.
+
+### Addressing
+
+`wc_peer_open` takes a string that **the host interprets**. This spec
+deliberately does not define its grammar. Depending on the host, valid addresses
+might look like `wss://game.example.com/lobby`, `room:ABCD`, `192.168.1.7:9000`,
+or `serial:/dev/ttyUSB0`. A host that does not understand an address, or whose
+manifest grant does not cover that address's transport class, fails the open.
 
 ### Cart imports (calls into host)
 
 ```c
-// Open a WebSocket connection.
-// url must be in the manifest's websocket allowlist.
-// Returns a connection ID (>= 0) or -1 on failure.
-int32_t wc_ws_open(const char* url, uint32_t url_len);
+// Open a connection. addr is host-interpreted; see Addressing.
+// Returns a connection ID (>= 0), or -1 on failure.
+int32_t wc_peer_open(const char* addr, uint32_t addr_len);
 
-// Close a WebSocket connection.
-void wc_ws_close(int32_t conn_id, uint32_t code);
+// Close a connection.
+void wc_peer_close(int32_t peer_id);
 
-// Send binary data. Returns bytes sent, or -1 on error.
-int32_t wc_ws_send(int32_t conn_id, const void* data, uint32_t len);
+// Send binary data to one peer. Returns bytes sent, or -1 on error.
+int32_t wc_peer_send(int32_t peer_id, const void* data, uint32_t len);
 
-// Send text data. Returns bytes sent, or -1 on error.
-int32_t wc_ws_send_text(int32_t conn_id, const char* str, uint32_t len);
+// Send binary data to every connected peer. Returns peer count, or -1 on error.
+int32_t wc_peer_broadcast(const void* data, uint32_t len);
 
-// Get readyState: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED
-int32_t wc_ws_state(int32_t conn_id);
+// Connection state: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED
+int32_t wc_peer_state(int32_t peer_id);
+
+// Number of currently connected peers.
+int32_t wc_peer_count(void);
+
+// Connection ID at an index (0 to peer_count-1), or -1 if out of range.
+// Lets a cart enumerate peers without tracking on_connect events.
+int32_t wc_peer_id(uint32_t index);
+
+// Write the peer's display name (null-terminated) into dest.
+// Returns bytes written, or -1 if peer_id is unknown.
+int32_t wc_peer_name(int32_t peer_id, char* dest, uint32_t max_len);
+
+// OPTIONAL. Transport properties as a bitmask, or 0 (WC_TRANSPORT_UNKNOWN).
+int32_t wc_peer_transport(int32_t peer_id);
 ```
 
 ### Cart exports (host calls into cart - all optional)
 
 ```c
-void wc_ws_on_open(int32_t conn_id);
-void wc_ws_on_message(int32_t conn_id, const void* data, uint32_t len);
-void wc_ws_on_message_text(int32_t conn_id, const char* str, uint32_t len);
-void wc_ws_on_close(int32_t conn_id, uint32_t code);
-void wc_ws_on_error(int32_t conn_id);
+void wc_peer_on_connect(int32_t peer_id, const char* name, uint32_t name_len);
+void wc_peer_on_message(int32_t peer_id, const void* data, uint32_t len);
+void wc_peer_on_disconnect(int32_t peer_id);
+void wc_peer_on_error(int32_t peer_id);
 ```
 
+### Identity: the id is the handle, the name is display-only
+
+Two things identify a peer, and they are **not** interchangeable:
+
+- **`peer_id`** — a small integer, stable for the session, assigned by the host.
+  This is the handle. Key player tables on it; pass it to send.
+- **name** — a display string the host supplies: a username, a room nickname, an
+  OS account name, whatever identity the host has.
+
+**Normative:** a cart MUST NOT assume names are unique, stable across sessions,
+or trustworthy. A host with real accounts may guarantee all three; a host that
+prompts for a nickname guarantees none. Names arrive from remote machines and
+are therefore attacker-controlled text: bound the length, do not assume valid
+UTF-8, and never use a name as a key for anything that matters.
+
+### Transport properties (optional both ways)
+
+Most carts never ask. `wc_peer_transport` exists for the narrow case of a cart
+doing tight per-frame synchronization that must know whether delivery is
+reliable, or whether it is running over something with inherent latency, before
+assuming it can.
+
+```c
+#define WC_TRANSPORT_UNKNOWN     0x00  // host does not characterize it
+#define WC_TRANSPORT_RELIABLE    0x01  // delivery guaranteed
+#define WC_TRANSPORT_ORDERED     0x02  // messages arrive in send order
+#define WC_TRANSPORT_LOW_LATENCY 0x04  // suitable for per-frame traffic
+```
+
+It is optional in **both** directions: optional for the cart to call, and
+optional for the host to answer. A host that does not characterize its transport
+returns `WC_TRANSPORT_UNKNOWN`, and carts MUST handle that — treat it as
+"assume nothing", not "assume the worst" or "assume reliable".
+
+Deliberately *properties*, not a transport name: a name invites carts to write
+`if (transport == "webrtc")`, re-coupling them to the implementations this
+design exists to hide.
+
 ### Notes
-- Event-driven - mirrors the real WebSocket API
+
+- **Binary only** — games serialize their own protocols. There is no text-frame
+  variant: text frames are meaningful for WebSocket and meaningless for a serial
+  cable or raw TCP, so framing belongs to the cart.
 - Host buffers events and delivers them before each `wc_render()` call
-- Both binary and text frame support
-- Cart exports are optional - if missing, host silently drops events
-- Host validates URL against manifest allowlist before connecting
-- Connection IDs are small integers managed by host (0, 1, 2, ...)
-- `data`/`str` pointers in callbacks are temporary - cart must copy what it needs
+- Cart exports are optional - if missing, the cart can still poll via
+  `wc_peer_count()` / `wc_peer_id()` / `wc_peer_state()`
+- Connection IDs are small integers managed by the host (0, 1, 2, ...)
+- `data` / `name` pointers in callbacks are temporary - the cart MUST copy what
+  it needs before returning
+- Delivery semantics are host-defined; query `wc_peer_transport()` if it matters
 
----
+### Out of scope, deliberately
 
-## Data Channel
+**Auth and matchmaking are host territory.** They govern *how a connection comes
+to exist*; the cart's world begins once one exists and has an id and a name. A
+host may do accounts, signed tokens, lobbies, room codes, LAN discovery, QR
+codes, or nothing. None of it changes a line of cart code — and a cart that
+never participates in authentication cannot leak a credential or be tricked into
+trusting an identity.
 
-For peer-to-peer gameplay. The host manages signaling and peer connections - the cart just sees binary data channels. The underlying transport (WebRTC, relayed, LAN UDP, etc.) is opaque to the cart.
+**Custom game attributes are cart-layer data.** Character select, team, colour,
+ready state, protocol version: a cart sends these itself as its first message
+after connect, in its own format. The host MUST NOT parse cart traffic.
 
-### Cart imports (calls into host)
-
-```c
-// Get number of currently connected peers.
-int32_t wc_dc_peer_count(void);
-
-// Get info about a peer by index (0 to peer_count-1).
-// Writes a null-terminated username/label into dest.
-// Returns the peer's connection ID, or -1 if index out of range.
-int32_t wc_dc_peer_info(uint32_t index, char* dest, uint32_t max_len);
-
-// Send binary data to a specific peer. Returns bytes sent, or -1 on error.
-int32_t wc_dc_send(int32_t peer_id, const void* data, uint32_t len);
-
-// Send binary data to all connected peers. Returns peer count, or -1 on error.
-int32_t wc_dc_broadcast(const void* data, uint32_t len);
-```
-
-### Cart exports (host calls into cart - all optional)
-
-```c
-// peer_id is stable for this session.
-void wc_dc_on_connect(int32_t peer_id, const char* label, uint32_t label_len);
-void wc_dc_on_disconnect(int32_t peer_id);
-void wc_dc_on_message(int32_t peer_id, const void* data, uint32_t len);
-```
-
-### Notes
-- Cart does NOT manage connections - host handles all signaling
-- peer_id works like a socket descriptor - games can use it to track players
-- Cart exports are optional - if missing, cart can still poll via `wc_dc_peer_count()`/`wc_dc_peer_info()`
-- Binary only - games serialize their own protocols
-- Delivery semantics are host-defined (may be unreliable or reliable depending on transport)
-- Host delivers events before `wc_render()`
+**Rollback netplay is not a wasmcart feature.** A cart's state is its whole
+linear memory, which is orders of magnitude too large to snapshot per frame. A
+cart wanting rollback implements it internally over ordinary peer connections,
+rolling back only the state it knows matters. See
+[docs/networking.md](docs/networking.md).
 
 ---
 
@@ -855,7 +923,7 @@ Auditing a wasmcart host therefore means auditing one list, and that list is sho
 - **Cart services** - `wc_log`, `wc_debug_mark`, `wc_frame_yield`, `wc_pad_name`,
   `wc_pad_has_rumble`, `wc_pad_rumble`, `wc_pad_rumble_stop`
 - **Assets (read-only, path-validated)** - `wc_asset_size`, `wc_load_asset`
-- **Network (opt-in, allowlisted)** - the `wc_ws_*` and `wc_dc_*` families
+- **Network (opt-in, allowlisted)** - the `wc_peer_*` family
 - **Toolchain shims** - a small set of emscripten/WASI symbols that compilers emit
   unconditionally
 
