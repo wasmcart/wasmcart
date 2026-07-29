@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>wasmcart browser test</title>
+<!--
+  Host page for test/browser.test.mjs. Deliberately empty: every assertion runs
+  inside page.evaluate() so the test file stays the single source of truth and
+  this cannot drift away from it.
+-->
+<!--
+  Import map: CartHostWeb imports the bare specifier "fflate", which browsers
+  cannot resolve on their own. A real deployment supplies this (or bundles),
+  so the test does what a real page does rather than working around it.
+-->
+<script type="importmap">
+{ "imports": { "fflate": "/node_modules/fflate/esm/browser.js" } }
+</script>
+<canvas id="screen" width="320" height="240"></canvas>
