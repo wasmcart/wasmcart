@@ -3,3 +3,7 @@ node_modules
 ports
 
 test/fixtures/*.sav
+
+# Fixture intermediates: the .wasc is the artifact tests load, and it
+# contains the wasm. Tracking both just duplicates it in the repo.
+test/fixtures/*.wasm
