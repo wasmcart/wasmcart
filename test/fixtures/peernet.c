@@ -7,7 +7,14 @@
  * Rebuild (clang with a wasm32 target, from this directory):
  *   clang --target=wasm32 -O2 -nostdlib -I../../include \
  *     -DWC_USE_NET_PEER -Wl,--no-entry -Wl,--export-dynamic \
- *     -Wl,--allow-undefined -o peernet.wasm peernet.c
+ *     -Wl,--allow-undefined -Wl,--initial-memory=1048576 \
+ *     -o peernet.wasm peernet.c
+ *
+ * The --initial-memory is load-bearing: the host stages callback payloads in
+ * the TOP 64KB of linear memory (_withTempWasmData). At the 128KB the linker
+ * defaults to, that window starts at 65536 -- exactly where this cart's statics
+ * begin -- so every delivered message overwrote wc_info_t and the host read back
+ * garbage resolution. 1MB puts the statics well clear of it.
  *   npx wasmcart-pack --wasm peernet.wasm --name peernet -o peernet.wasc
  */
 #include "wasmcart.h"
@@ -26,6 +33,10 @@ static int   last_peer;
 static int   last_msg_len;
 static char  last_name[64];
 static unsigned char last_msg[64];
+// Separate scratch for host-written strings. Sharing last_msg let a test's
+// string land in memory wc_render reads back as resolution fields, which
+// produced spurious "cart requested 6647407x32" warnings.
+static unsigned char scratch[256];
 
 __attribute__((export_name("wc_get_info")))
 wc_info_t* wc_get_info(void) {
@@ -108,4 +119,4 @@ int t_broadcast(int ptr, int len) {
     return wc_peer_broadcast((const void*)(uintptr_t)ptr, (unsigned int)len);
 }
 __attribute__((export_name("t_scratch")))
-int t_scratch(void) { return (int)(uintptr_t)last_msg; }
+int t_scratch(void) { return (int)(uintptr_t)scratch; }

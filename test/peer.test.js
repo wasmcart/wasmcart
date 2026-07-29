@@ -223,3 +223,26 @@ test('a granted, allowlisted address DOES open — proving the controls discrimi
   assert.equal(cart.instance.exports.t_id_at(0), id);
   cleanup();
 });
+
+// --- The gate is asymmetric by design: dialing out is gated, being handed a
+// --- peer is not. Both directions pinned, since either drifting is a security
+// --- change that would otherwise pass silently.
+
+test('a host-registered peer needs NO manifest grant', async () => {
+  const { cart, cleanup } = await loadWith({});
+  const ex = cart.instance.exports;
+  cart.addPeer(1, 'host-chose-me', fakeChannel());
+  assert.equal(ex.t_count(), 1, 'the host already made this decision');
+  cart.runFrame([]);
+  assert.equal(ex.t_connects(), 1, 'on_connect still fires with an empty manifest');
+  cleanup();
+});
+
+test('CONTROL: the same cart still cannot dial out without a grant', async () => {
+  // Same empty manifest as above. Proves the previous test is about direction,
+  // not about the gate being switched off wholesale.
+  const { cart, cleanup } = await loadWith({});
+  const [ptr, len] = str(cart, 'wss://example.com/x');
+  assert.equal(cart.instance.exports.t_open(ptr, len), -1);
+  cleanup();
+});

@@ -106,8 +106,8 @@ manifest; carts MUST NOT rely on them.
   fields costs nothing at runtime
 
 **`net`** (object, optional)
-- Omitted = no networking. Cart receives no network imports.
-- If present, host provides the corresponding network imports to the cart
+- Gates only connections the CART opens. Omitted = `wc_peer_open` always fails;
+  peers the HOST registers still reach the cart (see Peer Connection).
 - Host MAY refuse to provide networking (e.g., offline device) - cart must handle gracefully
 
 **`net.domains`** (array of strings, optional)
@@ -121,7 +121,9 @@ This is a **permission, not a capability declaration**, which is why it lives in
 the manifest rather than in `wc_info_t.flags`. Everywhere else in this ABI the
 cart is the authority on what it wants (see Manifest), but a cart cannot be
 trusted to grant itself network reach: that decision belongs to whoever packaged
-it. So it fails closed - no manifest, or no `net` entry, means no networking.
+it. So it fails closed - no manifest, or no `net` entry, means the cart cannot
+dial out. (Peers the host itself registers are unaffected: that is the host's
+own decision, not a reach the cart requested.)
 
 Opening a connection requires **both** gates: the cart's `WC_FLAG_NET_PEER`
 (it asked for the imports) **and** a manifest grant covering the address (it is
@@ -523,9 +525,17 @@ The **only** networking primitive. A cart opens connections to peers, sends and
 receives bytes, and is told when a connection opens or closes. That is the whole
 surface.
 
-Opt-in by setting `WC_FLAG_NET_PEER` in `wc_info_t.flags` **and** having the
-packager grant the relevant transport class in the manifest `net` object.
-Networking is the one capability where both are required (see Manifest).
+Opt-in by setting `WC_FLAG_NET_PEER` in `wc_info_t.flags`. Whether a manifest
+grant is ALSO required depends on who initiates the connection, and the two
+directions are deliberately different:
+
+- **The cart dials out** (`wc_peer_open`) — both gates are required: the flag,
+  and a manifest grant covering the address. The cart is naming a destination
+  the packager may never have anticipated, so it fails closed (see Manifest).
+- **The host registers a peer** — the flag alone. A host that establishes a
+  connection has already made the decision; requiring the packager to write a
+  key permitting the embedder's own action is ceremony, not security. A cart
+  with `WC_FLAG_NET_PEER` and no `net` object at all still receives such peers.
 
 ### The transport is opaque
 
