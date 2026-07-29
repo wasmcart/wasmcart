@@ -9,6 +9,7 @@ import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from 'no
 import { tmpdir } from 'node:os';
 import { CartHost } from '../index.js';
 import { makeSaver } from '../src/save.js';
+import { MAX_DELTA_MS } from '../src/abi.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELLO = join(HERE, 'fixtures', 'hello.wasc');
@@ -616,4 +617,80 @@ test('the player suppresses gameplay keys while text input is active', async () 
   assert.ok(/window\.on\('textInput'/.test(src), 'the player must forward SDL text');
   assert.ok(/held\.clear\(\)/.test(src),
     'keys held when a field opens must be released, or they stick while keyDown is suppressed');
+});
+
+// --- Delta clamp ---
+// delta_ms is `now - lastFrameTime`, so ANY stall inflates it: a GC pause, a
+// disk hit, a debugger breakpoint, a throttled background tab. Handing that to
+// a cart integrating velocity by dt teleports it through the world. The clamp
+// is the general guard; lifecycle's rebase only covers stalls the host knows
+// about, which is why both exist.
+
+test('a stall is clamped, and never reaches the cart as a giant delta', async () => {
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/hello.wasc'));
+  const deltaMs = () =>
+    new DataView(host._u8.buffer).getFloat64(host.info.timePtr + 8, true);
+
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  host.runFrame([{ connected: true, buttons: 0 }]);
+
+  // A REAL blocked thread, not a rewound clock field: this is what a GC pause
+  // looks like, and no lifecycle event fires for it.
+  const until = Date.now() + 500;
+  while (Date.now() < until) { /* block */ }
+  host.runFrame([{ connected: true, buttons: 0 }]);
+
+  assert.equal(deltaMs(), MAX_DELTA_MS,
+    'a half-second stall must arrive clamped, not as 500ms of simulation');
+
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  assert.ok(deltaMs() < MAX_DELTA_MS,
+    'the clamp must not latch -- normal frames report their real delta');
+  host.destroy();
+});
+
+test('time_ms stays consistent with the deltas actually delivered', async () => {
+  // If time_ms advanced by the full stall while delta_ms was clamped, a cart
+  // summing deltas and a cart reading time_ms would disagree by the length of
+  // the stall, and drift apart for the rest of the session.
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/hello.wasc'));
+  const timeMs = () =>
+    new DataView(host._u8.buffer).getFloat64(host.info.timePtr, true);
+
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  const before = timeMs();
+
+  const until = Date.now() + 500;
+  while (Date.now() < until) { /* block */ }
+  host.runFrame([{ connected: true, buttons: 0 }]);
+
+  const advanced = timeMs() - before;
+  assert.ok(advanced >= 0, 'time_ms must never run backwards');
+  assert.ok(advanced <= MAX_DELTA_MS + 50,
+    `time_ms advanced ${advanced}ms across a clamped frame; it must track the ` +
+    'clamped delta, not the wall-clock stall');
+  host.destroy();
+});
+
+test('the deterministic clock is not clamped', async () => {
+  // A harness driving a fixed step is stating what delta it wants; clamping it
+  // would silently break reproducibility for any step above the cap.
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/hello.wasc'));
+  host.setFixedStep(1000); // deliberately above MAX_DELTA_MS
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  const d = new DataView(host._u8.buffer).getFloat64(host.info.timePtr + 8, true);
+  assert.equal(d, 1000, 'a fixed step is honoured exactly, cap or not');
+  host.destroy();
+});
+
+test('both hosts clamp delta the same way', async () => {
+  for (const f of ['../src/CartHost.js', '../src/CartHostWeb.js']) {
+    const src = readFileSync(join(HERE, f), 'utf8');
+    assert.ok(src.includes('MAX_DELTA_MS'), `${f} must clamp delta_ms`);
+    assert.ok(/startTime \+= raw - MAX_DELTA_MS/.test(src),
+      `${f} must absorb the discarded time so time_ms stays consistent`);
+  }
 });

@@ -25,6 +25,7 @@ import {
   POINTER_SIZE,
   MAX_POINTERS,
   KEYS_STATE_SIZE,
+  MAX_DELTA_MS,
   MAX_RUMBLE_MS,
   clamp01,
 } from './abi.js';
@@ -888,7 +889,17 @@ export class CartHost {
       this.lastFrameTime = this.startTime + timeMs;
     } else {
       const now = performance.now();
-      deltaMs = now - this.lastFrameTime;
+      // Clamp: a long stall must not become a giant time step. This is the
+      // general guard -- lifecycle resume() rebases the stalls the host knows
+      // about, but a GC pause, a disk hit or a debugger breakpoint produces
+      // exactly the same spike with no event to hang a fix on.
+      const raw = now - this.lastFrameTime;
+      deltaMs = raw > MAX_DELTA_MS ? MAX_DELTA_MS : raw;
+      // Absorb the discarded time into startTime so time_ms stays consistent
+      // with the deltas the cart was actually handed. Otherwise a cart summing
+      // delta_ms and a cart reading time_ms disagree by the length of the
+      // stall, and the two clocks drift apart for the rest of the session.
+      if (raw > MAX_DELTA_MS) this.startTime += raw - MAX_DELTA_MS;
       timeMs = now - this.startTime;
       this.lastFrameTime = now;
     }

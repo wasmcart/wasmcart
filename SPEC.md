@@ -252,6 +252,33 @@ Editing keys stay on the keyboard ABI: backspace, arrows and enter are key
 presses rather than characters, so a cart drawing its own text field reads
 those through `wc_kb_on_down` and appends characters from `wc_on_text`.
 
+## Frame timing and the delta clamp
+
+`wc_time_t.delta_ms` is the time since the last rendered frame, so **a host MUST
+clamp it**. Any stall inflates it -- a GC pause, a slow disk read, a debugger
+breakpoint, a throttled background tab -- and a cart integrating velocity by dt
+moves a stall's worth of distance in one step, straight through whatever it
+should have collided with. This is the same cap every engine applies (Unity's
+`maximumDeltaTime`, Unreal's Max Physics Delta Time).
+
+The reference hosts clamp at **250ms** (4fps): slow enough that no real frame
+reaches it, fast enough that it never fires during normal play.
+
+**A host MUST keep `time_ms` consistent with the deltas it delivered.** If
+`time_ms` advanced by the full stall while `delta_ms` was clamped, a cart
+summing deltas and a cart reading `time_ms` would disagree by the length of the
+stall and drift apart for the rest of the session. `time_ms` MUST NOT run
+backwards.
+
+A deterministic fixed step (see Deterministic replay) is NOT clamped: a harness
+setting a step is stating the delta it wants, and clamping it would silently
+break reproducibility for any step above the cap.
+
+The clamp is the general guard. Lifecycle `resume()` additionally rebases the
+clock for stalls the host *knows* about, so a genuine suspend costs the cart no
+phantom time at all -- but the clamp is what protects a cart from the stalls
+nothing reports.
+
 ## Lifecycle
 
 Four optional cart exports. A cart MAY export any subset; the host skips those
@@ -275,13 +302,12 @@ window suspends; alt-tabbing only moves focus, and a focused-but-not-suspended
 cart keeps rendering. Conflating them means a game either cannot auto-pause on
 alt-tab, or wrongly freezes when it should still be drawing.
 
-**The host MUST rebase the clock across a suspend** so the first resumed frame
-reports a normal `wc_time_t.delta_ms`. `delta_ms` is the time since the last
-*rendered* frame, and a suspended cart renders nothing, so the gap is not
-elapsed game time. Without this a ten-minute background stint arrives as a
-600000ms delta and teleports anything integrating velocity by dt through the
-world. `time_ms` MUST stay continuous for the same reason: it measures time the
-cart has been *running*.
+**The host SHOULD rebase the clock across a suspend.** The delta clamp (see
+Frame timing) already prevents a suspended gap from reaching the cart as a giant
+time step, so this is a refinement rather than the protection: rebasing means a
+*known* suspension costs the cart no phantom time at all, where the clamp alone
+leaves it one clamped frame. `time_ms` MUST stay continuous either way, since it
+measures time the cart has been *running*.
 
 **Ordering is guaranteed.** Suspending emits `wc_on_focus_lost` before
 `wc_on_suspend`; resuming emits `wc_on_resume` before `wc_on_focus_gained`. The

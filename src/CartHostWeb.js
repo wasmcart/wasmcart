@@ -17,6 +17,7 @@ import {
   POINTER_SIZE,
   MAX_POINTERS,
   KEYS_STATE_SIZE,
+  MAX_DELTA_MS,
   MAX_RUMBLE_MS,
   clamp01,
 } from './abi.js';
@@ -669,7 +670,14 @@ export class CartHostWeb {
     if (this._suspended) return this._lastFrame ?? null;
 
     const now = performance.now();
-    const deltaMs = now - this.lastFrameTime;
+    // Clamp: a long stall must not become a giant time step. See CartHost --
+    // this is the general guard, since a GC pause or a background tab throttle
+    // produces the same spike with no lifecycle event to hang a fix on.
+    const raw = now - this.lastFrameTime;
+    const deltaMs = raw > MAX_DELTA_MS ? MAX_DELTA_MS : raw;
+    // Absorb the discarded time so time_ms stays consistent with the deltas the
+    // cart was actually handed.
+    if (raw > MAX_DELTA_MS) this.startTime += raw - MAX_DELTA_MS;
     const timeMs = now - this.startTime;
     this.lastFrameTime = now;
 

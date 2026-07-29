@@ -36,6 +36,13 @@ typedef struct {
 } wc_pad_t;
 
 // Time struct (20 bytes, 8-byte aligned)
+//
+// delta_ms is CLAMPED by the host (250ms in the reference hosts). Any stall
+// inflates a raw delta -- a GC pause, a disk hit, a breakpoint, a backgrounded
+// tab -- and integrating velocity by an unclamped dt moves an object a stall's
+// worth of distance in one step, through whatever it should have hit. Every
+// engine caps this for the same reason. time_ms stays consistent with the
+// deltas you were actually handed, and never runs backwards.
 typedef struct {
     double  time_ms;
     double  delta_ms;

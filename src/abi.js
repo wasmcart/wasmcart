@@ -35,6 +35,23 @@ export const INPUT_REGION_SIZE = PAD_SIZE * MAX_PADS; // 64 bytes
 // rumble re-arms each frame, which also means rumble stops when the cart does.
 export const MAX_RUMBLE_MS = 5000;
 
+// Longest delta_ms a cart will ever be handed, in ms (250ms = 4fps).
+//
+// delta_ms is `now - lastFrameTime`, so ANY stall inflates it: a GC pause, a
+// slow disk hit, a debugger breakpoint, a suspended tab. Handing that number to
+// a cart integrating velocity by dt teleports it through the world -- a 30s
+// stall moves an object 30s worth of distance in one step, straight through
+// whatever it should have collided with.
+//
+// Every engine caps this (Unity's maximumDeltaTime, Unreal's Max Physics Delta
+// Time) for the same reason, and the cap is the general fix: lifecycle only
+// covers stalls the host KNOWS about, while this covers all of them.
+//
+// 250ms is slow enough that no real frame reaches it and fast enough that the
+// clamp never fires during normal play. A cart that wants true elapsed time
+// across a gap reads time_ms, which stays continuous.
+export const MAX_DELTA_MS = 250;
+
 /** Clamp to 0..1, mapping NaN to 0 (NaN would otherwise pass `<` and `>`). */
 export function clamp01(v) {
   return v > 0 ? (v < 1 ? v : 1) : 0;

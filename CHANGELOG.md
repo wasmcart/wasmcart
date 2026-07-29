@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.15.1
+
+Clamps `delta_ms`, which is the general fix for a problem 0.14.0 only solved
+halfway.
+
+`delta_ms` is `now - lastFrameTime`, so any stall inflates it and a cart
+integrating velocity by dt moves a stall's worth of distance in one step. 0.14.0
+addressed this by rebasing the clock on lifecycle resume -- but that only covers
+stalls the host *knows* about. A GC pause, a slow disk read, a debugger
+breakpoint or a throttled background tab produces exactly the same spike with no
+event to hang a fix on. Measured: a 30-second stall with no suspend involved
+still delivered a 30000ms delta.
+
+Hosts now clamp at 250ms (4fps), the same cap Unity and Unreal apply. `time_ms`
+absorbs the discarded time so the two clocks stay consistent -- otherwise a cart
+summing deltas and a cart reading `time_ms` drift apart by the length of every
+stall. Deterministic fixed steps are not clamped, since a harness setting a step
+is stating the delta it wants.
+
+The lifecycle rebase stays and is now correctly described as a refinement rather
+than the protection: with the clamp alone a suspend costs one clamped frame of
+phantom time, with the rebase it costs none. SPEC.md's claim that the rebase was
+required has been corrected accordingly.
+
 ## 0.15.0
 
 Adds text input: characters, not scancodes.
