@@ -1,9 +1,15 @@
 name: CI
 
+# Publishing is deliberately MANUAL (`npm publish` from a clean checkout), so
+# there is no publish job here and no NPM_TOKEN secret on this repo. CI's job is
+# to prove the tree is good; releasing is a human decision.
+#
+# A publish job that cannot authenticate is worse than none: it fails on every
+# tag, and a workflow that is always red is a workflow nobody reads.
+
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -69,30 +75,3 @@ jobs:
             echo "::error::npm pack would ship build artifacts / split-out dirs - check the files field"
             exit 1
           fi
-
-  publish:
-    name: publish to npm
-    needs: [test, pack-guard]
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write   # npm provenance
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-      # Needed here too, not just in `test`: package.json's prepublishOnly hook
-      # runs the full suite, so `npm publish` fails on a runner without GL even
-      # though the test job already passed on one that had it.
-      - name: Install headless GL (Mesa software rasterizer)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libegl1 libgles2 libgl1-mesa-dri libglvnd0
-      - run: npm ci
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
