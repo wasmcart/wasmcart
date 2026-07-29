@@ -9,11 +9,43 @@
 
 ## Overview
 
-A cart declares its capabilities in a manifest and exports three functions
-(`wc_get_info`, `wc_init`, `wc_render`). Gamepad input is always available;
-networking (WebSocket + data channels) and extended input (pointer + keyboard) are
-opt-in per cart. The host provides everything through a small set of imports and
-shared-memory regions; the cart owns its own memory and reaches nothing else.
+A cart exports three functions (`wc_get_info`, `wc_init`, `wc_render`) and
+declares its capabilities in `wc_info_t.flags`. Gamepad input is always
+available; extended input (pointer, keyboard) is opt-in per cart via those
+flags. Networking is the one capability a cart cannot grant itself, so it is
+declared in the manifest and fails closed. The host provides everything through
+a small set of imports and shared-memory regions; the cart owns its own memory
+and reaches nothing else.
+
+Everything a cart can call is listed under [Imports](#imports-host-provides).
+That list is the complete attack surface -- see [Security Model](#security-model).
+
+### Why each part of the ABI exists
+
+The ABI is deliberately small, and additions are held to a bar: **a cart must
+not be able to solve the problem itself.** This table records which parts met
+that bar because something was *broken*, and which are conveniences that could
+in principle have been left out. It exists so the next person weighing an
+addition can see the standard that was applied, and hold a new proposal to it.
+
+| Feature | Why | Could a cart do this itself? |
+|---|---|---|
+| **Delta clamp** | **Bug.** An unclamped `delta_ms` handed a cart the length of any stall -- a GC pause, a disk hit, a suspended tab -- and integrating velocity by that dt teleports objects through walls. Measured at 30000ms for a 30s stall. | No. The cart cannot see the stall, and clamping cart-side means every cart reimplements it. |
+| **Resize validation** | **Bug.** A cart writing an oversized `width`/`height` was *reported* at that size while the framebuffer was silently clamped -- the host described a frame whose pixels did not exist. | No. The corruption was in the host's own reporting. |
+| **Save durability** | **Bug.** Saves were written only on a graceful quit, so Ctrl-C or an OS kill lost them. The terminal player never saved at all. | No. The host owns persistence by design. |
+| **Loop inversion** (`wc_frame_yield`) | **Bug** in the web host, which stubbed the import and hung the tab on the first frame. The mechanism itself is a **necessity**: an engine that owns its main loop cannot return a frame without it. | No. Unwinding the stack requires host cooperation. |
+| **Text input** (`wc_on_text`) | **Necessity.** Scancodes are key positions, not characters: `Shift+2` differs by layout and `é` has no scancode. | No. Deriving characters from scancodes means reimplementing every keyboard layout, and non-Latin input stays impossible. |
+| **Optional manifest** | **Bug.** Manifest fields double-gated capabilities the cart already declared, so a mismatch silently dropped input with nothing logged. | No. |
+| **Lifecycle** (`wc_on_suspend`, …) | **Mixed.** Suspension itself is host-owned and needs no cart cooperation. The callbacks are a **convenience** -- pausing audio, dropping a netplay connection, flushing a save before a backgrounded app is killed. The clock rebase they enable is a refinement over the clamp, not a replacement for it. | Partly. A cart cannot detect suspension, but it also does not have to: the host simply stops calling it. |
+| **Rumble** (`wc_pad_rumble`) | **Additive.** Nothing is broken without it. Included because it is table stakes on every console, and maps 1:1 onto SDL and the W3C haptics API with no per-platform divergence. | No -- but nothing breaks in its absence either. |
+
+Deliberately **not** added, as examples of what fails the bar: IME preedit state
+(large surface, every host must plumb composition through, cart must render it)
+and host-owned text fields (dictates editing behaviour and fights a cart drawing
+its own UI). Both were considered and rejected.
+
+Every entry above is optional: a cart that exports and imports none of them runs
+unchanged.
 
 ---
 
