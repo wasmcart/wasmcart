@@ -25,6 +25,8 @@ import {
   POINTER_SIZE,
   MAX_POINTERS,
   KEYS_STATE_SIZE,
+  MAX_RUMBLE_MS,
+  clamp01,
 } from './abi.js';
 import { createWebGLImports } from './webgl_imports.js';
 
@@ -316,6 +318,7 @@ export class CartHost {
 
     // Pad names (populated each frame from pad objects)
     this._padNames = ['', '', '', ''];
+    this._rumbleHandler = null; // set by the embedder via setRumbleHandler()
   }
 
   /**
@@ -510,6 +513,11 @@ export class CartHost {
         wc_pad_name: (padId, bufPtr, bufLen) => {
           return this._padName(padId, bufPtr, bufLen);
         },
+        // --- Rumble (cart -> host) ---
+        wc_pad_has_rumble: (padId) => this._padHasRumble(padId),
+        wc_pad_rumble: (padId, low, high, durationMs) =>
+          this._padRumble(padId, low, high, durationMs),
+        wc_pad_rumble_stop: (padId) => this._padRumbleStop(padId),
         // --- WebSocket API (ABI v3) ---
         wc_ws_open: (urlPtr, urlLen) => {
           return this._wsOpen(urlPtr, urlLen);
@@ -2064,6 +2072,52 @@ export class CartHost {
     const len = Math.min(encoded.length, bufLen);
     this._u8.set(encoded.subarray(0, len), bufPtr);
     return len;
+  }
+
+  // --- Rumble ---
+  // Rumble runs the opposite way to the rest of input: the cart drives it, so
+  // it is an import rather than a field in the shared pad struct. The host
+  // supplies the actual device via setRumbleHandler(); with no handler wired
+  // (headless runs, --frames captures, tests) every call is a silent no-op and
+  // wc_pad_has_rumble reports 0, which is the honest answer.
+  //
+  // Capability is per-DEVICE, not per-platform: an X360 pad reports rumble but
+  // not trigger rumble, so a cart has to be able to ask rather than assume.
+  setRumbleHandler(handler) {
+    this._rumbleHandler = handler || null;
+  }
+
+  _padHasRumble(padId) {
+    if (padId >= MAX_PADS || !this._rumbleHandler) return 0;
+    try {
+      return this._rumbleHandler.hasRumble(padId) ? 1 : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  _padRumble(padId, low, high, durationMs) {
+    if (padId >= MAX_PADS || !this._rumbleHandler) return;
+    // Clamp rather than reject: a cart computing intensity from game state
+    // (distance, damage) will overshoot at the edges, and a dropped rumble is
+    // harder to notice than a saturated one. NaN clamps to 0.
+    const lo = clamp01(low);
+    const hi = clamp01(high);
+    // Cap duration so a cart cannot pin the motors indefinitely. SDL stops on
+    // its own timer, so even a cart that crashes mid-effect leaves a pad that
+    // goes quiet.
+    const dur = Math.min(Math.max(durationMs | 0, 0), MAX_RUMBLE_MS);
+    if (dur === 0) return;
+    try {
+      this._rumbleHandler.rumble(padId, lo, hi, dur);
+    } catch { /* a pad unplugged mid-effect must not fault the cart */ }
+  }
+
+  _padRumbleStop(padId) {
+    if (padId >= MAX_PADS || !this._rumbleHandler) return;
+    try {
+      this._rumbleHandler.stopRumble(padId);
+    } catch { /* as above */ }
   }
 
   _drainAudio() {

@@ -285,6 +285,7 @@ ABI v3 adds opt-in features beyond the core framebuffer/audio/gamepad loop:
 
 - **Pointer input** (`WC_FLAG_POINTER`) - host writes `wc_pointer_t[10]` state (unified mouse + multitouch) and optionally calls `wc_ptr_on_down`, `wc_ptr_on_move`, `wc_ptr_on_up` exports
 - **Keyboard input** (`WC_FLAG_KEYBOARD`) - host writes `uint8_t[32]` key state bitmask (USB HID scancodes) and optionally calls `wc_kb_on_down`, `wc_kb_on_up` exports
+- **Rumble** (no flag needed) - cart calls `wc_pad_rumble(pad, low, high, ms)`; query support per device with `wc_pad_has_rumble(pad)`. Maps to SDL rumble natively and W3C `dual-rumble` in the browser
 - **WebSocket** (`"net": {"websocket": [...]}`) - cart calls `wc_ws_open`/`send`/`close` imports, host delivers events via `wc_ws_on_open`/`on_message`/`on_close` exports
 - **Data channels** (`"net": {"data-channel": true}`) - peer-to-peer via `wc_dc_send`/`broadcast` imports and `wc_dc_on_connect`/`on_message`/`on_disconnect` exports
 

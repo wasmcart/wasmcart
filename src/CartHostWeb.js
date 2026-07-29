@@ -17,6 +17,8 @@ import {
   POINTER_SIZE,
   MAX_POINTERS,
   KEYS_STATE_SIZE,
+  MAX_RUMBLE_MS,
+  clamp01,
 } from './abi.js';
 import { createWebGLImports } from './webgl_imports.js';
 import { inflateSync } from 'fflate';
@@ -181,6 +183,7 @@ export class CartHostWeb {
 
     // Pad names (populated each frame from pad objects)
     this._padNames = ['', '', '', ''];
+    this._rumbleHandler = null; // set by the embedder via setRumbleHandler()
   }
 
   /**
@@ -357,6 +360,11 @@ export class CartHostWeb {
         wc_pad_name: (padId, bufPtr, bufLen) => {
           return this._padName(padId, bufPtr, bufLen);
         },
+        // --- Rumble (cart -> host) ---
+        wc_pad_has_rumble: (padId) => this._padHasRumble(padId),
+        wc_pad_rumble: (padId, low, high, durationMs) =>
+          this._padRumble(padId, low, high, durationMs),
+        wc_pad_rumble_stop: (padId) => this._padRumbleStop(padId),
         // --- WebSocket API (ABI v3) ---
         wc_ws_open: (urlPtr, urlLen) => {
           return this._wsOpen(urlPtr, urlLen);
@@ -1422,6 +1430,83 @@ export class CartHostWeb {
     const len = Math.min(encoded.length, bufLen);
     this._u8.set(encoded.subarray(0, len), bufPtr);
     return len;
+  }
+
+  // --- Rumble ---
+  // Cart-driven, so these are imports rather than fields in the shared pad
+  // struct. Unlike the node host there is a sensible default here: the Gamepad
+  // API is already the source of pad state, so rumble resolves against the live
+  // navigator.getGamepads() entry unless the embedder overrides it.
+  //
+  // W3C 'dual-rumble' takes strongMagnitude/weakMagnitude/duration, which is
+  // the same three parameters SDL's rumble() takes, so the ABI maps to both
+  // backends without per-platform divergence.
+  setRumbleHandler(handler) {
+    this._rumbleHandler = handler || null;
+  }
+
+  /** The vibration actuator for a pad slot, or null if it has none. */
+  _actuator(padId) {
+    if (padId >= MAX_PADS) return null;
+    if (typeof navigator === 'undefined' || !navigator.getGamepads) return null;
+    const gp = navigator.getGamepads()[padId];
+    // Chrome exposes vibrationActuator; the spec also allows hapticActuators[].
+    return gp?.vibrationActuator || gp?.hapticActuators?.[0] || null;
+  }
+
+  _padHasRumble(padId) {
+    if (padId >= MAX_PADS) return 0;
+    if (this._rumbleHandler) {
+      try {
+        return this._rumbleHandler.hasRumble(padId) ? 1 : 0;
+      } catch {
+        return 0;
+      }
+    }
+    return this._actuator(padId) ? 1 : 0;
+  }
+
+  _padRumble(padId, low, high, durationMs) {
+    if (padId >= MAX_PADS) return;
+    // Clamp rather than reject: a cart deriving intensity from game state will
+    // overshoot at the edges, and a dropped rumble is harder to notice than a
+    // saturated one. NaN clamps to 0.
+    const lo = clamp01(low);
+    const hi = clamp01(high);
+    // Cap duration so a cart cannot pin the motors indefinitely.
+    const dur = Math.min(Math.max(durationMs | 0, 0), MAX_RUMBLE_MS);
+    if (dur === 0) return;
+    if (this._rumbleHandler) {
+      try {
+        this._rumbleHandler.rumble(padId, lo, hi, dur);
+      } catch { /* a pad unplugged mid-effect must not fault the cart */ }
+      return;
+    }
+    const act = this._actuator(padId);
+    if (!act?.playEffect) return;
+    // playEffect returns a promise that rejects if the pad vanishes; swallow it
+    // so an unplug cannot surface as an unhandled rejection.
+    try {
+      act.playEffect('dual-rumble', {
+        duration: dur,
+        strongMagnitude: lo,
+        weakMagnitude: hi,
+      })?.catch?.(() => {});
+    } catch { /* as above */ }
+  }
+
+  _padRumbleStop(padId) {
+    if (padId >= MAX_PADS) return;
+    if (this._rumbleHandler) {
+      try {
+        this._rumbleHandler.stopRumble(padId);
+      } catch { /* as above */ }
+      return;
+    }
+    const act = this._actuator(padId);
+    try {
+      act?.reset?.()?.catch?.(() => {});
+    } catch { /* as above */ }
   }
 
   _drainAudio() {

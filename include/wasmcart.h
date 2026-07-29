@@ -241,6 +241,44 @@ static inline int wc_pad_name(unsigned int pad_id, char* buf, unsigned int buf_l
 }
 #endif
 
+// --- Rumble (ABI v3) ---
+// Rumble runs the opposite way to the rest of input: the cart drives it, so it
+// is a host import rather than a field in wc_pad_t.
+//
+// Capability is per-DEVICE, not per-platform, so always ask rather than assume:
+// an Xbox 360 pad reports rumble but no trigger rumble, and a keyboard-only
+// setup reports none at all. Calls on a pad without rumble are silent no-ops,
+// so it is safe (if wasteful) to skip the query.
+//
+// low  = low-frequency / "strong" motor (0.0 .. 1.0)
+// high = high-frequency / "weak" motor  (0.0 .. 1.0)
+// Values outside 0..1 are clamped by the host. duration_ms is capped at
+// WC_RUMBLE_MAX_MS: the host stops the motors on its own timer, so a cart that
+// crashes mid-effect still leaves the controller quiet. For sustained rumble,
+// re-arm each frame -- which also means rumble stops when the cart stops.
+#define WC_RUMBLE_MAX_MS 5000
+
+#ifdef __wasm__
+__attribute__((import_module("env"), import_name("wc_pad_has_rumble")))
+extern unsigned int wc_pad_has_rumble(unsigned int pad_id);
+
+__attribute__((import_module("env"), import_name("wc_pad_rumble")))
+extern void wc_pad_rumble(unsigned int pad_id, float low, float high,
+                          unsigned int duration_ms);
+
+__attribute__((import_module("env"), import_name("wc_pad_rumble_stop")))
+extern void wc_pad_rumble_stop(unsigned int pad_id);
+#else
+static inline unsigned int wc_pad_has_rumble(unsigned int pad_id) {
+    (void)pad_id; return 0;
+}
+static inline void wc_pad_rumble(unsigned int pad_id, float low, float high,
+                                 unsigned int duration_ms) {
+    (void)pad_id; (void)low; (void)high; (void)duration_ms;
+}
+static inline void wc_pad_rumble_stop(unsigned int pad_id) { (void)pad_id; }
+#endif
+
 // --- Asset API (ABI v2) ---
 // For .wasc carts: load assets from the archive at runtime instead of embedding.
 // For bare .wasm carts these are not available (don't import them unless you need them).

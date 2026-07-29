@@ -29,6 +29,17 @@ export const PAD_SIZE = 16;
 export const MAX_PADS = 4;
 export const INPUT_REGION_SIZE = PAD_SIZE * MAX_PADS; // 64 bytes
 
+// Longest single rumble effect, in ms. The cap exists so a cart cannot pin the
+// motors forever: SDL stops on its own timer, so even a cart that crashes
+// mid-effect leaves a controller that falls silent. A cart wanting sustained
+// rumble re-arms each frame, which also means rumble stops when the cart does.
+export const MAX_RUMBLE_MS = 5000;
+
+/** Clamp to 0..1, mapping NaN to 0 (NaN would otherwise pass `<` and `>`). */
+export function clamp01(v) {
+  return v > 0 ? (v < 1 ? v : 1) : 0;
+}
+
 // WCTime struct layout (20 bytes)
 // f64 time_ms (offset 0)
 // f64 delta_ms (offset 8)

@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.12.0
+
+Adds rumble, and documents the security boundary that was already there.
+
+**Rumble.** Three new host imports: `wc_pad_has_rumble(pad)`,
+`wc_pad_rumble(pad, low, high, duration_ms)` and `wc_pad_rumble_stop(pad)`.
+Rumble runs the opposite way to the rest of input -- the cart drives it -- so it
+is an import rather than a field in `wc_pad_t`, and needs no flag or manifest
+entry. `low`/`high` map onto SDL's strong/weak motors and the W3C `dual-rumble`
+effect's `strongMagnitude`/`weakMagnitude`, so one call behaves identically in a
+native window and a browser.
+
+Capability is per-device rather than per-platform, so `wc_pad_has_rumble` is a
+real query: an Xbox 360 pad reports rumble but not trigger rumble. Magnitudes
+outside `0..1` clamp (NaN to 0) and duration caps at `WC_RUMBLE_MAX_MS` (5s)
+rather than being rejected, since a cart deriving intensity from game state
+overshoots at the edges and a dropped rumble is harder to diagnose than a
+saturated one. The cap also means a cart cannot pin the motors forever: the host
+stops them on its own timer, so a cart that crashes mid-effect still leaves the
+controller quiet.
+
+Hosts always provide the imports. With no device wired (headless runs, `--frames`
+captures, tests) they are silent no-ops and `wc_pad_has_rumble` returns 0, so a
+cart that rumbles is never a cart that fails to load. `bin/play-window.js` routes
+pad 0 to the SDL controller; `CartHostWeb` defaults to `navigator.getGamepads()`
+and both accept a `setRumbleHandler()` override.
+
+**Security model.** The existing section now enumerates the import table as the
+complete attack surface, and is explicit that the toolchain shims whose names
+imply capabilities are inert: `path_open` and `fd_prestat_*` are not provided at
+all (so a cart has no way to *name* a host file), `fd_read`/`fd_seek` return 0,
+`environ_*` return 0, `__syscall_getcwd` returns -1, and `proc_exit` is a no-op.
+Threads are documented as confined to the same import table as the main thread.
+Also states plainly what a malicious cart still *can* do -- burn CPU, exhaust its
+declared memory -- since the ABI does not bound either and hosts must.
+
+No breaking changes. Carts built against 0.11.0 are unaffected.
+
 ## 0.11.0
 
 The manifest is now optional, and it no longer gates anything the cart

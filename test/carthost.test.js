@@ -131,3 +131,68 @@ test('pointer/keyboard are gated by the FLAG alone, not the manifest', async () 
       `${f}: keyboard delivery must not consult the manifest`);
   }
 });
+
+// --- Rumble (ABI v3) ---
+// The fixture cart calls rumble on frames 1-4: a normal effect, one with
+// out-of-range magnitudes and an over-long duration, one on an invalid pad
+// slot, then a stop.
+
+test('rumble reaches the device, clamped and slot-checked', async () => {
+  const host = new CartHost();
+  const calls = [];
+  host.setRumbleHandler({
+    hasRumble: (p) => p === 0,
+    rumble: (p, low, high, ms) => calls.push({ p, low, high, ms }),
+    stopRumble: (p) => calls.push({ p, stop: true }),
+  });
+  await host.load(join(HERE, 'fixtures/rumble.wasc'));
+  for (let i = 0; i < 5; i++) host.runFrame([{ connected: true, buttons: 0 }]);
+
+  assert.deepEqual(calls[0], { p: 0, low: 0.5, high: 0.25, ms: 200 },
+    'in-range values pass through untouched');
+
+  // 99.0 -> 1, -5.0 -> 0, 999999ms -> the 5s cap. Clamping (not rejecting)
+  // matters because a cart deriving intensity from game state overshoots at
+  // the edges, and a dropped rumble is harder to notice than a saturated one.
+  assert.deepEqual(calls[1], { p: 0, low: 1, high: 0, ms: 5000 },
+    'magnitudes clamp to 0..1 and duration caps at MAX_RUMBLE_MS');
+
+  // The cart also asked pad 99 to rumble; that must never reach the device.
+  assert.ok(!calls.some((c) => c.p !== 0), 'out-of-range pad slots are dropped');
+  assert.deepEqual(calls[2], { p: 0, stop: true }, 'stop is delivered');
+  host.destroy();
+});
+
+test('a cart that rumbles runs fine with no rumble handler at all', async () => {
+  // Headless runs, --frames captures and tests wire no handler. Rumble must
+  // degrade to a silent no-op rather than faulting the cart.
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/rumble.wasc'));
+  for (let i = 0; i < 5; i++) host.runFrame([{ connected: true, buttons: 0 }]);
+  host.destroy();
+});
+
+test('a throwing rumble handler cannot fault the cart', async () => {
+  // A pad unplugged mid-effect makes SDL throw. That is the host's problem,
+  // not the cart's.
+  const host = new CartHost();
+  host.setRumbleHandler({
+    hasRumble: () => { throw new Error('unplugged'); },
+    rumble: () => { throw new Error('unplugged'); },
+    stopRumble: () => { throw new Error('unplugged'); },
+  });
+  await host.load(join(HERE, 'fixtures/rumble.wasc'));
+  for (let i = 0; i < 5; i++) host.runFrame([{ connected: true, buttons: 0 }]);
+  host.destroy();
+});
+
+test('both hosts expose the same three rumble imports', async () => {
+  // Divergence between the node and web hosts is the failure mode here: a cart
+  // that rumbles in the terminal but silently does not in the browser.
+  for (const f of ['../src/CartHost.js', '../src/CartHostWeb.js']) {
+    const src = readFileSync(join(HERE, f), 'utf8');
+    for (const imp of ['wc_pad_has_rumble', 'wc_pad_rumble', 'wc_pad_rumble_stop']) {
+      assert.ok(src.includes(imp), `${f} must provide ${imp}`);
+    }
+  }
+});

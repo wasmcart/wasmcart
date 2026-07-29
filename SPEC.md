@@ -118,6 +118,11 @@ void wc_log(const char* ptr, uint32_t len);
 int32_t wc_asset_size(const char* path, uint32_t path_len);
 int32_t wc_load_asset(const char* path, uint32_t path_len, void* dest, uint32_t max_size);
 
+// Rumble (v3) - see Rumble
+uint32_t wc_pad_has_rumble(uint32_t pad_id);
+void wc_pad_rumble(uint32_t pad_id, float low, float high, uint32_t duration_ms);
+void wc_pad_rumble_stop(uint32_t pad_id);
+
 // GL (~100 functions, optional, imported from "gl" module)
 void glClear(uint32_t mask);
 // ... etc
@@ -422,6 +427,46 @@ void wc_ptr_on_up(uint32_t id, uint8_t button);
 
 ---
 
+## Rumble
+
+Rumble runs the opposite way to the rest of input: the cart drives it, so it is a
+set of host **imports** rather than a field in `wc_pad_t`. There is no flag to set
+and no manifest entry - a cart just calls it. Hosts always provide the imports;
+where there is no hardware they are silent no-ops.
+
+```c
+#define WC_RUMBLE_MAX_MS 5000
+
+unsigned int wc_pad_has_rumble(unsigned int pad_id);
+void wc_pad_rumble(unsigned int pad_id, float low, float high,
+                   unsigned int duration_ms);
+void wc_pad_rumble_stop(unsigned int pad_id);
+```
+
+`low` drives the low-frequency ("strong") motor, `high` the high-frequency
+("weak") one, both `0.0 .. 1.0`. These map directly onto SDL's
+`SDL_GameControllerRumble` and the W3C `dual-rumble` effect
+(`strongMagnitude` / `weakMagnitude`), so the same call behaves the same way in a
+native window and in a browser.
+
+### Notes
+
+- **Capability is per-device, not per-platform.** Ask `wc_pad_has_rumble()` rather
+  than assuming: an Xbox 360 pad reports rumble but not trigger rumble, and a
+  keyboard-only setup reports none. A cart may skip the query - calls on a pad
+  without rumble are silent no-ops - but then it cannot offer the player a toggle.
+- **Out-of-range values are clamped, not rejected.** Magnitudes outside `0..1` clamp
+  into range (`NaN` becomes `0`) and `duration_ms` caps at `WC_RUMBLE_MAX_MS`. A cart
+  deriving intensity from game state will overshoot at the edges, and a dropped
+  rumble is harder to diagnose than a saturated one.
+- **Effects stop on the host's timer.** The duration cap means a cart cannot pin the
+  motors indefinitely, and a cart that crashes mid-effect still leaves the controller
+  quiet. Sustained rumble is done by re-arming each frame, which also stops rumble
+  when the cart stops.
+- **Invalid pad slots are ignored.** `pad_id >= 4` never reaches the device.
+- Rumble does not widen the security boundary: it is write-only to hardware the host
+  already owns, and carries no data back to the cart beyond the capability bit.
+
 ## Keyboard Input
 
 Opt-in by setting `WC_FLAG_KEYBOARD` in `wc_info_t.flags`. Both shared-memory state and event callbacks. **The flag is the only gate** (see Manifest below).
@@ -591,6 +636,65 @@ way to reach anything outside its own module memory except through the imports t
 host provides. Everything a cart can touch is mediated by the host and validated
 before it acts. This is what makes running an untrusted cart safe.
 
+This is the guarantee game consoles had and general-purpose computers gave up. A
+console cartridge could only do what the console's hardware let it do; a modern
+game you download is arbitrary code running with your full user privileges, free to
+read your home directory or open a socket. A `.wasc` is a cartridge again: the
+security boundary is the import table, and the import table is a closed set.
+
+### The import table is the whole attack surface
+
+A cart can only call what the host passes it. There is no dynamic linking, no
+`dlopen`, no eval, and no way to obtain a function the host did not hand over.
+Auditing a wasmcart host therefore means auditing one list, and that list is short:
+
+- **Cart services** - `wc_log`, `wc_debug_mark`, `wc_frame_yield`, `wc_pad_name`,
+  `wc_pad_has_rumble`, `wc_pad_rumble`, `wc_pad_rumble_stop`
+- **Assets (read-only, path-validated)** - `wc_asset_size`, `wc_load_asset`
+- **Network (opt-in, allowlisted)** - the `wc_ws_*` and `wc_dc_*` families
+- **Toolchain shims** - a small set of emscripten/WASI symbols that compilers emit
+  unconditionally
+
+The toolchain shims are the subtle part, because their *names* imply capabilities
+the host does not actually grant. They are deliberately inert:
+
+| Symbol | Behaviour | Consequence |
+|--------|-----------|-------------|
+| `path_open`, `fd_prestat_*` | **not provided at all** | a cart has no way to *name* a host file |
+| `fd_read`, `fd_seek` | return `0` | no input, no seeking |
+| `fd_write` | routed to the host log | stdout/stderr become log lines, never files |
+| `environ_get`, `environ_sizes_get` | return `0` | no environment variables |
+| `__syscall_getcwd` | returns `-1` | no filesystem position |
+| `proc_exit` | no-op | a cart cannot terminate the host |
+
+The absence of `path_open` is the load-bearing one. Filesystem sandboxes usually
+work by permitting `open()` and then filtering the path, which fails whenever the
+filter and the OS disagree about what a path means. Here the operation does not
+exist, so there is no filter to outwit.
+
+### Threads
+
+Threaded carts are supported (`wasi.thread-spawn` plus a shared `WebAssembly.Memory`),
+and they do not widen the boundary. Spawned threads run the *same* module with the
+*same* import table, so a worker thread has exactly the authority the main thread
+has. A cart that imports `thread-spawn` must also export `wasi_thread_start`; the
+host rejects the mismatched pair rather than instantiating a module it cannot drive.
+
+### What a malicious cart can still do
+
+Being honest about the limits matters as much as the guarantees. Within its
+sandbox a cart may:
+
+- **Burn CPU or hang.** Nothing in the ABI bounds how long `wc_render()` runs. A
+  host that needs to stay responsive must enforce its own timeout.
+- **Exhaust memory,** up to the `maximum` its module declares.
+- **Render or play anything,** including hostile visuals or audio.
+- **Talk to allowlisted hosts,** if the packager declared any, and exfiltrate
+  whatever it can reach - which is only its own state, since it can read nothing else.
+
+What it cannot do is reach *outside* itself: no host files, no unlisted hosts, no
+environment, no other processes, no persistence the host did not choose to write.
+
 ### Filesystem and assets
 
 Carts have **no filesystem access.** There is no `open`, `read`, `write`, `stat`,
@@ -646,4 +750,7 @@ responsibility, through a fixed shared-memory region:
 | Save data | in-memory blob only; host owns persistence |
 | Network | none unless declared in the manifest (allowlisted WebSocket / data channels) |
 | Syscalls / clock / RNG | none except what the host explicitly imports |
+| Environment / cwd / process control | none (`environ_*` return 0, `proc_exit` is a no-op) |
+| Threads | supported, and confined to the same import table as the main thread |
+| CPU / memory | **not** bounded by the ABI - the host must impose its own limits |
 

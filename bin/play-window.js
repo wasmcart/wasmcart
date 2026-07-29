@@ -135,10 +135,11 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
   window.on('close', quit);
 
   // first plugged-in game controller, if any
+  let ctrl = null;
   try {
     const dev = sdl.controller.devices[0];
     if (dev) {
-      const ctrl = sdl.controller.openDevice(dev);
+      ctrl = sdl.controller.openDevice(dev);
       ctrl.on('buttonDown', (e) => { const n = CONTROLLER_BUTTONS[e.button]; if (n) held.add(n); });
       ctrl.on('buttonUp', (e) => { const n = CONTROLLER_BUTTONS[e.button]; if (n) held.delete(n); });
       ctrl.on('axisMotion', (e) => {
@@ -147,6 +148,22 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
       });
     }
   } catch { /* controllers are optional */ }
+
+  // Route cart rumble to the SDL device. Only pad 0 is wired, matching the
+  // single controller this player opens; other slots report no rumble, which
+  // is the honest answer rather than a silent no-op the cart cannot detect.
+  // `closed` is checked because SDL throws on a device unplugged mid-effect.
+  host.setRumbleHandler({
+    hasRumble: (padId) => padId === 0 && !!ctrl && !ctrl.closed && ctrl.hasRumble,
+    rumble: (padId, low, high, ms) => {
+      if (padId !== 0 || !ctrl || ctrl.closed || !ctrl.hasRumble) return;
+      ctrl.rumble(low, high, ms);
+    },
+    stopRumble: (padId) => {
+      if (padId !== 0 || !ctrl || ctrl.closed || !ctrl.hasRumble) return;
+      ctrl.stopRumble();
+    },
+  });
 
   const pad = () => {
     let buttons = 0;
