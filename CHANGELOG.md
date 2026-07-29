@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.13.2
+
+CI and README only. No runtime changes -- the published code is identical to
+0.13.1.
+
+**CI could not run the GL tests.** Four of them failed on every runner with "a
+WebGL2 context could not be created", which also blocked the tag-gated publish
+job. The workflow described this as a "pure-JS package, no native build" -- true
+once, but stale since GL became a hard requirement of the ABI. `webgl-node`
+delegates to `native-gles`, which dlopens `libEGL.so.1` and `libGLESv2.so.2` and
+needs a DRI driver behind them; a bare runner has none. Mesa's swrast/llvmpipe
+supplies all three in software, so CI now installs `libegl1`, `libgles2` and
+`libgl1-mesa-dri` before `npm ci`.
+
+Skipping the GL tests in CI would have been the wrong fix: they assert that GL
+is unconditional and never stubbed, which is exactly the guarantee worth
+keeping covered.
+
+A context check now runs before `npm test`, mirroring `CartHost`'s own
+`createWebGL2Context(w, h)?.gl` call so it cannot pass while the host fails. A
+driver-less runner produces one clear error instead of four confusing test
+failures.
+
+**README** now lists the language SDKs the org actually ships (Lua, Python,
+Ruby, JavaScript, GDScript, Rust, Zig, C/C++), split by whether you compile.
+
 ## 0.13.1
 
 Documents loop inversion for the people who need it. No code changes.
