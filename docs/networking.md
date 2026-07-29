@@ -201,9 +201,103 @@ rewrite.
 `WC_FLAG_NET_DC` (0x04) is reserved and unused. `net.websocket` is superseded by
 `net.domains`; hosts SHOULD still read it from older manifests.
 
-Host implementations (`src/CartHost.js`, `src/CartHostWeb.js`),
-`include/wasmcart.h`, and the SDK header copies still carry the old families and
-have not yet been migrated.
+
+## Bring your own transport
+
+`wc_peer_open()` is only one way a peer appears. A host can also hand the cart a
+connection it made itself, over anything at all:
+
+```js
+host.addPeer(peerId, name, channel, transport);
+```
+
+The cart cannot tell the difference. It sees an id and bytes either way, which is
+the whole reason transport is absent from the ABI.
+
+**No manifest grant is required, deliberately.** Grants exist because
+`wc_peer_open()` lets the *cart* name a destination the packager may not have
+anticipated. When the *host* establishes a connection it has already made that
+decision, and requiring it to also write a manifest key permitting its own action
+would be ceremony. Dial-out is allowlisted; host-supplied peers are not.
+
+### The channel contract
+
+Anything satisfying this shape works. It is three members, and it is deliberately
+the same shape `WebSocket` and `RTCDataChannel` already have:
+
+```js
+const channel = {
+  // The host calls this with a Uint8Array when the cart sends.
+  send(bytes) { /* put bytes on your transport */ },
+
+  // Assigned BY the host. Call it when bytes arrive.
+  // `data` may be an ArrayBuffer or a Uint8Array.
+  onmessage: null,
+
+  // Assigned BY the host. Call it when the connection goes away;
+  // the cart sees wc_peer_on_disconnect on the next frame.
+  onclose: null,
+};
+```
+
+The host assigns `onmessage` and `onclose` when you call `addPeer`, so do not set
+them yourself — pass a fresh object, or one whose handlers you do not mind being
+replaced.
+
+### Ownership
+
+**A channel you supply stays yours.** `destroy()` forgets it and stops delivering
+its events, but does not close it, and detaches the handlers it assigned. A socket
+the host dialled through `wc_peer_open()` *is* closed, because the host opened it.
+
+That distinction lets one connection outlive a cart instance:
+
+```js
+await hostA.load(cartA);
+hostA.addPeer(1, 'peer', channel);
+// ...run...
+hostA.destroy();            // channel survives
+
+const hostB = new CartHost();
+await hostB.load(cartB);
+hostB.addPeer(1, 'peer', channel);   // same connection, different cart
+```
+
+The same applies to any long-lived connection a host keeps across cart loads.
+Before 0.16.2 `destroy()` closed borrowed channels, so a transport that is
+expensive to re-establish — a WebRTC data channel needs fresh signalling and ICE
+— had to be rebuilt even though nothing about it had changed.
+
+### Worked example: a relay standing in for peer-to-peer
+
+`test/wsserver.mjs` has a `/relay/<room>` endpoint that forwards frames between
+clients in a room. Because the cart cannot see transport, relaying over a plain
+WebSocket exercises peer-to-peer semantics honestly — no WebRTC, no signalling,
+no second machine:
+
+```js
+const ws = new WebSocket('ws://127.0.0.1:8787/relay/game1');
+ws.binaryType = 'arraybuffer';
+ws.onopen = () => host.addPeer(1, 'other-player', {
+  send: (bytes) => ws.send(bytes),
+  onmessage: null,   // host assigns
+  onclose: null,     // host assigns
+}, TRANSPORT_RELIABLE | TRANSPORT_ORDERED);
+ws.onmessage = (e) => /* forward to the peer's onmessage */ 0;
+```
+
+`test/peer.test.js` drives this end to end against that server.
+
+### WebRTC is a host decision, not an ABI one
+
+Nothing here mentions `RTCPeerConnection`, and the reference hosts deliberately
+do not implement it. Signalling, ICE and STUN/TURN configuration are policy a
+host owns: a LAN socket, a serial link or a relay are all equally valid, and the
+node host could not use a browser-only dependency anyway.
+
+A host that wants WebRTC builds the `RTCPeerConnection`, waits for the data
+channel to open, and passes it to `addPeer` — an `RTCDataChannel` already
+satisfies the contract above. The ABI stays out of it.
 
 ## Related
 
