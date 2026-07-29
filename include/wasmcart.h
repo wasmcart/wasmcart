@@ -241,6 +241,50 @@ static inline int wc_pad_name(unsigned int pad_id, char* buf, unsigned int buf_l
 }
 #endif
 
+// --- Text input (ABI v3) ---
+// For name entry, chat, seeds -- anything where the player types CHARACTERS
+// rather than pressing game buttons.
+//
+// The raw keyboard ABI (WC_FLAG_KEYBOARD, wc_kb_on_down) reports HID
+// scancodes: physical key positions. That is right for gameplay and wrong for
+// text, because a scancode is not a character. Shift+2 is "@" on a US layout
+// and a quote mark on several European ones; e-acute has no scancode at all.
+// Rather than have every cart reimplement keyboard layouts, the host hands
+// over text the OS has ALREADY composed -- layout, shift, dead keys, compose
+// sequences and IME commits all applied.
+//
+// Cart export (optional):
+//   void wc_on_text(const char* utf8, uint32_t len);
+// The pointer is valid only for the duration of the call: copy what you need.
+// `utf8` is NOT null-terminated, and one call may carry several codepoints (an
+// IME commits a whole word at once), so always honour `len`.
+//
+// Host imports:
+//   void wc_text_input_begin(void);   start receiving text
+//   void wc_text_input_end(void);     stop
+//   unsigned int wc_text_input_active(void);
+//
+// Text input is OFF until the cart asks for it, and that is load-bearing on
+// two counts. On mobile it is what raises and dismisses the on-screen
+// keyboard. And while it is active a host suppresses gameplay key bindings --
+// otherwise typing "w" into a chat box also walks the player forward.
+//
+// Editing keys stay on the keyboard ABI: backspace, arrows and enter are key
+// presses, not characters, so a cart drawing its own text field reads those
+// through wc_kb_on_down and appends characters from wc_on_text.
+#ifdef __wasm__
+__attribute__((import_module("env"), import_name("wc_text_input_begin")))
+extern void wc_text_input_begin(void);
+__attribute__((import_module("env"), import_name("wc_text_input_end")))
+extern void wc_text_input_end(void);
+__attribute__((import_module("env"), import_name("wc_text_input_active")))
+extern unsigned int wc_text_input_active(void);
+#else
+static inline void wc_text_input_begin(void) {}
+static inline void wc_text_input_end(void) {}
+static inline unsigned int wc_text_input_active(void) { return 0; }
+#endif
+
 // --- Lifecycle (ABI v3) ---
 // Optional cart exports. Export any subset; the host skips the ones you omit.
 //

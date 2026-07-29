@@ -180,6 +180,8 @@ export class CartHostWeb {
     // Keyboard input (ABI v3)
     this._keyState = new Uint8Array(KEYS_STATE_SIZE);
     this._keyEvents = [];
+    this._textEvents = []; // committed UTF-8, only while text input is active
+    this._textActive = false;
 
     // Pad names (populated each frame from pad objects)
     this._padNames = ['', '', '', ''];
@@ -400,6 +402,14 @@ export class CartHostWeb {
           this._padRumble(padId, low, high, durationMs),
         wc_pad_rumble_stop: (padId) => this._padRumbleStop(padId),
         // --- WebSocket API (ABI v3) ---
+        // --- Text input (ABI v3) ---
+        // Characters, not scancodes. See CartHost for the full rationale.
+        wc_text_input_begin: () => { this._textActive = true; },
+        wc_text_input_end: () => {
+          this._textActive = false;
+          this._textEvents.length = 0;
+        },
+        wc_text_input_active: () => (this._textActive ? 1 : 0),
         wc_ws_open: (urlPtr, urlLen) => {
           return this._wsOpen(urlPtr, urlLen);
         },
@@ -674,6 +684,7 @@ export class CartHostWeb {
     this._deliverNetEvents();
     this._deliverPointerEvents();
     this._deliverKeyEvents();
+    this._deliverTextEvents();
 
     // Call wc_render (with asyncify resume/suspend for loop-owning carts)
     const asyncEx = this.instance.exports;
@@ -1332,6 +1343,35 @@ export class CartHostWeb {
     if (!this.info?.wantsKeyboard) return;
     this._updateViews();
     this._u8.set(this._keyState, this.info.keysPtr);
+  }
+
+  /**
+   * Queue committed text. In a browser this comes from `beforeinput` or a
+   * `keypress`-equivalent -- never synthesized from keydown, since the browser
+   * has already applied layout, dead keys and IME composition.
+   */
+  textInput(text) {
+    if (!this._textActive || typeof text !== 'string' || text.length === 0) return;
+    this._textEvents.push(text);
+  }
+
+  get textInputActive() { return this._textActive; }
+
+  _deliverTextEvents() {
+    if (this._textEvents.length === 0) return;
+    const fn = this.instance?.exports?.wc_on_text;
+    if (typeof fn !== 'function') { this._textEvents.length = 0; return; }
+    while (this._textEvents.length > 0) {
+      const bytes = new TextEncoder().encode(this._textEvents.shift());
+      if (bytes.length === 0) continue;
+      this._withTempWasmData(bytes, (ptr, len) => {
+        try {
+          fn(ptr, len);
+        } catch (e) {
+          console.warn("wasmcart: cart's wc_on_text() threw:", e?.message ?? e);
+        }
+      });
+    }
   }
 
   _deliverKeyEvents() {

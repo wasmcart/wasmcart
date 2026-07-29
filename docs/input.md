@@ -1,4 +1,4 @@
-# Input - Gamepad, Rumble, Pointer, Keyboard
+# Input - Gamepad, Rumble, Pointer, Keyboard, Text
 
 ## Gamepad Input (Always Available)
 
@@ -137,3 +137,33 @@ is done by re-arming each frame.
 Hosts always provide these imports. Where no device is wired (headless runs,
 `--frames` captures, tests) they are no-ops and `wc_pad_has_rumble` returns 0, so
 a cart that rumbles is never a cart that fails to load.
+
+## Text Input (Opt-In, ABI v3)
+
+Keyboard scancodes are physical key positions; text is characters. `Shift+2` is
+`@` on a US layout and something else on many others, and `é` has no scancode at
+all -- so a cart that reads scancodes and tries to derive characters is
+reimplementing keyboard layouts, badly. Use text input instead for names, chat
+and seeds.
+
+```c
+void wc_on_text(const char* utf8, uint32_t len);  // cart export, optional
+void wc_text_input_begin(void);                   // host imports
+void wc_text_input_end(void);
+unsigned int wc_text_input_active(void);
+```
+
+The host hands over text the platform has already composed: layout, shift, dead
+keys, compose sequences and IME commits are all applied before it reaches you.
+
+- **Copy immediately.** The pointer is valid only during the call and is not
+  null-terminated. Always honour `len` -- one call can carry several codepoints,
+  because an IME commits a whole word at once.
+- **It is off until you ask.** Call `wc_text_input_begin()` when a field opens
+  and `wc_text_input_end()` when it closes. On mobile that is what raises and
+  dismisses the on-screen keyboard, and while it is active the host suppresses
+  gameplay key bindings -- otherwise typing "w" in a chat box also walks the
+  player forward.
+- **Editing keys are still keys.** Backspace, arrows and enter are presses, not
+  characters. Read those through `wc_kb_on_down` and append what arrives via
+  `wc_on_text`.

@@ -315,6 +315,8 @@ export class CartHost {
     // Keyboard input (ABI v3)
     this._keyState = new Uint8Array(KEYS_STATE_SIZE); // 256-bit bitmask
     this._keyEvents = [];  // { type, keycode, modifiers }
+    this._textEvents = []; // committed UTF-8 strings, only while text input is active
+    this._textActive = false; // cart called wc_text_input_begin()
 
     // Pad names (populated each frame from pad objects)
     this._padNames = ['', '', '', ''];
@@ -527,6 +529,19 @@ export class CartHost {
           this._padRumble(padId, low, high, durationMs),
         wc_pad_rumble_stop: (padId) => this._padRumbleStop(padId),
         // --- WebSocket API (ABI v3) ---
+        // --- Text input (ABI v3) ---
+        // Characters, not scancodes: the OS has already applied the keyboard
+        // layout, shift, dead keys and compose, so a cart receives "@" or "e-
+        // acute" or a CJK glyph without knowing anything about layouts. The
+        // raw keyboard ABI stays for editing keys (backspace, arrows, enter).
+        wc_text_input_begin: () => { this._textActive = true; },
+        wc_text_input_end: () => {
+          this._textActive = false;
+          // Drop anything queued but undelivered: text typed before the cart
+          // stopped listening must not surface in the next field it opens.
+          this._textEvents.length = 0;
+        },
+        wc_text_input_active: () => (this._textActive ? 1 : 0),
         wc_ws_open: (urlPtr, urlLen) => {
           return this._wsOpen(urlPtr, urlLen);
         },
@@ -892,6 +907,7 @@ export class CartHost {
     this._deliverNetEvents();
     this._deliverPointerEvents();
     this._deliverKeyEvents();
+    this._deliverTextEvents();
 
     // Call wc_render (with asyncify resume/suspend for loop-owning carts)
     const asyncEx = this.instance.exports;
@@ -1932,6 +1948,47 @@ export class CartHost {
     if (keycode < 0 || keycode > 255) return;
     this._keyState[keycode >> 3] &= ~(1 << (keycode & 7));
     this._keyEvents.push({ type: 'up', keycode, modifiers: modifiers || 0 });
+  }
+
+  /**
+   * Queue committed text. Called by the host application with whatever the
+   * platform produced (SDL textInput, a browser keypress/beforeinput, an IME
+   * commit). Already layout-processed -- the host never synthesizes this from
+   * scancodes, because that is exactly the job the OS does better.
+   */
+  textInput(text) {
+    // Ignored unless the cart asked for text. A cart that never calls
+    // wc_text_input_begin() cannot be surprised by text events, and a host
+    // that always forwards platform text costs nothing.
+    if (!this._textActive || typeof text !== 'string' || text.length === 0) return;
+    this._textEvents.push(text);
+  }
+
+  /** True while the cart has text input active -- hosts use this to decide
+   *  whether to also treat the keystroke as gameplay input, and (on mobile)
+   *  whether the on-screen keyboard should be up. */
+  get textInputActive() { return this._textActive; }
+
+  _deliverTextEvents() {
+    if (this._textEvents.length === 0) return;
+    const fn = this.instance?.exports?.wc_on_text;
+    // A cart can enable text input without exporting the handler (it may only
+    // want the mobile keyboard raised). Drop the queue rather than growing it.
+    if (typeof fn !== 'function') { this._textEvents.length = 0; return; }
+
+    while (this._textEvents.length > 0) {
+      const bytes = new TextEncoder().encode(this._textEvents.shift());
+      if (bytes.length === 0) continue;
+      // Same temp-memory contract as the WebSocket message path: the pointer
+      // is valid only for the duration of the call, so the cart must copy.
+      this._withTempWasmData(bytes, (ptr, len) => {
+        try {
+          fn(ptr, len);
+        } catch (e) {
+          console.warn("wasmcart: cart's wc_on_text() threw:", e?.message ?? e);
+        }
+      });
+    }
   }
 
   _writeKeyState() {

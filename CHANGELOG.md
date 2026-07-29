@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.15.0
+
+Adds text input: characters, not scancodes.
+
+```c
+void wc_on_text(const char* utf8, uint32_t len);  // cart export, optional
+void wc_text_input_begin(void);                   // host imports
+void wc_text_input_end(void);
+uint32_t wc_text_input_active(void);
+```
+
+The keyboard ABI reports HID scancodes -- physical key positions, which are not
+characters. `Shift+2` is `@` on a US layout and something else on many others,
+and `e-acute` has no scancode at all, so a cart deriving characters from
+scancodes is reimplementing keyboard layouts badly. The host now delivers text
+the platform already composed: layout, shift, dead keys, compose sequences and
+IME commits all applied. Verified end to end with 2-, 3- and 4-byte sequences
+round-tripping intact.
+
+The pointer is valid only during the call and is not null-terminated, so a cart
+must copy and must honour `len` -- one call can carry several codepoints because
+an IME commits a whole word at once.
+
+Text is off until the cart calls `wc_text_input_begin()`, which means a host can
+forward platform text unconditionally and a cart that never asks is immune. Text
+queued but undelivered is discarded on `end()`, so what the player typed into one
+field cannot reappear as a ghost keystroke in the next one.
+
+`bin/play-window.js` suppresses its own key bindings while text input is active
+-- typing `q` into a name field previously quit the player, and `w` would also
+walk the player forward. It also releases keys held at the transition, since
+`keyDown` suppression would otherwise leave them stuck down for as long as the
+field is open.
+
+Editing keys stay on the keyboard ABI: backspace, arrows and enter are presses
+rather than characters, so a cart drawing its own field reads those through
+`wc_kb_on_down` and appends what arrives via `wc_on_text`.
+
+Also adds `test/fixtures/gltri.wasc`, a GL orientation probe, and three tests on
+it. The existing GL fixture only calls `glClearColor`, so every pixel is
+identical and a vertical flip or bad viewport is invisible; gltri draws
+asymmetric geometry so the pixels say which way is up. One of the three pins the
+letterbox path, which resizes by calling `gl.viewport` on the cart's own context.
+
 ## 0.14.0
 
 Adds lifecycle events, and fixes the clock spike that made suspension unsafe.

@@ -204,6 +204,54 @@ read by the cart ONCE at init — never per frame):
 
 ---
 
+## Text input
+
+For name entry, chat, seeds -- anywhere the player types **characters** rather
+than pressing game buttons.
+
+The raw keyboard ABI reports HID scancodes, which are physical key positions,
+not characters. `Shift+2` is `@` on a US layout and something else on many
+others; `é` has no scancode at all. Rather than have every cart reimplement
+keyboard layouts, the host delivers text the platform has already composed --
+layout, shift, dead keys, compose sequences and IME commits all applied.
+
+```c
+// Cart export (optional)
+void wc_on_text(const char* utf8, uint32_t len);
+
+// Host imports
+void wc_text_input_begin(void);
+void wc_text_input_end(void);
+uint32_t wc_text_input_active(void);
+```
+
+The `utf8` pointer is valid **only for the duration of the call** and is **not
+null-terminated**; a cart MUST copy what it needs and MUST honour `len`. A
+single call MAY carry several codepoints, since an IME commits a whole word at
+once.
+
+**Text input is off until the cart calls `wc_text_input_begin()`.** A host MUST
+NOT deliver `wc_on_text` before that, and MUST stop on `wc_text_input_end()`.
+A host MAY forward platform text unconditionally and let the gate drop it,
+which is what makes a cart that never asks for text immune to it.
+
+**A host MUST discard text queued but not yet delivered when the cart calls
+`wc_text_input_end()`.** Otherwise what the player typed into one field
+reappears in the next field they open, which reads as a ghost keystroke.
+
+**While text input is active, a host SHOULD suppress its own key bindings and
+gameplay key delivery.** Typing `q` into a name field must not quit, and `w`
+must not also walk the player forward. A host that suppresses key events this
+way MUST also release keys already held at the transition, or they stick down
+for as long as the field is open.
+
+On platforms with an on-screen keyboard, `wc_text_input_begin` / `end` is the
+signal to raise and dismiss it.
+
+Editing keys stay on the keyboard ABI: backspace, arrows and enter are key
+presses rather than characters, so a cart drawing its own text field reads
+those through `wc_kb_on_down` and appends characters from `wc_on_text`.
+
 ## Lifecycle
 
 Four optional cart exports. A cart MAY export any subset; the host skips those

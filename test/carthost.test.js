@@ -508,3 +508,112 @@ test('both hosts implement the same lifecycle surface', async () => {
       `${f}: runFrame must be a no-op while suspended`);
   }
 });
+
+// --- Text input ---
+// textcart accumulates every byte delivered through wc_on_text, so these
+// assert on the exact BYTES received. That matters because the interesting
+// cases are multi-byte: a UTF-8 sequence split across calls or truncated would
+// still "arrive" by a callback count.
+
+const textReader = (host) => {
+  const p = {};
+  for (const f of host.readDebugState()) p[f.name] = f.valuePtr;
+  const u32 = (n) => new DataView(host._u8.buffer).getUint32(p[n], true);
+  return {
+    u32,
+    text: () => new TextDecoder().decode(host._u8.slice(p.buf, p.buf + u32('buf_len'))),
+  };
+};
+
+test('text is delivered as UTF-8 characters, not scancodes', async () => {
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/textcart.wasc'));
+  const r = textReader(host);
+
+  host.instance.exports.wc_begin();
+  host.textInput('Hi @');
+  // 2-, 3- and 4-byte sequences: the whole point of a character ABI is that a
+  // cart never has to know a keyboard layout to receive these.
+  host.textInput('é');       // 2 bytes
+  host.textInput('あ');       // 3 bytes
+  host.textInput('\u{1F3AE}');    // 4 bytes
+  host.runFrame([{ connected: true, buttons: 0 }]);
+
+  assert.equal(r.text(), 'Hi @éあ\u{1F3AE}');
+  assert.equal(r.u32('buf_len'), 13, 'byte count must match UTF-8, not code units');
+  host.destroy();
+});
+
+test('text is dropped unless the cart asked for it', async () => {
+  // A cart that never calls wc_text_input_begin() cannot be surprised by text,
+  // so a host may forward platform text unconditionally.
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/textcart.wasc'));
+  const r = textReader(host);
+
+  host.textInput('before');
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  assert.equal(r.u32('call_count'), 0, 'no text before begin()');
+
+  host.instance.exports.wc_begin();
+  assert.equal(host.textInputActive, true);
+  host.textInput('during');
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  assert.equal(r.text(), 'during');
+
+  host.instance.exports.wc_end();
+  assert.equal(host.textInputActive, false);
+  host.textInput('after');
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  assert.equal(r.text(), 'during', 'no text after end()');
+  host.destroy();
+});
+
+test('text queued but undelivered is dropped on end()', async () => {
+  // Otherwise what the player typed into one field reappears in the next one
+  // they open, which reads as a ghost keystroke.
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/textcart.wasc'));
+  const r = textReader(host);
+
+  host.instance.exports.wc_begin();
+  host.textInput('stale');
+  host.instance.exports.wc_end();      // before any frame drains it
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  assert.equal(r.u32('call_count'), 0, 'queued text is discarded, not deferred');
+
+  host.instance.exports.wc_begin();    // reopening must not replay it
+  host.runFrame([{ connected: true, buttons: 0 }]);
+  assert.equal(r.u32('call_count'), 0, 'stale text must not leak into the next field');
+  host.destroy();
+});
+
+test('a cart with no wc_on_text export is unaffected', async () => {
+  const host = new CartHost();
+  await host.load(join(HERE, 'fixtures/hello.wasc'));
+  host.textInput('ignored');
+  const f = host.runFrame([{ connected: true, buttons: 0 }]);
+  assert.ok(f.width > 0, 'a cart that exports no text handler still runs');
+  host.destroy();
+});
+
+test('both hosts implement the same text-input surface', async () => {
+  for (const f of ['../src/CartHost.js', '../src/CartHostWeb.js']) {
+    const src = readFileSync(join(HERE, f), 'utf8');
+    for (const m of ['wc_text_input_begin', 'wc_text_input_end', 'wc_text_input_active',
+                     '_deliverTextEvents', 'textInputActive']) {
+      assert.ok(src.includes(m), `${f} must implement ${m}`);
+    }
+  }
+});
+
+test('the player suppresses gameplay keys while text input is active', async () => {
+  // Typing "q" into a name field must not quit the player, and "w" must not
+  // also walk the player forward.
+  const src = readFileSync(join(HERE, '../bin/play-window.js'), 'utf8');
+  assert.ok(/if \(host\.textInputActive\)/.test(src),
+    'keyDown must consult textInputActive before treating a key as a control');
+  assert.ok(/window\.on\('textInput'/.test(src), 'the player must forward SDL text');
+  assert.ok(/held\.clear\(\)/.test(src),
+    'keys held when a field opens must be released, or they stick while keyDown is suppressed');
+});

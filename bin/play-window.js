@@ -114,10 +114,36 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
   // input: real press/release edges
   window.on('keyDown', (e) => {
     const k = (e.key ?? e.scancode ?? '').toString().toLowerCase();
+    // While the cart is taking text, keys are CHARACTERS, not controls: typing
+    // "q" into a name field must not quit the player, and "w" must not also
+    // walk the player forward. Escape still works, as the universal "get me
+    // out of here" -- a cart that wants it for its own field can read it
+    // through the keyboard ABI.
+    if (host.textInputActive) {
+      if (k === 'escape') return quit();
+      return;
+    }
     if (k === 'escape' || k === 'q') return quit();
     const name = KEYMAP[k];
     if (name) held.add(name);
   });
+
+  // Committed text from SDL: already layout-, shift- and IME-processed. The
+  // host forwards unconditionally; CartHost drops it unless the cart asked.
+  window.on('textInput', (e) => {
+    if (typeof e.text === 'string') host.textInput(e.text);
+  });
+
+  // Anything held when a text field opens would otherwise stick: keyDown is
+  // suppressed during text input, and the matching keyUp arrives while the
+  // cart is still typing, so the pad would report the key held forever. Clear
+  // on the transition into text input rather than trying to reconcile later.
+  let textWasActive = false;
+  const syncTextInputState = () => {
+    const now = host.textInputActive;
+    if (now && !textWasActive) held.clear();
+    textWasActive = now;
+  };
   window.on('keyUp', (e) => {
     const name = KEYMAP[(e.key ?? e.scancode ?? '').toString().toLowerCase()];
     if (name) held.delete(name);
@@ -195,6 +221,7 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
   let frame = null;
   let ticks = 0;
   const step = () => {
+    syncTextInputState();
     frame = host.runFrame(pad());
     ticks++;
     if (audioDev && frame.audio && frame.audio.length) {
