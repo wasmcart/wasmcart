@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.2
+
+Documents rumble in `docs/input.md`, the dedicated input reference, which had no
+rumble section -- so the one place a cart author looks for input details did not
+mention it. No code changes.
+
 ## 0.12.1
 
 Two correctness fixes: saves that only survived a graceful exit, and a resize
