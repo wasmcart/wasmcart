@@ -151,61 +151,59 @@ it knows matter. That is a cart-author concern, not a spec one.
 is actually for - manual save states and regression snapshots, where a one-off
 full-memory copy is fine.
 
-## Current ABI
+## The ABI
 
-Two families exist today. They predate the model above and do not yet match it.
-
-**WebSocket** (`wc_ws_*`) - client-only, URL-addressed, allowlisted by domain in
-the manifest. `wc_ws_open`, `wc_ws_close`, `wc_ws_send`, `wc_ws_send_text`,
-`wc_ws_state`; callbacks `wc_ws_on_open`, `wc_ws_on_message`,
-`wc_ws_on_message_text`, `wc_ws_on_close`, `wc_ws_on_error`.
-
-**Data channel** (`wc_dc_*`) - peer-to-peer, host manages signaling, binary
-only. `wc_dc_peer_count`, `wc_dc_peer_info`, `wc_dc_send`, `wc_dc_broadcast`;
-callbacks `wc_dc_on_connect`, `wc_dc_on_disconnect`, `wc_dc_on_message`.
-
-See [SPEC.md](../SPEC.md) for the authoritative definitions of both.
-
-## Planned: merge into one family
-
-Under the model above, `wc_ws_send` and `wc_dc_send` are the same function with
-two names. The split makes a cart care about how a connection was established,
-which is precisely the thing it should not know - and it means a cart written
-against a relay server cannot run over a serial cable without a rewrite.
-
-The merged surface is roughly:
+The peer-connection family is normative in [SPEC.md](../SPEC.md#peer-connection):
 
 ```
-open(address)          close(id)         send(id, data)    broadcast(data)
-state(id)              peer_count()      peer_id(index)    peer_name(id, dest)
-transport(id)          [optional]
+wc_peer_open(addr, len)        wc_peer_close(id)
+wc_peer_send(id, data, len)    wc_peer_broadcast(data, len)
+wc_peer_state(id)              wc_peer_count()
+wc_peer_id(index)              wc_peer_name(id, dest, max)
+wc_peer_transport(id)          // optional, both ways
 
-on_connect(id, name)   on_message(id, data)
-on_disconnect(id)      on_error(id)
+wc_peer_on_connect(id, name, len)   wc_peer_on_message(id, data, len)
+wc_peer_on_disconnect(id)           wc_peer_on_error(id)
 ```
 
-`wc_dc_*` is already most of this. What it is missing is an explicit open and a
-state query; what it gets wrong is the name - "dc" says WebRTC, the one
-implementation detail this design most wants to hide.
+Gated by `WC_FLAG_NET_PEER` **and** a manifest `net` grant - networking is the
+one capability where the cart's own declaration is not sufficient, because
+reaching a remote machine is a permission the packager grants.
 
-### Open questions
+Binary only. Text frames were dropped in the merge: they are meaningful for
+WebSocket and meaningless for a serial cable or raw TCP, so framing belongs to
+the cart.
 
-Both are decisions rather than problems, and both should be settled before
-anything is renamed:
+### Manifest gating
 
-- **Text frames.** `wc_ws_send_text` / `wc_ws_on_message_text` are meaningful
-  for WebSocket and meaningless for a serial cable or raw TCP. Under one family
-  they become either a transport-specific wart or something dropped in favor of
-  binary-only with carts doing their own framing. The two families currently
-  disagree with each other about this: the `wc_dc_*` notes already say "binary
-  only - games serialize their own protocols".
-- **Manifest gating.** `net.websocket` is a domain allowlist, which does not
-  describe a serial port or a LAN peer. Gating likely has to become
-  per-transport-class - internet hosts allowlisted by domain as today, with
-  LAN, local, and serial as separate coarse grants. This is the security story,
-  so it is the part that cannot be quietly changed later.
+Addresses are not always domains, so grants are per transport class, each
+independently defaulting to denied:
 
-A rename is cheap now and expensive after carts adopt `wc_ws_*`.
+```json
+{
+  "net": {
+    "domains": ["game.example.com"],
+    "lan": true,
+    "serial": false
+  }
+}
+```
+
+### Superseded
+
+This replaces two earlier families, `wc_ws_*` (WebSocket, client-only,
+URL-addressed) and `wc_dc_*` (data channel, peer-to-peer, host-signalled).
+`wc_ws_send` and `wc_dc_send` were the same function under two names; the split
+forced a cart to care about how a connection was established, and meant a cart
+written against a relay server could not run over a serial cable without a
+rewrite.
+
+`WC_FLAG_NET_DC` (0x04) is reserved and unused. `net.websocket` is superseded by
+`net.domains`; hosts SHOULD still read it from older manifests.
+
+Host implementations (`src/CartHost.js`, `src/CartHostWeb.js`),
+`include/wasmcart.h`, and the SDK header copies still carry the old families and
+have not yet been migrated.
 
 ## Related
 

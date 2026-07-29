@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ABI_VERSION, MIN_ABI_VERSION, BUTTON, PAD_SIZE, MAX_PADS, INPUT_REGION_SIZE,
-  INFO_FIELDS, FLAG_NET_WS, FLAG_NET_DC, FLAG_POINTER, FLAG_KEYBOARD,
+  INFO_FIELDS, FLAG_NET_PEER, FLAG_POINTER, FLAG_KEYBOARD,
   FLAG_DEBUG, DEBUG_TYPE, DEBUG_TYPE_WIDTH, DEBUG_TYPE_NAME, DEBUG_FIELD_SIZE,
 } from '../src/abi.js';
 
@@ -29,7 +29,7 @@ test('pad + input region layout is consistent', () => {
 });
 
 test('feature flags are distinct single bits', () => {
-  const flags = [FLAG_NET_WS, FLAG_NET_DC, FLAG_POINTER, FLAG_KEYBOARD];
+  const flags = [FLAG_NET_PEER, FLAG_POINTER, FLAG_KEYBOARD];
   for (const f of flags) assert.equal(f & (f - 1), 0, `flag ${f} not a single bit`);
   assert.equal(new Set(flags).size, flags.length);
 });
@@ -40,7 +40,7 @@ test('INFO_FIELDS describes the wc_info_t struct', () => {
 
 test('debug ABI: FLAG_DEBUG is a distinct single bit above the v3 flags', () => {
   assert.equal(FLAG_DEBUG, 1 << 5);
-  for (const other of [FLAG_NET_WS, FLAG_NET_DC, FLAG_POINTER, FLAG_KEYBOARD]) {
+  for (const other of [FLAG_NET_PEER, FLAG_POINTER, FLAG_KEYBOARD]) {
     assert.notEqual(FLAG_DEBUG, other);
   }
   assert.equal(FLAG_DEBUG & (FLAG_DEBUG - 1), 0);
@@ -54,4 +54,14 @@ test('debug field: type table is complete and widths line up', () => {
   }
   assert.equal(DEBUG_TYPE_WIDTH[DEBUG_TYPE.U8], 1);
   assert.equal(DEBUG_TYPE_WIDTH[DEBUG_TYPE.F64], 8);
+});
+
+test('1 << 2 stays reserved: no flag may reclaim the old FLAG_NET_DC bit', () => {
+  // The WebSocket and data-channel families merged into one peer-connection
+  // family, freeing 1 << 2. A future flag landing there would silently collide
+  // with carts built before the merge, so it stays unused.
+  const RESERVED = 1 << 2;
+  for (const f of [FLAG_NET_PEER, FLAG_POINTER, FLAG_KEYBOARD, FLAG_DEBUG]) {
+    assert.notEqual(f, RESERVED, 'a flag reclaimed the reserved 1 << 2 bit');
+  }
 });

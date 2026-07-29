@@ -10,8 +10,11 @@ import {
   PAD_SIZE,
   MAX_PADS,
   TIME_SIZE,
-  FLAG_NET_WS,
-  FLAG_NET_DC,
+  FLAG_NET_PEER,
+  PEER_OPEN,
+  PEER_CLOSED,
+  TRANSPORT_UNKNOWN,
+  TRANSPORT_WS,
   FLAG_POINTER,
   FLAG_KEYBOARD,
   POINTER_SIZE,
@@ -167,9 +170,8 @@ export class CartHostWeb {
 
     // Networking (ABI v3)
     this._manifest = null;
-    this._wsConnections = new Map();
-    this._wsNextId = 0;
-    this._dcPeers = new Map();
+    this._peers = new Map();   // peer_id → { ws|dc, name, transport, eventQueue }
+    this._peerNextId = 0;
 
     // Pointer input (ABI v3)
     this._pointerState = [];
@@ -411,33 +413,35 @@ export class CartHostWeb {
           this._textEvents.length = 0;
         },
         wc_text_input_active: () => (this._textActive ? 1 : 0),
-        wc_ws_open: (urlPtr, urlLen) => {
-          return this._wsOpen(urlPtr, urlLen);
+        // --- Peer connections (ABI v3) ---
+        // One family. Transport is opaque to the cart: WebSocket, WebRTC data
+        // channel, TCP, relay, serial - the cart cannot tell and must not care.
+        wc_peer_open: (addrPtr, addrLen) => {
+          return this._peerOpen(addrPtr, addrLen);
         },
-        wc_ws_close: (connId, code) => {
-          this._wsClose(connId, code);
+        wc_peer_close: (peerId) => {
+          this._peerClose(peerId);
         },
-        wc_ws_send: (connId, dataPtr, len) => {
-          return this._wsSend(connId, dataPtr, len, false);
+        wc_peer_send: (peerId, dataPtr, len) => {
+          return this._peerSend(peerId, dataPtr, len);
         },
-        wc_ws_send_text: (connId, strPtr, len) => {
-          return this._wsSend(connId, strPtr, len, true);
+        wc_peer_broadcast: (dataPtr, len) => {
+          return this._peerBroadcast(dataPtr, len);
         },
-        wc_ws_state: (connId) => {
-          return this._wsState(connId);
+        wc_peer_state: (peerId) => {
+          return this._peerState(peerId);
         },
-        // --- Data Channel API (ABI v3) ---
-        wc_dc_peer_count: () => {
-          return this._dcPeers.size;
+        wc_peer_count: () => {
+          return this._peers.size;
         },
-        wc_dc_peer_info: (index, destPtr, maxLen) => {
-          return this._dcPeerInfo(index, destPtr, maxLen);
+        wc_peer_id: (index) => {
+          return this._peerIdAt(index);
         },
-        wc_dc_send: (peerId, dataPtr, len) => {
-          return this._dcSend(peerId, dataPtr, len);
+        wc_peer_name: (peerId, destPtr, maxLen) => {
+          return this._peerName(peerId, destPtr, maxLen);
         },
-        wc_dc_broadcast: (dataPtr, len) => {
-          return this._dcBroadcast(dataPtr, len);
+        wc_peer_transport: (peerId) => {
+          return this._peerTransport(peerId);
         },
         memfs_register_file: (namePtr, dataPtr, size) => {
           try {
@@ -776,12 +780,14 @@ export class CartHostWeb {
       this._ownedGl = null;
     }
 
-    // Close all WebSocket connections
-    for (const [, conn] of this._wsConnections) {
-      try { conn.ws.close(); } catch {}
+    // Close all peer connections
+    for (const [, peer] of this._peers) {
+      try {
+        if (peer.ws) peer.ws.close();
+        else if (peer.dc && peer.dc.close) peer.dc.close();
+      } catch {}
     }
-    this._wsConnections.clear();
-    this._dcPeers.clear();
+    this._peers.clear();
 
     // Terminate all worker threads
     for (const [tid, worker] of this._workers) {
@@ -1081,63 +1087,90 @@ export class CartHostWeb {
     }
   }
 
-  _wsOpen(urlPtr, urlLen) {
-    const allowlist = this._manifest?.net?.websocket;
-    if (!allowlist || !globalThis.WebSocket) return -1;
+  /**
+   * Open a peer connection. `addr` is host-interpreted - this host understands
+   * ws:// and wss:// URLs. A host that does not understand an address, or whose
+   * manifest grant does not cover its transport class, fails the open.
+   */
+  _peerOpen(addrPtr, addrLen) {
+    // Dual gate: the cart's flag requests networking, the manifest grants it.
+    // Fail closed if either is missing.
+    if (!this.info?.wantsNet) return -1;
+    if (!this._manifest?.net) return -1;
 
     this._updateViews();
-    const url = new TextDecoder().decode(this._u8.slice(urlPtr, urlPtr + urlLen));
+    const addr = new TextDecoder().decode(this._u8.slice(addrPtr, addrPtr + addrLen));
 
-    let hostname;
+    // Domain-granted transports: only ws/wss are implemented here. LAN and
+    // serial addresses would be gated by net.lan / net.serial respectively.
+    let url;
     try {
-      hostname = new URL(url).hostname;
+      url = new URL(addr);
     } catch {
       return -1;
     }
-    if (!allowlist.includes(hostname)) return -1;
+    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') return -1;
 
-    const id = this._wsNextId++;
+    // net.domains is the allowlist; net.websocket is the superseded spelling,
+    // still read so older manifests keep working.
+    const allowlist = this._manifest?.net?.domains ?? this._manifest?.net?.websocket;
+    if (!allowlist) return -1;
+    if (!allowlist.includes(url.hostname)) return -1;
+    if (!globalThis.WebSocket) return -1;
+
+    const id = this._peerNextId++;
     try {
-      const ws = new WebSocket(url);
-      ws.binaryType = 'arraybuffer';
+      const ws = new WebSocket(addr);
+      if (ws.binaryType !== undefined) ws.binaryType = 'arraybuffer';
 
-      const conn = { ws, eventQueue: [] };
-      ws.onopen = () => conn.eventQueue.push({ type: 'open' });
-      ws.onmessage = (e) => {
-        if (typeof e.data === 'string') {
-          conn.eventQueue.push({ type: 'text', data: e.data });
-        } else {
-          conn.eventQueue.push({ type: 'binary', data: e.data });
-        }
+      // name defaults to the hostname: display-only, never a handle.
+      const peer = {
+        ws,
+        name: url.hostname,
+        transport: TRANSPORT_WS,
+        eventQueue: [],
       };
-      ws.onclose = (e) => conn.eventQueue.push({ type: 'close', code: e.code || 1000 });
-      ws.onerror = () => conn.eventQueue.push({ type: 'error' });
+      ws.onopen = () => peer.eventQueue.push({ type: 'connect' });
+      ws.onmessage = (e) => {
+        // Binary only. A text frame from the server is delivered as its UTF-8
+        // bytes: framing is the cart's business, so we never drop the payload.
+        const data = typeof e.data === 'string'
+          ? new TextEncoder().encode(e.data)
+          : e.data;
+        peer.eventQueue.push({ type: 'message', data });
+      };
+      ws.onclose = () => peer.eventQueue.push({ type: 'disconnect' });
+      ws.onerror = () => peer.eventQueue.push({ type: 'error' });
 
-      this._wsConnections.set(id, conn);
+      this._peers.set(id, peer);
       return id;
     } catch {
       return -1;
     }
   }
 
-  _wsClose(connId, code) {
-    const conn = this._wsConnections.get(connId);
-    if (!conn) return;
-    try { conn.ws.close(code || 1000); } catch {}
+  _peerClose(peerId) {
+    const peer = this._peers.get(peerId);
+    if (!peer) return;
+    try {
+      if (peer.ws) peer.ws.close(1000);
+      else if (peer.dc && peer.dc.close) peer.dc.close();
+    } catch {}
   }
 
-  _wsSend(connId, dataPtr, len, isText) {
-    const conn = this._wsConnections.get(connId);
-    if (!conn) return -1;
+  _peerSend(peerId, dataPtr, len) {
+    const peer = this._peers.get(peerId);
+    if (!peer) return -1;
     try {
-      if (conn.ws.readyState !== 1) return -1;
       this._updateViews();
-      if (isText) {
-        const str = new TextDecoder().decode(this._u8.slice(dataPtr, dataPtr + len));
-        conn.ws.send(str);
+      const bytes = this._u8.slice(dataPtr, dataPtr + len);
+      if (peer.ws) {
+        if (peer.ws.readyState !== 1) return -1; // not OPEN
+        peer.ws.send(bytes);
+      } else if (peer.dc) {
+        peer.dc.send(bytes);
       } else {
-        const bytes = this._u8.slice(dataPtr, dataPtr + len);
-        conn.ws.send(bytes);
+        return -1;
       }
       return len;
     } catch {
@@ -1145,117 +1178,122 @@ export class CartHostWeb {
     }
   }
 
-  _wsState(connId) {
-    const conn = this._wsConnections.get(connId);
-    if (!conn) return 3;
-    return conn.ws.readyState;
-  }
-
-  _dcPeerInfo(index, destPtr, maxLen) {
-    const peers = [...this._dcPeers.entries()];
-    if (index >= peers.length) return -1;
-    const [peerId, peer] = peers[index];
-    this._updateViews();
-    const labelBytes = new TextEncoder().encode(peer.label + '\0');
-    const copyLen = Math.min(labelBytes.length, maxLen);
-    this._u8.set(labelBytes.subarray(0, copyLen), destPtr);
-    return peerId;
-  }
-
-  _dcSend(peerId, dataPtr, len) {
-    const peer = this._dcPeers.get(peerId);
-    if (!peer || !peer.dc) return -1;
-    try {
-      this._updateViews();
-      const bytes = this._u8.slice(dataPtr, dataPtr + len);
-      peer.dc.send(bytes);
-      return len;
-    } catch {
-      return -1;
-    }
-  }
-
-  _dcBroadcast(dataPtr, len) {
+  _peerBroadcast(dataPtr, len) {
     this._updateViews();
     const bytes = this._u8.slice(dataPtr, dataPtr + len);
     let count = 0;
-    for (const [, peer] of this._dcPeers) {
-      if (!peer.dc) continue;
+    for (const [, peer] of this._peers) {
       try {
-        peer.dc.send(bytes);
+        if (peer.ws) {
+          if (peer.ws.readyState !== 1) continue;
+          peer.ws.send(bytes);
+        } else if (peer.dc) {
+          peer.dc.send(bytes);
+        } else {
+          continue;
+        }
         count++;
       } catch {}
     }
     return count || -1;
   }
 
+  _peerState(peerId) {
+    const peer = this._peers.get(peerId);
+    if (!peer) return PEER_CLOSED;
+    if (peer.ws) return peer.ws.readyState;
+    // Host-registered peers are live from the moment they are added.
+    return peer.closed ? PEER_CLOSED : PEER_OPEN;
+  }
+
+  /** Connection ID at an index, so a cart can enumerate without tracking events. */
+  _peerIdAt(index) {
+    const ids = [...this._peers.keys()];
+    if (index >= ids.length) return -1;
+    return ids[index];
+  }
+
+  /** Write the peer's display name. DISPLAY-ONLY - the id is the handle. */
+  _peerName(peerId, destPtr, maxLen) {
+    const peer = this._peers.get(peerId);
+    if (!peer) return -1;
+    if (maxLen === 0) return -1;
+    this._updateViews();
+    const nameBytes = new TextEncoder().encode(String(peer.name ?? ''));
+    // Always NUL-terminate: truncate the text, never the terminator.
+    const copyLen = Math.min(nameBytes.length, maxLen - 1);
+    this._u8.set(nameBytes.subarray(0, copyLen), destPtr);
+    this._u8[destPtr + copyLen] = 0;
+    return copyLen + 1;
+  }
+
+  _peerTransport(peerId) {
+    const peer = this._peers.get(peerId);
+    if (!peer) return TRANSPORT_UNKNOWN;
+    return peer.transport ?? TRANSPORT_UNKNOWN;
+  }
+
   _deliverNetEvents() {
     const exports = this.instance.exports;
 
-    for (const [id, conn] of this._wsConnections) {
-      while (conn.eventQueue.length > 0) {
-        const evt = conn.eventQueue.shift();
-        if (evt.type === 'open' && exports.wc_ws_on_open) {
-          exports.wc_ws_on_open(id);
-        } else if (evt.type === 'binary' && exports.wc_ws_on_message) {
-          const buf = evt.data instanceof ArrayBuffer ? new Uint8Array(evt.data)
-            : evt.data instanceof Uint8Array ? evt.data
-            : new Uint8Array(evt.data);
-          this._withTempWasmData(buf, (ptr, len) => {
-            exports.wc_ws_on_message(id, ptr, len);
-          });
-        } else if (evt.type === 'text' && exports.wc_ws_on_message_text) {
-          const bytes = new TextEncoder().encode(evt.data);
-          this._withTempWasmData(bytes, (ptr, len) => {
-            exports.wc_ws_on_message_text(id, ptr, len);
-          });
-        } else if (evt.type === 'close' && exports.wc_ws_on_close) {
-          exports.wc_ws_on_close(id, evt.code);
-        } else if (evt.type === 'error' && exports.wc_ws_on_error) {
-          exports.wc_ws_on_error(id);
-        }
-      }
-    }
-
-    for (const [peerId, peer] of this._dcPeers) {
+    for (const [peerId, peer] of this._peers) {
       while (peer.eventQueue.length > 0) {
         const evt = peer.eventQueue.shift();
-        if (evt.type === 'connect' && exports.wc_dc_on_connect) {
-          const labelBytes = new TextEncoder().encode(peer.label);
-          this._withTempWasmData(labelBytes, (ptr, len) => {
-            exports.wc_dc_on_connect(peerId, ptr, len);
+        if (evt.type === 'connect' && exports.wc_peer_on_connect) {
+          const nameBytes = new TextEncoder().encode(String(peer.name ?? ''));
+          this._withTempWasmData(nameBytes, (ptr, len) => {
+            exports.wc_peer_on_connect(peerId, ptr, len);
           });
-        } else if (evt.type === 'message' && exports.wc_dc_on_message) {
+        } else if (evt.type === 'message' && exports.wc_peer_on_message) {
           const buf = evt.data instanceof ArrayBuffer ? new Uint8Array(evt.data)
             : evt.data instanceof Uint8Array ? evt.data
             : new Uint8Array(evt.data);
           this._withTempWasmData(buf, (ptr, len) => {
-            exports.wc_dc_on_message(peerId, ptr, len);
+            exports.wc_peer_on_message(peerId, ptr, len);
           });
-        } else if (evt.type === 'disconnect' && exports.wc_dc_on_disconnect) {
-          exports.wc_dc_on_disconnect(peerId);
+        } else if (evt.type === 'disconnect') {
+          peer.closed = true;
+          if (exports.wc_peer_on_disconnect) exports.wc_peer_on_disconnect(peerId);
+        } else if (evt.type === 'error' && exports.wc_peer_on_error) {
+          exports.wc_peer_on_error(peerId);
         }
       }
     }
   }
 
-  addDataChannelPeer(peerId, label, dc) {
-    const peer = { dc, label, eventQueue: [{ type: 'connect' }] };
-    dc.onmessage = (e) => {
+  /**
+   * Register a peer whose connection this host application manages (WebRTC data
+   * channel, LAN socket, serial link - the cart cannot tell which).
+   * @param {number} peerId - unique peer ID
+   * @param {string} name - display name; NOT a handle, NOT trusted
+   * @param {object} channel - object with send(), onmessage, onclose
+   * @param {number} [transport] - TRANSPORT_* bitmask, 0 if uncharacterized
+   */
+  addPeer(peerId, name, channel, transport = TRANSPORT_UNKNOWN) {
+    const peer = {
+      dc: channel,
+      name,
+      transport,
+      closed: false,
+      eventQueue: [{ type: 'connect' }],
+    };
+    channel.onmessage = (e) => {
       peer.eventQueue.push({ type: 'message', data: e.data });
     };
-    dc.onclose = () => {
+    channel.onclose = () => {
       peer.eventQueue.push({ type: 'disconnect' });
     };
-    this._dcPeers.set(peerId, peer);
+    this._peers.set(peerId, peer);
   }
 
-  removeDataChannelPeer(peerId) {
-    const peer = this._dcPeers.get(peerId);
+  /** Remove a host-managed peer. */
+  removePeer(peerId) {
+    const peer = this._peers.get(peerId);
     if (peer) {
       peer.eventQueue.push({ type: 'disconnect' });
     }
   }
+
 
   // --- Pointer Input (ABI v3) ---
 
@@ -1482,6 +1520,10 @@ export class CartHostWeb {
     }
     info.wantsPointer = !!(info.flags & FLAG_POINTER);
     info.wantsKeyboard = !!(info.flags & FLAG_KEYBOARD);
+    // Networking is the one dual gate: the flag REQUESTS it, the manifest
+    // GRANTS it, and both are required. Reaching a remote machine is a
+    // permission the packager gives, not one the cart may assert.
+    info.wantsNet = !!(info.flags & FLAG_NET_PEER);
 
     // gpu_api (offset 64, u32 index 16) - 0=2D, 1=WebGL2, 2=WebGPU, 3=Vulkan
     info.gpuApi = u32[base + 16] || 0;

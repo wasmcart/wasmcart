@@ -94,12 +94,32 @@ export const HOST_INFO_SIZE = 20;
 
 // Cart info flags (wc_info_t.flags)
 export const FLAG_AUDIO_F32 = 1 << 0;  // audio ring buffer uses float32
-export const FLAG_NET_WS    = 1 << 1;  // cart wants WebSocket imports
-export const FLAG_NET_DC    = 1 << 2;  // cart wants data channel imports
+export const FLAG_NET_PEER  = 1 << 1;  // cart wants peer-connection imports
+// 1 << 2 is RESERVED AND UNUSED — it was FLAG_NET_DC before the WebSocket and
+// data-channel families merged into one peer-connection family. Hosts must
+// ignore it; carts must not set it. FLAG_NET_PEER governs all networking.
 export const FLAG_POINTER   = 1 << 3;  // cart wants pointer input
 export const FLAG_KEYBOARD  = 1 << 4;  // cart wants raw keyboard input
 export const FLAG_DEBUG     = 1 << 5;  // cart exports wc_debug_state() (opt-in; default OFF)
 export const FLAG_DETERMINISTIC = 1 << 6; // cart honors deterministic mode (opt-in; default OFF)
+
+// Peer connection state (wc_peer_state)
+export const PEER_CONNECTING = 0;
+export const PEER_OPEN       = 1;
+export const PEER_CLOSING    = 2;
+export const PEER_CLOSED     = 3;
+
+// Transport properties (wc_peer_transport bitmask). Deliberately properties,
+// not a transport name: a name invites carts to branch on the implementation
+// the peer abstraction exists to hide. UNKNOWN means the host does not
+// characterize it — carts must treat that as "assume nothing".
+export const TRANSPORT_UNKNOWN     = 0x00;
+export const TRANSPORT_RELIABLE    = 0x01;
+export const TRANSPORT_ORDERED     = 0x02;
+export const TRANSPORT_LOW_LATENCY = 0x04;
+
+// A WebSocket is reliable and ordered, but makes no latency promise.
+export const TRANSPORT_WS = TRANSPORT_RELIABLE | TRANSPORT_ORDERED;
 
 // Host-info flags (wc_host_info_t.flags, written by the host BEFORE wc_init,
 // read by the cart ONCE at init — never per frame).

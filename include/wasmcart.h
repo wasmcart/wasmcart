@@ -183,8 +183,10 @@ typedef struct {
 
 // Cart info flags
 #define WC_FLAG_AUDIO_F32  (1 << 0)  // audio ring buffer uses float32 (default: int16)
-#define WC_FLAG_NET_WS     (1 << 1)  // cart wants WebSocket imports (ABI v3)
-#define WC_FLAG_NET_DC     (1 << 2)  // cart wants data channel imports (ABI v3)
+#define WC_FLAG_NET_PEER   (1 << 1)  // cart wants peer-connection imports (ABI v3)
+// (1 << 2) is RESERVED AND UNUSED - it was WC_FLAG_NET_DC before the WebSocket
+// and data-channel families merged into one peer-connection family. Hosts must
+// ignore it; carts must not set it. WC_FLAG_NET_PEER governs all networking.
 #define WC_FLAG_POINTER    (1 << 3)  // cart wants pointer input (ABI v3)
 #define WC_FLAG_KEYBOARD   (1 << 4)  // cart wants raw keyboard input (ABI v3)
 // Both of the following are OPT-IN and default OFF. A cart that sets neither is
@@ -423,88 +425,102 @@ static inline int wc_load_asset(const char* path, unsigned int path_len,
 #define WC_LOAD_ASSET(s, dest, max) wc_load_asset(s, sizeof(s) - 1, dest, max)
 
 // --- Networking API (ABI v3, optional) ---
-// Set WC_FLAG_NET_WS / WC_FLAG_NET_DC in wc_info_t.flags to enable.
-// Manifest must also declare net.websocket / net.data-channel.
+// One family: peer connections. A connection may be a WebSocket to a server, a
+// WebRTC data channel, direct TCP, a relay, MQTT, or a serial cable - whatever
+// the host implements. The cart cannot tell and must not care. There is no
+// client/server split: which end dialed which is a host-side fact.
+//
+// Set WC_FLAG_NET_PEER in wc_info_t.flags AND have the manifest grant the
+// relevant transport class in its "net" object. Networking is the one
+// capability where both are required: reaching a remote machine is a
+// permission the packager grants, not one the cart may assert.
+//
+// Compile with -DWC_USE_NET_PEER to pull in the imports.
 
-#ifdef WC_USE_NET_WS
+// Connection state (wc_peer_state)
+#define WC_PEER_CONNECTING 0
+#define WC_PEER_OPEN       1
+#define WC_PEER_CLOSING    2
+#define WC_PEER_CLOSED     3
 
-// WebSocket imports (cart calls into host)
+// Transport properties (wc_peer_transport bitmask). Deliberately properties,
+// not a transport name: a name invites carts to branch on the implementation
+// this design exists to hide. WC_TRANSPORT_UNKNOWN means the host does not
+// characterize it - treat that as "assume nothing".
+#define WC_TRANSPORT_UNKNOWN     0x00
+#define WC_TRANSPORT_RELIABLE    0x01
+#define WC_TRANSPORT_ORDERED     0x02
+#define WC_TRANSPORT_LOW_LATENCY 0x04
+
+#ifdef WC_USE_NET_PEER
+
+// Peer imports (cart calls into host)
 #ifdef __wasm__
-__attribute__((import_module("env"), import_name("wc_ws_open")))
-extern int wc_ws_open(const char* url, unsigned int url_len);
+__attribute__((import_module("env"), import_name("wc_peer_open")))
+extern int wc_peer_open(const char* addr, unsigned int addr_len);
 
-__attribute__((import_module("env"), import_name("wc_ws_close")))
-extern void wc_ws_close(int conn_id, unsigned int code);
+__attribute__((import_module("env"), import_name("wc_peer_close")))
+extern void wc_peer_close(int peer_id);
 
-__attribute__((import_module("env"), import_name("wc_ws_send")))
-extern int wc_ws_send(int conn_id, const void* data, unsigned int len);
+__attribute__((import_module("env"), import_name("wc_peer_send")))
+extern int wc_peer_send(int peer_id, const void* data, unsigned int len);
 
-__attribute__((import_module("env"), import_name("wc_ws_send_text")))
-extern int wc_ws_send_text(int conn_id, const char* str, unsigned int len);
+__attribute__((import_module("env"), import_name("wc_peer_broadcast")))
+extern int wc_peer_broadcast(const void* data, unsigned int len);
 
-__attribute__((import_module("env"), import_name("wc_ws_state")))
-extern int wc_ws_state(int conn_id);
+__attribute__((import_module("env"), import_name("wc_peer_state")))
+extern int wc_peer_state(int peer_id);
+
+__attribute__((import_module("env"), import_name("wc_peer_count")))
+extern int wc_peer_count(void);
+
+__attribute__((import_module("env"), import_name("wc_peer_id")))
+extern int wc_peer_id(unsigned int index);
+
+__attribute__((import_module("env"), import_name("wc_peer_name")))
+extern int wc_peer_name(int peer_id, char* dest, unsigned int max_len);
+
+__attribute__((import_module("env"), import_name("wc_peer_transport")))
+extern int wc_peer_transport(int peer_id);
 #else
-static inline int wc_ws_open(const char* url, unsigned int url_len) {
-    (void)url; (void)url_len; return -1;
+static inline int wc_peer_open(const char* addr, unsigned int addr_len) {
+    (void)addr; (void)addr_len; return -1;
 }
-static inline void wc_ws_close(int conn_id, unsigned int code) {
-    (void)conn_id; (void)code;
-}
-static inline int wc_ws_send(int conn_id, const void* data, unsigned int len) {
-    (void)conn_id; (void)data; (void)len; return -1;
-}
-static inline int wc_ws_send_text(int conn_id, const char* str, unsigned int len) {
-    (void)conn_id; (void)str; (void)len; return -1;
-}
-static inline int wc_ws_state(int conn_id) {
-    (void)conn_id; return 3; /* CLOSED */
-}
-#endif
-
-// WebSocket exports (cart implements, host calls — all optional)
-// void wc_ws_on_open(int conn_id);
-// void wc_ws_on_message(int conn_id, const void* data, unsigned int len);
-// void wc_ws_on_message_text(int conn_id, const char* str, unsigned int len);
-// void wc_ws_on_close(int conn_id, unsigned int code);
-// void wc_ws_on_error(int conn_id);
-
-#endif // WC_USE_NET_WS
-
-#ifdef WC_USE_NET_DC
-
-// Data Channel imports (cart calls into host)
-#ifdef __wasm__
-__attribute__((import_module("env"), import_name("wc_dc_peer_count")))
-extern int wc_dc_peer_count(void);
-
-__attribute__((import_module("env"), import_name("wc_dc_peer_info")))
-extern int wc_dc_peer_info(unsigned int index, char* dest, unsigned int max_len);
-
-__attribute__((import_module("env"), import_name("wc_dc_send")))
-extern int wc_dc_send(int peer_id, const void* data, unsigned int len);
-
-__attribute__((import_module("env"), import_name("wc_dc_broadcast")))
-extern int wc_dc_broadcast(const void* data, unsigned int len);
-#else
-static inline int wc_dc_peer_count(void) { return 0; }
-static inline int wc_dc_peer_info(unsigned int index, char* dest, unsigned int max_len) {
-    (void)index; (void)dest; (void)max_len; return -1;
-}
-static inline int wc_dc_send(int peer_id, const void* data, unsigned int len) {
+static inline void wc_peer_close(int peer_id) { (void)peer_id; }
+static inline int wc_peer_send(int peer_id, const void* data, unsigned int len) {
     (void)peer_id; (void)data; (void)len; return -1;
 }
-static inline int wc_dc_broadcast(const void* data, unsigned int len) {
+static inline int wc_peer_broadcast(const void* data, unsigned int len) {
     (void)data; (void)len; return -1;
+}
+static inline int wc_peer_state(int peer_id) {
+    (void)peer_id; return WC_PEER_CLOSED;
+}
+static inline int wc_peer_count(void) { return 0; }
+static inline int wc_peer_id(unsigned int index) { (void)index; return -1; }
+static inline int wc_peer_name(int peer_id, char* dest, unsigned int max_len) {
+    (void)peer_id; (void)dest; (void)max_len; return -1;
+}
+static inline int wc_peer_transport(int peer_id) {
+    (void)peer_id; return WC_TRANSPORT_UNKNOWN;
 }
 #endif
 
-// Data Channel exports (cart implements, host calls — all optional)
-// void wc_dc_on_connect(int peer_id, const char* label, unsigned int label_len);
-// void wc_dc_on_disconnect(int peer_id);
-// void wc_dc_on_message(int peer_id, const void* data, unsigned int len);
+// Peer exports (cart implements, host calls - all optional).
+// Binary only: text frames are meaningful for WebSocket and meaningless for a
+// serial cable or raw TCP, so framing belongs to the cart.
+//
+// peer_id is the handle - stable for the session, key your player table on it.
+// name is DISPLAY-ONLY: never assume it is unique, stable across sessions, or
+// trustworthy. It arrives from a remote machine, so it is attacker-controlled
+// text - bound the length, do not assume valid UTF-8, never use it as a key.
+//
+// void wc_peer_on_connect(int peer_id, const char* name, unsigned int name_len);
+// void wc_peer_on_message(int peer_id, const void* data, unsigned int len);
+// void wc_peer_on_disconnect(int peer_id);
+// void wc_peer_on_error(int peer_id);
 
-#endif // WC_USE_NET_DC
+#endif // WC_USE_NET_PEER
 
 // --- OpenGL ES 3.0 API (ABI v2, optional) ---
 // Define WC_USE_GL before including this header to enable GL imports.
