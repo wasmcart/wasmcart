@@ -457,7 +457,7 @@ packed into the cart as an asset:
 | Python | [wasmcart-pygame](https://github.com/wasmcart/wasmcart-pygame) - CPython 3.13 + pygame-ce |
 | Ruby | [wasmcart-mruby](https://github.com/wasmcart/wasmcart-mruby) - DragonRuby-style API |
 | JavaScript | [wasmcart-jsgame](https://github.com/wasmcart/wasmcart-jsgame) - Canvas 2D, WebGL2, Web Audio |
-| GDScript | [godot-wasmcart](https://github.com/wasmcart/godot-wasmcart) - Godot 4 |
+| GDScript | [wasmcart-godot](https://github.com/wasmcart/wasmcart-godot) - Godot 4 |
 
 **If you compile**, you pay nothing for it: no interpreter, no GC, and the
 smallest carts anyone can produce. A complete Zig cart that fills the screen is
@@ -579,7 +579,7 @@ are separate repos, all running the *same* carts. Full list:
 | [**wasmcart-lua**](https://github.com/wasmcart/wasmcart-lua) | write games in Lua (Lua 5.4, LÖVE-style API, batched GL2D renderer) - prebuilt engine, games ship only Lua |
 | [**wasmcart-pygame**](https://github.com/wasmcart/wasmcart-pygame) | write games in Python (CPython 3.13 + pygame-ce) - one reusable runtime, games ship only Python and assets |
 | [**wasmcart-jsgame**](https://github.com/wasmcart/wasmcart-jsgame) | write games in JavaScript - sandboxed QuickJS runtime with Canvas 2D, WebGL2 and Web Audio |
-| [**godot-wasmcart**](https://github.com/wasmcart/godot-wasmcart) | write games in GDScript - Godot 4 compiled to standalone WebAssembly |
+| [**wasmcart-godot**](https://github.com/wasmcart/wasmcart-godot) | write games in GDScript - Godot 4 compiled to standalone WebAssembly |
 | [**wasmcart-rust**](https://github.com/wasmcart/wasmcart-rust) | write games in Rust - `no_std` bindings + a `wc_cart!` macro, no runtime and no allocator |
 | [**wasmcart-zig**](https://github.com/wasmcart/wasmcart-zig) | write games in Zig - freestanding bindings + a comptime `Cart(.{...})` helper |
 | [**wasmcart-libretro**](https://github.com/wasmcart/wasmcart-libretro) | libretro core - run carts in RetroArch / RetroDECK |
