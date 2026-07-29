@@ -21,8 +21,32 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      # Pure-JS package (deps: fflate, yauzl, yazl). No native build.
+      # GL is a hard requirement of the ABI, not an optional extra: a host that
+      # cannot supply a WebGL2 context is non-conformant, and the GL tests
+      # assert exactly that. webgl-node -> native-gles dlopens libEGL.so.1 and
+      # libGLESv2.so.2, and needs a DRI driver behind them; a bare runner has
+      # neither, so every GL test fails with "context could not be created".
+      # Mesa's llvmpipe/swrast provides both in software - no GPU needed.
+      - name: Install headless GL (Mesa software rasterizer)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgles2 libgl1-mesa-dri libglvnd0
       - run: npm ci
+      # Fail loudly here rather than as four confusing GL test failures: if the
+      # runner cannot make a context, that is an environment problem, not a
+      # regression in the host.
+      - name: Verify a GL context is obtainable
+        run: |
+          node -e "
+          import('webgl-node').then((m) => {
+            // Mirror exactly what CartHost does, so this check cannot pass
+            // while the host still fails.
+            const gl = m.createWebGL2Context(64, 64)?.gl || null;
+            if (!gl) { console.error('no WebGL2 context on this runner'); process.exit(1); }
+            console.log('GL OK:', gl.getParameter(gl.VERSION));
+          }).catch((e) => { console.error('GL import failed:', e.message); process.exit(1); });
+          "
       - run: npm test
 
   pack-guard:
