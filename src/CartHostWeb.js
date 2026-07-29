@@ -780,13 +780,25 @@ export class CartHostWeb {
       this._ownedGl = null;
     }
 
-    // Close all peer connections
+    // Close only transports this host created. A channel the embedder supplied
+    // via addPeer() belongs to the embedder: closing it breaks any host that
+    // outlives a single cart instance, and for a real RTCDataChannel it is
+    // unrecoverable -- once closed the peer connection must renegotiate.
     for (const [, peer] of this._peers) {
+      if (!peer.hostOwned) {
+        // Detach our handlers so a destroyed host stops queueing events into
+        // an object nobody reads any more.
+        if (peer.dc) {
+          try { peer.dc.onmessage = null; peer.dc.onclose = null; } catch {}
+        }
+        continue;
+      }
       try {
         if (peer.ws) peer.ws.close();
         else if (peer.dc && peer.dc.close) peer.dc.close();
       } catch {}
     }
+    // Clearing is what stops delivery: _deliverNetEvents() iterates this map.
     this._peers.clear();
 
     // Terminate all worker threads
@@ -1128,6 +1140,8 @@ export class CartHostWeb {
         ws,
         name: url.hostname,
         transport: TRANSPORT_WS,
+        // The host dialled this socket, so the host closes it on destroy().
+        hostOwned: true,
         eventQueue: [],
       };
       ws.onopen = () => peer.eventQueue.push({ type: 'connect' });
@@ -1272,6 +1286,12 @@ export class CartHostWeb {
   addPeer(peerId, name, channel, transport = TRANSPORT_UNKNOWN) {
     const peer = {
       dc: channel,
+      // Borrowed: the embedder handed this over and still owns it. destroy()
+      // forgets it without closing, so a lobby socket or a data channel can
+      // outlive one cart instance -- which is what makes swapping carts on a
+      // live session free. Same ownership line the GL context already draws
+      // (_ownedGl vs _callerGl).
+      hostOwned: false,
       name,
       transport,
       closed: false,

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.16.2
+
+`destroy()` no longer closes peer transports the host does not own.
+
+Both reference hosts closed every entry in `_peers`, including channels the
+embedder supplied via `addPeer()`. The host never owned those. Closing them
+breaks any embedder that outlives one cart instance, and for a real
+`RTCDataChannel` it is unrecoverable -- a closed channel forces the peer
+connection to renegotiate.
+
+The motivating case is swapping carts on a live session: two players stay on one
+channel and cycle through games. The ABI deliberately puts connection lifecycle
+in the host and gives the cart only an id and bytes, so that should be free.
+Instead every swap cost a full WebRTC renegotiation -- signalling round trip, new
+ICE, seconds of dead air. It also bit plainer cases, like an embedder keeping a
+lobby socket across cart loads.
+
+Peers now record ownership when created. A socket the host dialled via
+`wc_peer_open` is still closed on teardown; a channel from `addPeer()` is
+forgotten without closing, and its `onmessage`/`onclose` are detached so a dead
+host stops queueing events into an object nobody reads.
+
+This is the same line the GL context already drew (`_ownedGl` vs `_callerGl`)
+five lines above the bug. Peers simply never got the same treatment.
+
+Not a spec change: SPEC.md already says the host owns connection lifecycle and
+the cart sees only an id and bytes. No cart needs rebuilding.
+
+Reported with a working reproduction, which is how it was confirmed before any
+code changed. `wasmcart-native` was checked and does not share the bug -- its
+`destroy()` frees only its own bookkeeping and never calls a transport's close.
+
 ## 0.16.1
 
 Fixes silent cart-memory corruption when the host delivers a payload to a cart

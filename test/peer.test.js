@@ -49,12 +49,14 @@ async function loadWith(manifest) {
       this.binaryType = 'blob';
     }
     send() {}
-    close() {}
+    close() { StubWebSocket.closed.push(this.url); }
   };
   cart._WebSocketImpl.opened = [];
+  cart._WebSocketImpl.closed = [];
   return {
     cart,
     opened: () => cart._WebSocketImpl.opened,
+    closed: () => cart._WebSocketImpl.closed,
     cleanup: () => { cart.destroy(); rmSync(dir, { recursive: true, force: true }); },
   };
 }
@@ -244,5 +246,46 @@ test('CONTROL: the same cart still cannot dial out without a grant', async () =>
   const { cart, cleanup } = await loadWith({});
   const [ptr, len] = str(cart, 'wss://example.com/x');
   assert.equal(cart.instance.exports.t_open(ptr, len), -1);
+  cleanup();
+});
+
+// --- destroy() and transport ownership ---
+// Two kinds of thing live in _peers and they are NOT the same: a socket the host
+// dialled via wc_peer_open, and a channel the embedder handed over via
+// addPeer(). destroy() used to close both, which breaks any embedder outliving
+// one cart instance -- and for a real RTCDataChannel it is unrecoverable, since
+// a closed channel forces the peer connection to renegotiate.
+//
+// This is the ownership line the GL context already draws (_ownedGl vs
+// _callerGl). Peers just never got it.
+
+test('destroy() leaves an embedder-supplied channel open', async () => {
+  const { cart, cleanup } = await loadWith({ net: { lan: true } });
+  const chan = {
+    closed: false, send() {}, onmessage: null, onclose: null,
+    close() { this.closed = true; this.onclose?.(); },
+  };
+  cart.addPeer(1, 'friend', chan);
+  cart.runFrame([{ connected: true, buttons: 0 }]);
+
+  cart.destroy();
+  assert.equal(chan.closed, false,
+    'the embedder owns this channel; closing it costs a full renegotiation');
+  assert.equal(chan.onmessage, null,
+    'handlers must be detached, or a dead host keeps queueing into it');
+  assert.equal(chan.onclose, null);
+  cleanup();
+});
+
+test('destroy() DOES close a socket the host dialled', async () => {
+  // The control. Without it, "we stopped closing things" would pass by simply
+  // never closing anything at all.
+  const { cart, closed, cleanup } = await loadWith({ net: { domains: ['example.com'] } });
+  const [ptr, len] = str(cart, 'wss://example.com/x');
+  assert.ok(cart.instance.exports.t_open(ptr, len) >= 0, 'the dial should be granted');
+
+  cart.destroy();
+  assert.deepEqual(closed(), ['wss://example.com/x'],
+    'the host dialled this socket, so the host must close it');
   cleanup();
 });
