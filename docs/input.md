@@ -1,4 +1,4 @@
-# Input - Gamepad, Pointer, Keyboard
+# Input - Gamepad, Rumble, Pointer, Keyboard
 
 ## Gamepad Input (Always Available)
 
@@ -100,3 +100,40 @@ Unified mouse + multitouch. Cart declares it by setting `WC_FLAG_POINTER` in `wc
 ## Keyboard Input (Opt-In, ABI v3)
 
 256-bit key state bitmask using USB HID scancodes. Cart declares it by setting `WC_FLAG_KEYBOARD` in `wc_info_t.flags` — the flag is the only gate, no manifest field is involved. Host writes `uint8_t[32]` bitmask each frame.
+
+## Rumble (Always Available, ABI v3)
+
+Rumble runs the opposite way to everything above: the cart drives it, so it is a
+set of host **imports** rather than shared-memory state the host writes. There is
+no flag and no manifest entry - a cart just calls it.
+
+```c
+unsigned int wc_pad_has_rumble(unsigned int pad_id);
+void wc_pad_rumble(unsigned int pad_id, float low, float high,
+                   unsigned int duration_ms);
+void wc_pad_rumble_stop(unsigned int pad_id);
+```
+
+`low` drives the low-frequency ("strong") motor and `high` the high-frequency
+("weak") one, both `0.0 .. 1.0`. These map straight onto SDL's
+`SDL_GameControllerRumble` and the W3C `dual-rumble` effect
+(`strongMagnitude` / `weakMagnitude`), so the same call behaves identically in a
+native window and in a browser.
+
+**Ask before assuming.** Rumble support is per-*device*, not per-platform: an
+Xbox 360 pad reports rumble but not trigger rumble, and a keyboard-only setup
+reports none at all. `wc_pad_has_rumble()` is what lets a cart offer the player a
+toggle. Calling rumble on a pad without it is a silent no-op, so skipping the
+query is safe but leaves the cart unable to tell.
+
+**Values are clamped, not rejected.** Magnitudes outside `0..1` clamp into range
+(NaN becomes 0) and `duration_ms` caps at `WC_RUMBLE_MAX_MS` (5s). A cart
+deriving intensity from game state overshoots at the edges, and a dropped rumble
+is harder to diagnose than a saturated one. The duration cap also means a cart
+cannot pin the motors indefinitely: the host stops them on its own timer, so a
+cart that crashes mid-effect still leaves the controller quiet. Sustained rumble
+is done by re-arming each frame.
+
+Hosts always provide these imports. Where no device is wired (headless runs,
+`--frames` captures, tests) they are no-ops and `wc_pad_has_rumble` returns 0, so
+a cart that rumbles is never a cart that fails to load.
