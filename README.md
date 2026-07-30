@@ -36,6 +36,19 @@ import { CartHost } from 'wasmcart';        // Node
 import { CartHostWeb } from 'wasmcart/web';  // browser
 ```
 
+**Browser note:** `wasmcart/web` imports `fflate` by bare specifier, which a
+browser cannot resolve on its own. Bundle it, or supply an import map:
+
+```html
+<script type="importmap">
+{ "imports": { "fflate": "/node_modules/fflate/esm/browser.js" } }
+</script>
+```
+
+Loading `wasmcart/web` as a raw module without one fails with
+`Failed to resolve module specifier "fflate"`. Note the **browser** ESM build
+(`esm/browser.js`) -- `fflate`'s Node entry point pulls in `node:zlib`.
+
 Other hosts in the wasmcart org (own repos) run the *same* carts: a libretro core
 ([`wasmcart-libretro`](https://github.com/wasmcart/wasmcart-libretro)), a native
 player ([`wasmcart-native`](https://github.com/wasmcart/wasmcart-native)), and the

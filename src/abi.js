@@ -93,7 +93,9 @@ export const INFO_STRUCT_SIZE = 48;
 export const HOST_INFO_FIELDS = {
   PREFERRED_WIDTH:  0,
   PREFERRED_HEIGHT: 4,
-  HOST_FPS:         8,
+  // Field 3 is RESERVED and always 0. It was host_fps; carts read
+  // wc_time_t.delta_ms instead, which is clamped and survives a stall.
+  RESERVED0:        8,
   AUDIO_SAMPLE_RATE: 12,
   FLAGS:            16,
 };
