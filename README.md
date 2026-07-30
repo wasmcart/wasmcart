@@ -579,6 +579,23 @@ shipping its `.wasc` as a Release artifact:
 - **[`docs/`](docs/)** - per-subsystem guides: [input](docs/input.md), [networking](docs/networking.md), [GL surface](docs/gl-surface.md), [framebuffer](docs/bind_framebuffer.md), [fetch](docs/fetch.md), [porting](docs/porting.md)
 - **[`include/`](include/)** - C headers for cart authors (`wc_cart.h` is the contract; `wc_fb.h`/`wc_gl.h`/math/mixer are a lightweight SDK)
 
+## Vendored headers
+
+Several SDKs and ports copy `include/*.h` rather than depending on the npm
+package -- reasonable, since a C toolchain should not need node -- but a copy
+rots every time the ABI moves. That has happened: thirteen copies of
+`wasmcart.h` had drifted into four different versions, one of them empty, still
+declaring the `wc_ws_*` / `wc_dc_*` families the `wc_peer_*` merge removed.
+
+```sh
+./scripts/sync-headers.sh          # report drift, change nothing
+./scripts/sync-headers.sh --write  # overwrite drifted copies from include/
+```
+
+It searches sibling directories, so run it from a tree with the other repos
+checked out, before releasing an ABI change. A copy carrying declarations the
+canonical header lacks is reported as a `FORK` and never overwritten.
+
 ## The wasmcart org
 
 wasmcart is a small ecosystem. This repo is the spec + JS reference hosts; the rest
