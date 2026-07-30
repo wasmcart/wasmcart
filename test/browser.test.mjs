@@ -98,7 +98,20 @@ const basic = await page.evaluate(async () => {
 });
 check('cart loads and renders', basic, { w: 320, h: 240, bytes: 320 * 240 * 4 });
 
-// ─── 2. the BROWSER's WebSocket, through the peer ABI ─────────────────────
+// ─── 2. standardized Wasm EH, through wasi-sdk's native SjLj ──────────────
+const sjlj = await page.evaluate(async () => {
+  const { CartHostWeb } = await import('/web.js');
+  const bytes = new Uint8Array(await (await fetch('/test/fixtures/sjlj.wasc')).arrayBuffer());
+  const host = new CartHostWeb();
+  await host.load(bytes, {});
+  const result = host.instance.exports.wc_sjlj_result();
+  host.runFrame([]);
+  host.destroy();
+  return result;
+});
+check('native WebAssembly setjmp/longjmp', sjlj, 42);
+
+// ─── 3. the BROWSER's WebSocket, through the peer ABI ─────────────────────
 // This is the point of the whole file: node's WebSocket and the browser's are
 // different implementations behind one name.
 const peer = await page.evaluate(async (wsPort) => {
@@ -138,8 +151,8 @@ check('browser WebSocket connects', peer.connects, 1);
 check('message round-trips', peer.messages, 1);
 check('echoed byte count', peer.echoed, 'hello-from-browser'.length);
 
-// ─── 3. the allowlist still refuses, against a REACHABLE server ───────────
-// The server is provably up -- test 2 just used it -- so a refusal here is the
+// ─── 4. the allowlist still refuses, against a REACHABLE server ───────────
+// The server is provably up -- test 3 just used it -- so a refusal here is the
 // gate doing its job rather than a dead port.
 const denied = await page.evaluate(async (wsPort) => {
   const { CartHostWeb } = await import('/web.js');

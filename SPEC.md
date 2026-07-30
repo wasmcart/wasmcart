@@ -20,6 +20,19 @@ and reaches nothing else.
 Everything a cart can call is listed under [Imports](#imports-host-provides).
 That list is the complete attack surface -- see [Security Model](#security-model).
 
+### WebAssembly execution baseline
+
+Carts MAY use the standardized WebAssembly exception-handling instructions.
+Conforming hosts MUST execute them. This is an engine capability, not a
+wasmcart import, permission, or manifest feature, so it does not change the ABI
+and existing carts are unaffected.
+
+In particular, C and C++ carts may use wasi-sdk's Wasm-native
+`setjmp`/`longjmp`. With wasi-sdk 33, every translation unit that uses SjLj must
+be compiled with `-mllvm -wasm-enable-sjlj`, and the final link must include
+`-lsetjmp`. The reference Node.js and browser hosts exercise such a cart in
+their conformance suites.
+
 ### Why each part of the ABI exists
 
 The ABI is deliberately small, and additions are held to a bar: **a cart must
@@ -1047,4 +1060,3 @@ their data (write it, or the previous save silently resurrects on next load).
 | Environment / cwd / process control | none (`environ_*` return 0, `proc_exit` is a no-op) |
 | Threads | supported, and confined to the same import table as the main thread |
 | CPU / memory | **not** bounded by the ABI - the host must impose its own limits |
-

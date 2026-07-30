@@ -13,6 +13,7 @@ import { MAX_DELTA_MS } from '../src/abi.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELLO = join(HERE, 'fixtures', 'hello.wasc');
+const SJLJ = join(HERE, 'fixtures', 'sjlj.wasc');
 
 test('loads a .wasc cart and reports info', async () => {
   const cart = new CartHost();
@@ -40,6 +41,14 @@ test('runs many frames without throwing', async () => {
   const cart = new CartHost();
   await cart.load(HELLO);
   for (let i = 0; i < 60; i++) cart.runFrame([]);
+  cart.destroy();
+});
+
+test('runs native WebAssembly setjmp/longjmp', async () => {
+  const cart = new CartHost();
+  await cart.load(SJLJ);
+  assert.equal(cart.instance.exports.wc_sjlj_result(), 42);
+  cart.runFrame([]);
   cart.destroy();
 });
 

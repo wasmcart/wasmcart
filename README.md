@@ -337,6 +337,7 @@ A cart that doesn't use the GPU at all can write pixels directly to a shared-mem
 - **Save data** - persistent save blob (host manages storage)
 - **Asset loading** - `.wasc` carts load files at runtime via `wc_asset_size()` / `wc_load_asset()`
 - **WASI threads** - carts compiled with wasi-sdk `-pthread` can spawn background threads via pthreads
+- **WebAssembly exceptions** - standardized Wasm EH, including wasi-sdk's native `setjmp`/`longjmp`
 
 ## Node.js API
 
@@ -553,6 +554,23 @@ ${WASI_SDK}/bin/clang --target=wasm32-wasip1-threads -pthread \
 The host detects a threaded cart from its wasm imports (shared memory) and wires
 up the worker pool itself - no manifest field, and no change to the three-export
 contract.
+
+### `setjmp` / `longjmp` ([wasi-sdk](https://github.com/WebAssembly/wasi-sdk))
+
+wasmcart hosts support standardized WebAssembly exception handling. With
+wasi-sdk 33, opt into its Wasm-native SjLj implementation at compile time and
+link `libsetjmp`:
+
+```bash
+${WASI_SDK}/bin/clang --target=wasm32-wasip1-threads -pthread \
+  -mllvm -wasm-enable-sjlj -O2 -Wl,--no-entry \
+  -o cart.wasm cart.c -lsetjmp
+```
+
+Use the same SjLj setting for every translation unit participating in the
+operation. No wasmcart manifest field or host import is required; this is a
+runtime-engine feature. The Node.js and browser test suites both execute a
+native SjLj fixture.
 
 ## Examples
 

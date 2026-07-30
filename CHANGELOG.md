@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.16.3
+
+WebAssembly exception handling is now an explicit part of the wasmcart
+execution baseline. Carts may use the standardized Wasm EH instructions without
+adding an import, permission, or manifest field.
+
+This includes wasi-sdk's Wasm-native `setjmp`/`longjmp` implementation. The
+README documents the wasi-sdk 33 build requirements:
+`-mllvm -wasm-enable-sjlj` during compilation and `-lsetjmp` at link time.
+
+A real cart built against wasi-sdk's `libsetjmp` now runs in both the Node.js
+and Chromium conformance suites. It performs a `longjmp(..., 42)` during
+`wc_init`, then exposes the result for an exact assertion. This verifies the
+engine feature end to end instead of inferring support from API presence.
+
+This is additive for carts and does not change ABI version 3, its imports, or
+the `.wasc` format. It does strengthen the host execution baseline: a runtime
+without standardized Wasm EH is not fully conforming.
+
 ## 0.16.2
 
 `destroy()` no longer closes peer transports the host does not own.
