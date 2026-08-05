@@ -104,6 +104,24 @@ So the manifest carries only what the cart cannot state for itself:
 **`players`** (integer, optional, default: 1)
 - How many gamepad inputs the game uses (1-4)
 
+**`controls`** (array of strings, optional)
+- Which parts of the standard pad the game actually reads. The pad ABI is
+  always the full Xbox-360-style `wc_pad_t` — every button and axis is
+  delivered whether declared or not. This field is a **presentation hint** in
+  the same class as `width`/`height`: a host drawing on-screen touch controls
+  uses it to show only what the game needs, and every other host ignores it.
+  Advisory, never binding, never gating.
+- Tokens (mirroring `wc_pad_t`): `dpad`, `a`, `b`, `x`, `y`, `l`, `r`,
+  `start`, `select`, `left_stick`, `right_stick`, `left_trigger`,
+  `right_trigger`, `l3`, `r3`. Unknown tokens MUST be ignored (forward
+  compatibility).
+- Omitted: hosts SHOULD assume the retro default set
+  `["dpad","a","b","x","y","start","select","l","r"]` (sticks and triggers
+  only appear when declared).
+- Examples: a two-button platformer ships `["dpad","a","b","start"]`; a twin-
+  stick shooter ships `["left_stick","right_stick","a","start"]`; declaring
+  both `dpad` and `left_stick` is allowed and means the game reads either.
+
 **`pointer`** / **`keyboard`** — **REMOVED.** These were the double gate
 described above: the cart set `WC_FLAG_POINTER`/`WC_FLAG_KEYBOARD` and the
 manifest had to independently agree, or input was silently dropped. The flag
