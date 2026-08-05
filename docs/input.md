@@ -54,18 +54,19 @@ typedef struct {
 | 3 | `WC_BTN_Y` | buttons[3] | Y | Triangle | X |
 | 4 | `WC_BTN_L` | buttons[4] | LB | L1 | L |
 | 5 | `WC_BTN_R` | buttons[5] | RB | R1 | R |
-| 6 | - | buttons[6] | LT (analog) | L2 (analog) | ZL |
-| 7 | - | buttons[7] | RT (analog) | R2 (analog) | ZR |
-| 8 | `WC_BTN_SELECT` | buttons[8] | Back/View | Share | - |
-| 9 | `WC_BTN_START` | buttons[9] | Start/Menu | Options | + |
-| 10 | `WC_BTN_UP` | buttons[12] | D-pad Up | D-pad Up | D-pad Up |
-| 11 | `WC_BTN_DOWN` | buttons[13] | D-pad Down | D-pad Down | D-pad Down |
-| 12 | `WC_BTN_LEFT` | buttons[14] | D-pad Left | D-pad Left | D-pad Left |
-| 13 | `WC_BTN_RIGHT` | buttons[15] | D-pad Right | D-pad Right | D-pad Right |
-| 14 | `WC_BTN_L3` | buttons[10] | LS Click | L3 | LS Click |
-| 15 | `WC_BTN_R3` | buttons[11] | RS Click | R3 | RS Click |
+| 6 | `WC_BTN_START` | buttons[9] | Start/Menu | Options | + |
+| 7 | `WC_BTN_SELECT` | buttons[8] | Back/View | Share | - |
+| 8 | `WC_BTN_UP` | buttons[12] | D-pad Up | D-pad Up | D-pad Up |
+| 9 | `WC_BTN_DOWN` | buttons[13] | D-pad Down | D-pad Down | D-pad Down |
+| 10 | `WC_BTN_LEFT` | buttons[14] | D-pad Left | D-pad Left | D-pad Left |
+| 11 | `WC_BTN_RIGHT` | buttons[15] | D-pad Right | D-pad Right | D-pad Right |
+| 12 | `WC_BTN_L3` | buttons[10] | LS Click | L3 | LS Click |
+| 13 | `WC_BTN_R3` | buttons[11] | RS Click | R3 | RS Click |
 
-Triggers (buttons[6]/[7]) are analog - use `left_trigger`/`right_trigger` (0-255) for analog values, or the button bit for digital pressed/not-pressed.
+Bits 14-15 are unassigned. Note the wasmcart bit is NOT the W3C index — the
+two orders differ (W3C puts the analog triggers at buttons[6]/[7]; wasmcart
+has no trigger bits at all). The triggers are analog-only here: read
+`left_trigger`/`right_trigger` (0-255).
 
 ### Axes
 
@@ -95,11 +96,69 @@ Without `mapping: 'standard'`, the gamepad is invisible to the game even though 
 
 ## Pointer Input (Opt-In, ABI v3)
 
-Unified mouse + multitouch. Cart declares it by setting `WC_FLAG_POINTER` in `wc_info_t.flags` — the flag is the only gate, no manifest field is involved. Host writes `wc_pointer_t[10]` state each frame.
+Unified mouse + multitouch. Cart declares it by setting `WC_FLAG_POINTER` in
+`wc_info_t.flags` — the flag is the only gate, no manifest field is involved.
+Host writes `wc_pointer_t[10]` state each frame, in CART pixels (the host
+inverts whatever letterboxing/scaling it presented with).
+
+```c
+typedef struct {
+    int16_t  x;        // cart-resolution pixels
+    int16_t  y;
+    uint8_t  buttons;  // bit 0 primary, bit 1 secondary, bit 2 middle
+    uint8_t  active;   // 1 while this pointer exists
+    uint8_t  _pad[2];
+} wc_pointer_t;         // 8 bytes; wc_info_t.pointer_ptr → wc_pointer_t[10]
+```
+
+**Slot allocation is the contract:** slot 0 is the mouse, slots 1-9 are touch
+contacts (fingers), one slot per finger for as long as it stays down. The #1
+portability trap is a cart that polls only `pointer[0]`: it works perfectly
+with a desktop mouse and silently ignores every touch on a phone or tablet.
+Poll all ten slots (a `for` loop costs nothing) unless the game genuinely
+wants only a cursor. A touch contact ends with `active = 0` — that is the
+touchend.
+
+Polling the array is the primary model. Carts that want edges instead may
+export the optional callbacks, which hosts call as events arrive:
+
+```c
+void wc_ptr_on_down(uint32_t id, int16_t x, int16_t y, uint8_t button);
+void wc_ptr_on_move(uint32_t id, int16_t x, int16_t y);
+void wc_ptr_on_up  (uint32_t id, uint8_t button);
+```
+
+Host applications drive the array through the reference hosts'
+`setPointer(id, x, y, buttons, active)` /
+`pointerDown` / `pointerMove` / `pointerUp` methods.
+
+Related: the advisory manifest `controls` field (SPEC, Manifest section)
+tells hosts that draw ON-SCREEN touch pads which subset of `wc_pad_t` the
+game reads. It is presentation-only and unrelated to `WC_FLAG_POINTER`,
+which is about the cart reading a pointer itself.
 
 ## Keyboard Input (Opt-In, ABI v3)
 
-256-bit key state bitmask using USB HID scancodes. Cart declares it by setting `WC_FLAG_KEYBOARD` in `wc_info_t.flags` — the flag is the only gate, no manifest field is involved. Host writes `uint8_t[32]` bitmask each frame.
+256-bit key state bitmask using USB HID scancodes. Cart declares it by setting
+`WC_FLAG_KEYBOARD` in `wc_info_t.flags` — the flag is the only gate, no
+manifest field is involved. Host writes the `uint8_t[32]` bitmask
+(`wc_info_t.keys_ptr`) each frame; test a key with the header's
+`WC_KEY_IS_DOWN(keys, scancode)` helper.
+
+Once the flag is set, the host STOPS mapping keyboard keys onto gamepad
+buttons for that cart — the cart owns the keyboard, so WASD does not also
+steer pad 1.
+
+Optional edge callbacks, called as events arrive (`modifiers` is the
+`WC_MOD_*` bitmask):
+
+```c
+void wc_kb_on_down(uint8_t keycode, uint8_t modifiers);
+void wc_kb_on_up  (uint8_t keycode, uint8_t modifiers);
+```
+
+Scancodes identify physical key POSITIONS. For characters (names, chat,
+anything a layout or IME touches), use Text Input below instead.
 
 ## Rumble (Always Available, ABI v3)
 

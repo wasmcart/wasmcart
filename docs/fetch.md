@@ -1,5 +1,9 @@
 # wc_fetch - Network Fetch ABI
 
+> **STATUS: PROPOSAL — not implemented.** No `wc_fetch_*` import exists in
+> the ABI, SPEC.md, or either reference host. This document is a design
+> sketch; nothing in it is normative.
+
 ## Motivation
 
 Carts currently load local assets via `wc_load_asset` (synchronous, from .wasc bundle). There is no mechanism for carts to make HTTP requests to external servers. Games need this for:
@@ -21,7 +25,7 @@ The .wasc `manifest.json` declares which domains the cart may fetch from:
 ```json
 {
   "net": {
-    "websocket": ["wss://game-server.example.com"],
+    "domains": ["game-server.example.com"],
     "fetch": ["https://api.example.com", "https://cdn.example.com"]
   }
 }
@@ -50,7 +54,7 @@ In Node.js hosts, there are no CORS restrictions - the host fetches directly.
 
 Fetch is inherently async. The wasmcart ABI is synchronous (wc_render is called per frame). Two approaches:
 
-#### Option A: Callback-based (like WebSocket)
+#### Option A: Callback-based (like wc_peer_*)
 
 ```c
 // Cart imports (host provides):
@@ -88,7 +92,7 @@ Same imports as above but without the callback exports. Cart polls `wc_fetch_sta
 
 ### Recommendation
 
-Option A (callback-based) matches the WebSocket pattern and is lower latency. The host already calls into the cart during `wc_render` (for WebSocket messages), so the infrastructure exists.
+Option A (callback-based) matches the `wc_peer_*` pattern and is lower latency. The host already calls into the cart during `wc_render` (for peer messages), so the infrastructure exists.
 
 ### Impact on wasmcart-jsgame
 

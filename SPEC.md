@@ -94,7 +94,7 @@ So the manifest carries only what the cart cannot state for itself:
   "entry": "cart.wasm",
   "players": 4,
   "net": {
-    "websocket": ["api.mygame.com", "leaderboard.example.com"],
+    "domains": ["api.mygame.com", "leaderboard.example.com"]
   }
 }
 ```
@@ -121,6 +121,9 @@ So the manifest carries only what the cart cannot state for itself:
 - Examples: a two-button platformer ships `["dpad","a","b","start"]`; a twin-
   stick shooter ships `["left_stick","right_stick","a","start"]`; declaring
   both `dpad` and `left_stick` is allowed and means the game reads either.
+- `wasmcart-pack --controls dpad,a,b,start` writes it (repeatable or
+  comma-separated; unknown tokens warn at pack time but still pack, since
+  hosts tolerate them by rule).
 
 **`pointer`** / **`keyboard`** — **REMOVED.** These were the double gate
 described above: the cart set `WC_FLAG_POINTER`/`WC_FLAG_KEYBOARD` and the
@@ -128,13 +131,14 @@ manifest had to independently agree, or input was silently dropped. The flag
 alone now governs. Hosts MUST ignore these fields if present in an older
 manifest; carts MUST NOT rely on them.
 
-**`debug`** (boolean, optional, default: false)
-- If true, the cart exports `wc_debug_state()` naming values it chooses to expose
-  to a host/harness by name (see [Debug state](#debug-state))
-- If false (the default), the cart exports no debug surface and is byte-for-byte
-  a non-debug cart — the debug ABI is structurally absent, not merely inert
-- Debug state is read PULL-ONLY (on host demand), never per frame, so exposing
-  fields costs nothing at runtime
+**`debug`** — **REMOVED** (same doctrine as `pointer`/`keyboard` above: a
+manifest field never gates a capability the cart declares about itself, and
+nothing ever read this one). The debug surface is governed entirely by the
+cart: `WC_FLAG_DEBUG` in `wc_info_t.flags` plus the `wc_debug_state()` export
+(see [Debug state](#debug-state)). A cart without the flag exports no debug
+surface and is byte-for-byte a non-debug cart — structurally absent, not
+merely inert — and debug state is read PULL-ONLY (on host demand), never per
+frame, so exposing fields costs nothing at runtime.
 
 **`net`** (object, optional)
 - Gates only connections the CART opens. Omitted = `wc_peer_open` always fails;
@@ -173,9 +177,11 @@ void wc_render(void);           // called every frame
 Optional (opt-in via a flag, absent by default):
 
 ```c
-wc_debug_field_t* wc_debug_state(void);  // debug:true carts only (WC_FLAG_DEBUG)
-void wc_set_seed(uint32_t seed);         // deterministic carts only (WC_FLAG_DETERMINISTIC);
-                                         // host calls it BEFORE wc_init on replay runs
+wc_debug_field_t* wc_debug_state(void);  // WC_FLAG_DEBUG carts only
+void wc_set_seed(uint32_t seed);         // host calls it whenever exported, BEFORE
+                                         // _initialize and wc_init: fresh entropy on a
+                                         // normal load, the pinned seed on a
+                                         // deterministic run (see Deterministic replay)
 ```
 
 ---
@@ -252,6 +258,9 @@ typedef struct {
     // v3 additions
     uint32_t pointer_ptr;       // → wc_pointer_t[10] (80 bytes), 0 = not used
     uint32_t keys_ptr;          // → uint8_t[32] key state bitmask, 0 = not used
+    uint32_t gpu_api;           // byte offset 64: 0 = 2D framebuffer,
+                                // 1 = WebGL2/GLES3, 2 = WebGPU (reserved),
+                                // 3 = Vulkan (reserved)
 } wc_info_t;
 ```
 
@@ -519,9 +528,9 @@ shipped build (keep marks behind your own debug `#ifdef`).
 runs on wall-clock time and whatever entropy it chooses; nothing changes. A
 cart that sets `WC_FLAG_DETERMINISTIC` declares a contract:
 
-- its RNG is seeded ONLY by the host, via a new optional export
+- its RNG is seeded ONLY by the host, via the optional export
   `void wc_set_seed(uint32_t seed)`, which a host calls after instantiation and
-  BEFORE `wc_init` on deterministic runs;
+  BEFORE `_initialize`/`wc_init`;
 - all timing comes from `wc_time_t` (no other clock reads);
 - it performs no other nondeterministic host calls during a deterministic run.
 
@@ -539,9 +548,15 @@ driver variance, float ordering, asset-load timing) often CANNOT honestly
 promise bit-reproducibility. Such carts simply never set the flag, and that is
 a first-class, supported case — a harness MUST NOT assume replay works for an
 arbitrary cart, and SHOULD fall back to named debug-state checkpoints (see
-Debug state), which work at any size. A host MAY still call `wc_set_seed` only
-when the flag is set; a cart without the export is seeded by nobody and runs
-as normal.
+Debug state), which work at any size.
+
+**Entropy by default (normative since 0.17.0):** on a NORMAL load a host
+SHOULD call `wc_set_seed` with fresh entropy whenever the export exists — so a
+cart drawing all its randomness from `wc_rand()` deals a different game every
+power-on with zero cart-side effort, and only a deterministic run pins the
+seed. The call happens BEFORE `_initialize` runs static constructors, in both
+modes, so constructor-time RNG is seeded too. A cart without the export is
+seeded by nobody and runs as normal.
 
 The `wc_cart.h` SDK provides `WC_DETERMINISTIC_RNG` (xorshift32 +
 `wc_set_seed` export + `wc_rand()`/`wc_rand_range(n)`), kept SEPARATE from the
@@ -1058,12 +1073,16 @@ their data (write it, or the previous save silently resurrects on next load).
 
 ### Networking
 
-1. **No networking by default** - omit `net` from manifest = zero network access
-2. **Domain allowlist** - WebSocket connections only to declared domains
+1. **No cart-initiated networking by default** - omit `net` from the manifest
+   and `wc_peer_open` always fails
+2. **Domain allowlist** - cart-opened connections (`wc_peer_open`) only to
+   `net.domains` entries, and only with `WC_FLAG_NET_PEER` set
 3. **No raw sockets** - no TCP, no UDP, no localhost, no IP addresses
 4. **Host enforces** - cart can't bypass; imports validate before acting
 5. **Graceful degradation** - offline hosts provide stub imports returning -1
-6. **Data channels are host-managed** - cart can't initiate peer connections
+6. **Host-registered peers are the host's choice** - a transport the host
+   hands the cart via `addPeer()` needs no manifest grant (the host already
+   chose it), but still requires the cart's `WC_FLAG_NET_PEER`
 7. **No DNS resolution** - cart can't enumerate network
 
 ### Summary
@@ -1073,7 +1092,7 @@ their data (write it, or the previous save silently resurrects on next load).
 | Host filesystem | none |
 | Own bundled assets | read-only, path-validated, via `wc_load_asset` |
 | Save data | in-memory blob only; host owns persistence |
-| Network | none unless declared in the manifest (allowlisted WebSocket / data channels) |
+| Network | cart-opened: none unless `net.domains` allows it; host-registered peers: the host's own choice, gated by the cart's `WC_FLAG_NET_PEER` |
 | Syscalls / clock / RNG | none except what the host explicitly imports |
 | Environment / cwd / process control | none (`environ_*` return 0, `proc_exit` is a no-op) |
 | Threads | supported, and confined to the same import table as the main thread |

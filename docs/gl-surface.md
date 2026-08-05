@@ -24,10 +24,10 @@ import scan says GL. Contract:
 
 - Factory never runs for a 2D cart.
 - Factory returning nothing for a GL cart → **load error** (no silent stub).
-- No `glBackend` at all → the host supplies its own context where it can.
+- No `glBackend` at all → the host supplies its own context.
   `CartHostWeb` creates an offscreen (or detached-canvas) WebGL2 context;
-  `CartHost` on Node requires one to be wired up (`native-gles`) and errors
-  without it. GL imports are **never** stubbed — a stubbed GL cart reports a
+  `CartHost` on Node creates its own via `webgl-node` and errors only when
+  that genuinely fails (broken install, no GL driver). GL imports are **never** stubbed — a stubbed GL cart reports a
   successful load and renders black, which is undetectable from the cart's
   side. `usesGL` reports true (from `gpu_api`), which is what launchers key
   "this needs a GL window/context" off.
@@ -115,10 +115,13 @@ handles the actual presentation.
 
 ## VAO Handling
 
-On GLES 3.0, VAO 0 is the default VAO. On Core 3.3 (RetroArch desktop),
-VAO 0 is invalid. The host creates an isolated cart VAO and redirects
-`glBindVertexArray(0)` to it. The host also binds this VAO at frame start
-for carts that don't use VAOs at all (gl4es).
+On GLES 3.0, VAO 0 is the default VAO. On Core 3.3 (desktop libretro
+frontends), VAO 0 is invalid, so NATIVE hosts running on a Core context
+create an isolated cart VAO, redirect `glBindVertexArray(0)` to it, and bind
+it at frame start for carts that don't use VAOs at all (gl4es). The reference
+JS hosts run true GLES/WebGL2 semantics: id 0 binds the default VAO
+(`bindVertexArray(null)`), no redirect. Carts should not rely on either
+behavior — bind your own VAO.
 
 ## Extension Passthrough
 
@@ -126,12 +129,15 @@ for carts that don't use VAOs at all (gl4es).
 the host also injects GLES-equivalent extension names (`GL_OES_*`, `GL_EXT_*`)
 so GLES-targeting code (like gl4es) can detect features.
 
-`GL_SHADING_LANGUAGE_VERSION` passes through real values so carts can
-detect Core vs GLES contexts if needed.
+`GL_SHADING_LANGUAGE_VERSION` is synthesized like `GL_VERSION`: the
+reference hosts report `OpenGL ES GLSL ES 1.00` regardless of the real
+driver, so carts get a stable GLES identity rather than a way to sniff the
+underlying context.
 
 ## Buffer Orphaning
 
-The host applies buffer orphaning on `glBufferSubData` with offset 0:
-`glBufferData(target, size, NULL, GL_STREAM_DRAW)` is called first to
-avoid GPU sync stalls on mobile drivers (Mali, Adreno). This is transparent
-to the cart.
+NATIVE hosts may apply buffer orphaning on `glBufferSubData` with offset 0
+(`glBufferData(target, size, NULL, GL_STREAM_DRAW)` first) to avoid GPU sync
+stalls on mobile drivers (Mali, Adreno). The reference JS hosts pass
+`bufferSubData` through untouched. Either way it is transparent to the cart;
+carts that care about streaming performance should orphan their own buffers.

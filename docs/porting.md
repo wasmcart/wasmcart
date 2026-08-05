@@ -10,7 +10,7 @@ shaders. See [gl-surface.md](gl-surface.md) for the full spec.
 | Source | Examples | Notes |
 |--------|----------|-------|
 | GLES 2.0/3.0 native | Godot, GZDoom | Engine handles GL, just wire up ABI |
-| SDL2 + GLES | Many modern games | Use wasmcart SDL2 backend (sdl2_wc/) |
+| SDL2 + GLES | Many modern games | Use the wasmcart-sdl2 backend (its own repo/package) |
 | Emscripten/WebGL2 | Browser games | Already WASM, add wasmcart ABI |
 | ioquake3-based | OpenArena, Quake 3 | renderergl2 has GLES path |
 | Canvas 2D / pixel buffer | Retro games | Use wc_gl_blit.h for GPU upload |
@@ -44,13 +44,18 @@ See [gl-surface.md](gl-surface.md#gl4es-legacy-compatibility) for details.
 
 1. **Build to WASM** - Emscripten with `-sWASM=1`
 2. **Export ABI** - `wc_get_info`, `wc_init`, `wc_render`
-3. **Set gpu_api** - `wc_info_t.gpu_api = 1` (GL) for all carts
+3. **Set gpu_api** - `wc_info_t.gpu_api = 1` for GL carts (0 = pure 2D framebuffer; hosts support both, but the `wc_gl_blit.h` display path is GL and sets 1 even for 2D-drawn carts)
 4. **Use ES 3.0 shaders** - `#version 100` or `#version 300 es`
 5. **Assets via .wasc** - Pack with `wasmcart-pack`, load via `wc_asset_size`/`wc_load_asset`
 6. **Audio** - Write to ring buffer, set sample rate + format flags
 7. **Input** - Read `wc_pad_t` array (Xbox/W3C button layout)
 8. **Invert the main loop** - if the engine owns its loop, see below
-9. **Test on all hosts** - Browser, Node.js, wasmcart-native, RetroArch
+9. **setjmp/longjmp** - standardized Wasm EH is part of the execution
+   baseline (SPEC). wasi-sdk 33: compile every SjLj-using TU with
+   `-mllvm -wasm-enable-sjlj` and link `-lsetjmp`. Emscripten:
+   `-sSUPPORT_LONGJMP=wasm`. Interpreters and engines with error recovery
+   need this or they trap on the first caught error
+10. **Test on all hosts** - Browser, Node.js, wasmcart-native, RetroArch
 
 ## Inverting the Main Loop
 
@@ -101,10 +106,12 @@ Two things to watch:
 
 ## Shared Porting Libraries
 
-Located at `wasmcart/porting/include/`:
+The spec-owned headers ship in this package at `include/` (vendored copies in
+`ports/` are kept in sync by `scripts/sync-headers.sh`):
 
 | Header | Purpose |
 |--------|---------|
+| `wasmcart.h` | The ABI: imports, exports, structs, flags |
 | `wc_cart.h` | Buffer declarations, WC_FILL_INFO macro |
 | `wc_gl.h` | Shader compile/link, VAO/VBO helpers |
 | `wc_gl_blit.h` | Upload CPU pixels as GL texture (2D→GL) |
@@ -113,14 +120,14 @@ Located at `wasmcart/porting/include/`:
 | `wc_mat4.h` | 4x4 column-major matrix ops |
 | `wc_vec3.h` | 3D vector operations |
 | `wc_pcm_mixer.h` | Multi-channel PCM audio mixer |
-| `wc_sdl_stubs.h` | SDL2 type defs + no-op stubs |
-| `stb_image.h` | Image loading (JPEG, PNG, BMP) |
-| `audio_bridge.h/c` | SDL2_mixer → ring buffer bridge |
-| `emstubs.c` | Emscripten runtime stubs |
+
+Per-port helpers (SDL2 stubs, `stb_image.h`, audio bridges, Emscripten runtime
+stubs) are vendored inside the individual `ports/*` trees they serve, not
+shared headers.
 
 ## SDL2 Games (Emscripten Backend)
 
-Use the reusable `sdl2_wc/` backends for SDL2 games:
+Use the reusable **wasmcart-sdl2** backend (its own repo/package) for SDL2 games:
 
 ```bash
 # Compile: use SDL2 headers from Emscripten

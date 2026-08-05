@@ -86,8 +86,10 @@ stretched into one.
 
 | flag | effect |
 | --- | --- |
-| *(default)* | window opens at the cart's size, resizable, letterboxed |
+| *(default)* | window opens at the cart's size (2× when the cart is 400px tall or less), resizable, letterboxed |
 | `--zoom n` | open at n× the cart's size (still resizable) |
+| `--width px --height px` | open the window at an explicit size instead |
+| `--window` / `--gl` | force the SDL window / force the GL window up front (both are auto-detected; `--gl` is for hybrid carts and debugging) |
 | `--fullscreen`, `-f` | fill the display; the frame is letterboxed into it |
 | `--no-resize` | pin the window to the cart's size; no bars, no scaling |
 | `--stretch` | scale to fill the window, distorting the aspect ratio |
@@ -141,11 +143,11 @@ u32 per normal load and pins it in `deterministic:{seed}` mode;
 `crypto.getRandomValues` on every page load (it has no deterministic mode
 — replay tooling is Node-side).
 
-History: before 2026-08, `CartHost` called `wc_set_seed` only in
+History: before wasmcart 0.17.0, `CartHost` called `wc_set_seed` only in
 deterministic mode and `CartHostWeb` never called it at all, so normal
 runs booted from the compile-time constant and dealt the same "random"
 sequence every load. If a game repeats itself identically on power-on,
-the host is running an older wasmcart.
+the host is running a pre-0.17.0 wasmcart.
 
 ## Cart Formats
 
@@ -250,7 +252,7 @@ These dimensions define:
 - The host scales the cart's output to fit the display, **preserving the cart's aspect ratio** with letterboxing/pillarboxing as needed
 - The cart never knows or cares about the actual display size
 
-**If no preferred resolution is specified** (both 0), the host should create its window at the cart's returned dimensions - a 1:1 pixel match with no scaling.
+**If no preferred resolution is specified** (both 0), the host should create its window at the cart's returned dimensions so pixels map 1:1. (The bundled player additionally opens small carts -- 400px tall or less -- at 2x so they are legible on modern displays; the frame itself is still rendered at the cart's resolution.)
 
 Example flow:
 ```
@@ -468,9 +470,11 @@ Create `.wasc` archives from a `.wasm` file and an assets directory:
 npx wasmcart-pack --wasm cart.wasm --assets assets/ -o game.wasc
 npx wasmcart-pack --wasm cart.wasm --assets assets/ -o game.wasc --name "My Game" --version "1.0"
 
-# With ABI v3 features
-npx wasmcart-pack --wasm cart.wasm -o game.wasc --pointer --keyboard
+# Manifest extras: multiplayer, a network grant, an on-screen-controls hint
 npx wasmcart-pack --wasm cart.wasm -o game.wasc --players 4 --ws api.mygame.com
+npx wasmcart-pack --wasm cart.wasm -o game.wasc --controls dpad,a,b,start
+# (pointer/keyboard need NO flag: the cart declares WC_FLAG_POINTER /
+#  WC_FLAG_KEYBOARD in its own wc_info_t, and that is the only gate)
 ```
 
 Or pack a **dev directory** that already has its own `manifest.json` — the
@@ -485,6 +489,13 @@ manifest already says something specific (a custom `assets` root, a field
 with no flag). `--source` resolves the wasm through the manifest's own
 `entry`, packs every other file at its original path, and rewrites only
 `entry` to the archive's `cart.wasm`.
+
+All flags: `--wasm`, `--assets`, `--source`, `--output`/`-o`, `--name`,
+`--version` (flag form only; a `--source` manifest's own version wins),
+`--width`/`--height`, `--players`, `--controls` (comma-separated or
+repeatable), `--ws`/`--websocket` (repeatable). Bare positional arguments are
+taken as the wasm path, then the output path. `--pointer`, `--keyboard`, and
+`--data-channel` are accepted, warning no-ops from the double-gate era.
 
 ## Writing Carts
 

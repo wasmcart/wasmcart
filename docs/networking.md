@@ -131,7 +131,7 @@ else for it to live. Declared memory in the shipped examples:
 | flare | 768 MB | 768 MB |
 | neverputt, etr_4p | 128 MB | 2048 MB |
 | craft | 64 MB | 2048 MB |
-| tetris, invaders, pacman | 16 MB | 16 MB |
+| small 2D arcade carts | 16 MB | 16 MB |
 | lmdave | 2 MB | 2 MB |
 
 A 30-frame ring at 128 MB is ~3.8 GB of buffer and a 128 MB `memcpy` every
@@ -166,9 +166,13 @@ wc_peer_on_connect(id, name, len)   wc_peer_on_message(id, data, len)
 wc_peer_on_disconnect(id)           wc_peer_on_error(id)
 ```
 
-Gated by `WC_FLAG_NET_PEER` **and** a manifest `net` grant - networking is the
+Gating is per DIRECTION. Connections the cart opens (`wc_peer_open`) need
+`WC_FLAG_NET_PEER` **and** a manifest `net.domains` grant - dial-out is the
 one capability where the cart's own declaration is not sufficient, because
-reaching a remote machine is a permission the packager grants.
+reaching a remote machine the packager never anticipated is a permission the
+packager grants. Peers the HOST registers (`addPeer()`) need only the cart's
+flag: the host already chose that connection, so no manifest key permits it
+(see "Bring your own transport" below).
 
 Binary only. Text frames were dropped in the merge: they are meaningful for
 WebSocket and meaningless for a serial cable or raw TCP, so framing belongs to
@@ -176,8 +180,14 @@ the cart.
 
 ### Manifest gating
 
-Addresses are not always domains, so grants are per transport class, each
-independently defaulting to denied:
+`net.domains` is the shipped grant: the allowlist for addresses the cart may
+dial, matched against the address itself (a `net.lan` grant does not open a
+`wss://` address). The reference hosts currently accept only `ws:`/`wss:`
+addresses from `wc_peer_open`.
+
+Addresses are not always domains, so the DESIGN is per-transport-class grants,
+each independently defaulting to denied - but `lan` and `serial` below are
+**prospective**, reserved spellings; no host reads them yet:
 
 ```json
 {

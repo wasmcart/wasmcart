@@ -18,11 +18,22 @@ Game draws → Ganesh offscreen FBO (e.g. FBO 2)
 
 If the host doesn't intercept `glBindFramebuffer(target, 0)`, the blit goes to the real default framebuffer (FBO 0), which may not be what the host reads.
 
+> **Note on the UPDATE log below:** everything from "UPDATE 2" onward is a
+> dated debugging narrative from 2026-03-31, kept for the reasoning. The
+> current, settled rule is the one at the top of this file plus the host table
+> here; where the log contradicts it, the log is history.
+
 ## How Each Host Handles It
 
 ### Browser (CartHostWeb) - Works
 
-WebGL2's `gl.bindFramebuffer(target, null)` binds the canvas backbuffer. The cart calls `glBindFramebuffer(target, 0)`, the host maps ID 0 → `null`, which IS the canvas. The browser composites the canvas to the page. No redirect needed.
+CartHostWeb now uses the SAME redirect-FBO scheme as every other host: a
+depth24/stencil8 FBO is set up at load for every GL cart, `glBindFramebuffer
+(target, 0)` redirects to it, and the finished frame is blitted to the canvas
+(`blitFramebuffer` to `null`) once per frame. The earlier behavior — mapping
+ID 0 straight to `null`, the canvas backbuffer — worked for display but gave
+the default framebuffer's stencil/depth config, which is exactly the class of
+mismatch this document is about.
 
 ### Node.js (retroemu cli.js) - Works
 
