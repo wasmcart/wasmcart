@@ -625,21 +625,23 @@ export class CartHostWeb {
       this._writeHostInfo(this.info.hostInfoPtr, options);
     }
 
-    // WASI reactor init
-    if (typeof exports._initialize === 'function') {
-      exports._initialize();
-      this._updateViews();
-    }
-
-    // Seed the cart's RNG BEFORE init: entropy by default so every page
-    // load deals differently (same contract as CartHost; this host has no
-    // deterministic mode, so there is no pinned-seed branch here).
+    // Seed the cart's RNG BEFORE _initialize as well as wc_init: entropy by
+    // default so every page load deals differently. Same contract and same
+    // ORDER as CartHost -- static constructors run game code, and seeding
+    // after them hands any constructor-time RNG the compile-time seed. (This
+    // host has no deterministic mode, so there is no pinned-seed branch.)
     if (typeof exports.wc_set_seed === 'function') {
       const s = new Uint32Array(1);
       (globalThis.crypto || {}).getRandomValues
         ? crypto.getRandomValues(s)
         : (s[0] = (Math.random() * 0x100000000) >>> 0);
       exports.wc_set_seed(s[0]);
+    }
+
+    // WASI reactor init
+    if (typeof exports._initialize === 'function') {
+      exports._initialize();
+      this._updateViews();
     }
 
     // Cart init

@@ -36,6 +36,7 @@ let netWebsocket = null;  // array of domain strings
 let netDataChannel = false;
 let usePointer = false;
 let useKeyboard = false;
+let controls = null;   // array of pad-subset tokens (SPEC: manifest 'controls')
 
 for (let i = 0; i < args.length; i++) {
   switch (args[i]) {
@@ -80,6 +81,10 @@ for (let i = 0; i < args.length; i++) {
       break;
     case '--keyboard':
       useKeyboard = true;
+      break;
+    case '--controls':
+      if (!controls) controls = [];
+      controls.push(...args[++i].split(',').map((t) => t.trim()).filter(Boolean));
       break;
     case '--help':
     case '-h':
@@ -163,6 +168,23 @@ if (players !== null) {
   }
 }
 
+// controls is a PRESENTATION HINT (SPEC: advisory, never binding, never
+// gating) and hosts must ignore unknown tokens -- so an unknown token here is
+// most likely a typo that would silently hide a button from on-screen pads.
+// Warn, but write it anyway: the CLI must not reject tokens a future spec
+// revision defines.
+const KNOWN_CONTROLS = new Set([
+  'dpad', 'a', 'b', 'x', 'y', 'l', 'r', 'start', 'select',
+  'left_stick', 'right_stick', 'left_trigger', 'right_trigger', 'l3', 'r3',
+]);
+if (controls) {
+  for (const t of controls) {
+    if (!KNOWN_CONTROLS.has(t)) {
+      console.warn(`wasmcart-pack: unknown --controls token "${t}" (hosts will ignore it; known: ${[...KNOWN_CONTROLS].join(', ')})`);
+    }
+  }
+}
+
 if (netWebsocket) {
   for (const domain of netWebsocket) {
     if (!domain || domain.includes('/') || domain.includes(':') || domain.startsWith('.')) {
@@ -188,6 +210,12 @@ if (sourceManifest) {
 
 if (players !== null && players > 1) {
   manifest.players = players;
+}
+
+// Like --name, an explicit --controls overrides even a --source manifest:
+// flags the user typed win over what the tree carries.
+if (controls && controls.length) {
+  manifest.controls = controls;
 }
 
 // --pointer / --keyboard used to write manifest fields that gated input
@@ -351,6 +379,9 @@ function printUsage() {
   console.log(`  --width <px>       Cart resolution width (hosts size their window to it)`);
   console.log(`  --height <px>      Cart resolution height`);
   console.log(`  --players <n>      Number of local players (1-4, default: 1)`);
+  console.log(`  --controls <list>  Comma-separated pad subset the game reads (advisory`);
+  console.log(`                     hint for hosts drawing on-screen touch controls, e.g.`);
+  console.log(`                     dpad,a,b,start; repeatable; omit for the retro default)`);
   console.log(`  --ws <domain>      Allow WebSocket to domain (repeatable)`);
   console.log(`  --data-channel     (deprecated, no-op: host-supplied peers need no grant)`);
   console.log(`  --pointer          (deprecated, no-op: the cart sets WC_FLAG_POINTER)`);

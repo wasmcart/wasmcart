@@ -19,7 +19,9 @@ if (sub === 'pack') {
   await import('./wasmcart-play.js');
 } else if (sub === '-h' || sub === '--help' || sub === undefined) {
   console.log('Usage: wasmcart <cart.wasc | cart-dir> [options]   (or: wasmcart pack --wasm cart.wasm)');
-  console.log('Player options: --frames n, --shot out.png, --wav out.wav, --seed n, --scale cols, --fps n');
+  console.log('Player options: --term, --window, --gl, --zoom n, --width px, --height px,');
+  console.log('  --no-resize, --stretch, --fullscreen (-f), --frames n, --shot out.png,');
+  console.log('  --wav out.wav, --seed n, --scale cols, --fps n   (details: wasmcart play --help)');
 } else {
   await import('./wasmcart-play.js'); // bare cart path → play
 }
