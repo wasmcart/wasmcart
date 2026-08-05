@@ -93,7 +93,7 @@ typedef struct {
 
 typedef struct {
     wc_sound_t *sound;      /* pointer to sound slot */
-    uint32_t pos_frac;      /* playback position (16.16 fixed-point) */
+    uint64_t pos_frac;      /* playback position (48.16 fixed-point; 32-bit wrapped at 1.37s @48kHz, silently LOOPING any longer sample) */
     uint32_t step_frac;     /* effective step per output sample (16.16) */
     uint32_t base_step_frac;/* step at pitch 1.0 (16.16) */
     float pitch;            /* playback-rate multiplier (default 1.0) */
@@ -362,7 +362,7 @@ void wc_mixer_seek(int channel, float seconds) {
     if (seconds < 0) seconds = 0;
     int frame = (int)(seconds * c->sound->sample_rate);
     if (frame >= c->sound->length) frame = c->sound->length > 0 ? c->sound->length - 1 : 0;
-    c->pos_frac = (uint32_t)frame << 16;
+    c->pos_frac = (uint64_t)frame << 16;
 }
 
 /* Current position in SECONDS of the source sound (-1 if not playing). */
@@ -388,7 +388,7 @@ void wc_mixer_mix(int16_t *ring, uint32_t cap, uint32_t *write_cur, int frames) 
             if (!c->active || !c->sound || c->paused) continue;
 
             wc_sound_t *s = c->sound;
-            uint32_t pos = c->pos_frac >> 16;
+            uint32_t pos = (uint32_t)(c->pos_frac >> 16);
 
             if ((int)pos >= s->length) {
                 if (c->loop) {
@@ -457,7 +457,7 @@ void wc_mixer_mix_f32(float *ring, uint32_t cap, uint32_t *write_cur, int frames
             if (!c->active || !c->sound || c->paused) continue;
 
             wc_sound_t *s = c->sound;
-            uint32_t pos = c->pos_frac >> 16;
+            uint32_t pos = (uint32_t)(c->pos_frac >> 16);
 
             if ((int)pos >= s->length) {
                 if (c->loop) {
