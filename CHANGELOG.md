@@ -1,5 +1,87 @@
 # Changelog
 
+## 0.17.0
+
+Carts are seeded with entropy on every normal load; determinism stays opt-in.
+
+Both reference hosts called `wc_set_seed` only in deterministic-replay mode
+(`CartHostWeb` never called it at all), so a normal power-on ran the
+compile-time seed: every boot dealt the same shuffle, spawned the same waves,
+rolled the same dice. `CartHost` now rolls a fresh random u32 per normal load
+and `CartHostWeb` seeds from `crypto.getRandomValues` per page load.
+`load(cart, { deterministic: { seed } })` pins the seed and the virtual clock
+exactly as before, so replays, goldens, and regression loops are untouched. A
+new test loads the RNG-noise fixture three times normally and requires the
+frames to diverge; with the seeding reverted it fails.
+
+Carts need no change: export `wc_set_seed` (the `wc_cart.h` macro provides
+it) and draw randomness from `wc_rand()`. A cart that repeats itself
+identically on every power-on is running on a pre-0.17.0 host.
+
+New advisory manifest field `controls`: the subset of the standard pad the
+game actually reads (`["dpad","a","b","start"]` and the like). Presentation
+hint only, in the same doctrine class as `width`/`height` — a host drawing
+on-screen touch controls shows just what the game needs, every other host
+ignores it, and unknown tokens must be ignored. The full X360-style
+`wc_pad_t` is always delivered regardless. `wasmcart-pack --controls
+dpad,a,b,start` writes it (repeatable or comma-separated; unknown tokens
+warn but still pack, since hosts tolerate them by spec).
+
+Mixer fix in the vendored `wc_pcm_mixer.h`: the playback position was 16.16
+fixed-point in a u32 — 65536 source frames of headroom, 1.37 seconds at
+48kHz — so any longer sample silently wrapped to zero mid-play and started
+over, heard as music restarting rather than reported as an error. The
+position is now 48.16 in a u64; per-channel step stays 16.16. Vendored
+copies in the ports are resynced (`scripts/sync-headers.sh --write`).
+
+Both hosts seed at the same point now: BEFORE `_initialize` as well as
+`wc_init`. `CartHostWeb` used to run static constructors first, so a browser
+cart doing RNG work in a constructor got the compile-time seed while the same
+cart on Node did not — the two reference hosts disagreed on the contract.
+
+The player grew `--width`/`--height` (an explicit window size; the code that
+honored them existed but no flag ever set them), and the front door's `-h`
+now lists the full flag set. `wasmcart/web` exports `FLAG_DEBUG`,
+`FLAG_DETERMINISTIC`, and `HOST_FLAG_DETERMINISTIC`, matching the Node entry
+point.
+
+A documentation sweep against the shipped code, the biggest since the
+`wc_peer_*` merge:
+
+- SPEC: `wc_info_t` now lists `gpu_api` (byte offset 64, in the ABI since
+  v3 but missing from the normative struct); the manifest example uses
+  `net.domains`; entropy-by-default seeding is normative; the manifest
+  `debug` field is marked REMOVED (nothing ever read it — `WC_FLAG_DEBUG`
+  is the gate, per the doctrine that a manifest field never gates a
+  capability the cart declares about itself); the Security Model reflects
+  the peer model's per-direction gating.
+- docs/input.md: the button-bit table was wrong for bits 6-15 (it had
+  pasted W3C indices into the wasmcart bit column — a cart following it
+  tested the wrong masks); pointer and keyboard sections now document the
+  slot contract (0 = mouse, 1-9 = touch fingers), `wc_pointer_t`, the
+  event callbacks, and that `WC_FLAG_KEYBOARD` stops keyboard-to-gamepad
+  mapping.
+- docs/networking.md: gating is per direction — dial-out needs the flag
+  plus `net.domains`; host-registered peers need the flag alone (the file
+  previously contradicted itself on this); `net.lan`/`net.serial` are
+  marked prospective, since no host reads them.
+- docs/gl-surface.md and bind_framebuffer.md: claims that described
+  native-host behavior as universal (VAO-0 redirect, buffer orphaning,
+  GLSL version passthrough) are scoped honestly; CartHostWeb's redirect-FBO
+  path is documented as current (the "no redirect needed" browser section
+  predated it); CartHost self-provisions its GL context via webgl-node.
+- docs/fetch.md carries a PROPOSAL banner — `wc_fetch_*` was never
+  implemented and the doc read like it shipped.
+- docs/porting.md: shared headers live in `include/` (the documented
+  `porting/include/` never existed), the SDL2 backend is the wasmcart-sdl2
+  package, and the checklist gains the Wasm-EH/SjLj build requirements.
+- README: the `--pointer --keyboard` pack example (a warning no-op since
+  the double-gate removal) is replaced with the real story, the full pack
+  and play flag sets are listed, and the small-cart 2x window default is
+  documented.
+
+No ABI change: version 3, its imports, and the `.wasc` format are untouched.
+
 ## 0.16.3
 
 WebAssembly exception handling is now an explicit part of the wasmcart
