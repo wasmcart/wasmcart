@@ -117,6 +117,36 @@ dependencies power the CLI, they are not required by the embedding API.
 
 Requires Node.js >= 22.
 
+## RNG seeding: entropy by default, determinism by request
+
+On every **normal** load, a spec-compliant host rolls a fresh random `u32`
+and calls the cart's `wc_set_seed` export (if present) before `wc_init` —
+so a cart that draws all its randomness from `wc_rand()` deals a different
+game every power-on, with **zero cart-side effort**.
+
+Determinism is the opt-in: `load(cart, { deterministic: { seed } })` (CLI:
+`--seed n`) pins that seed AND fixes the virtual clock, giving identical
+frame sequences for replays, goldens, and regression loops. Same seed +
+same input script = byte-identical run.
+
+| Layer | Responsibility |
+|---|---|
+| **Host** (`CartHost`) | random seed per normal load; pinned seed + fixed clock in deterministic mode |
+| **Cart/engine** | export `wc_set_seed(u32)` (the `wc_cart.h` macro provides it) and use `wc_rand()` as the only entropy source |
+| **Game code** | nothing — or mix in human input timing as belt-and-braces on pre-fix hosts |
+
+Both bundled hosts implement this: **`CartHost`** (Node) rolls a random
+u32 per normal load and pins it in `deterministic:{seed}` mode;
+**`CartHostWeb`** (browser, `wasmcart/web`) seeds from
+`crypto.getRandomValues` on every page load (it has no deterministic mode
+— replay tooling is Node-side).
+
+History: before 2026-08, `CartHost` called `wc_set_seed` only in
+deterministic mode and `CartHostWeb` never called it at all, so normal
+runs booted from the compile-time constant and dealt the same "random"
+sequence every load. If a game repeats itself identically on power-on,
+the host is running an older wasmcart.
+
 ## Cart Formats
 
 | Format | Description |

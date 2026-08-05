@@ -631,6 +631,17 @@ export class CartHostWeb {
       this._updateViews();
     }
 
+    // Seed the cart's RNG BEFORE init: entropy by default so every page
+    // load deals differently (same contract as CartHost; this host has no
+    // deterministic mode, so there is no pinned-seed branch here).
+    if (typeof exports.wc_set_seed === 'function') {
+      const s = new Uint32Array(1);
+      (globalThis.crypto || {}).getRandomValues
+        ? crypto.getRandomValues(s)
+        : (s[0] = (Math.random() * 0x100000000) >>> 0);
+      exports.wc_set_seed(s[0]);
+    }
+
     // Cart init
     this._drawProgress(glCtx, 0.95);
     if (typeof exports.wc_init === 'function') {

@@ -76,6 +76,22 @@ test('normal load: no seed, no flag, wall-clock — determinism fully absent', a
   cart.destroy();
 });
 
+test('two NORMAL loads diverge (entropy by default, the power-on shuffle)', async () => {
+  // Before 2026-08 the host only called wc_set_seed in deterministic mode, so
+  // every normal load ran the compile-time seed and this test would FAIL with
+  // identical hashes — that is exactly the regression it guards against.
+  // detrng draws RNG noise into the framebuffer, so seed divergence is
+  // visible in one frame. Three loads, not two: a 1-in-2^32 seed collision
+  // failing CI once a decade is annoying; two collisions in one run is not
+  // a coincidence worth pricing in.
+  const a = await runFrames(DETRNG, {}, 3);
+  const b = await runFrames(DETRNG, {}, 3);
+  const c = await runFrames(DETRNG, {}, 3);
+  assert.ok(a.hash !== b.hash || b.hash !== c.hash,
+    'normal loads must not replay the same "random" sequence every power-on');
+  a.cart.destroy(); b.cart.destroy(); c.cart.destroy();
+});
+
 test('a cart WITHOUT wc_set_seed still loads deterministically (fixed step only)', async () => {
   // hello has no WC_DETERMINISTIC_RNG — the optional export is simply absent.
   const cart = new CartHost();

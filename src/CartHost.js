@@ -833,8 +833,14 @@ export class CartHost {
     // Deliver the seed BEFORE wc_init (and before _initialize's constructors
     // run game code) so the cart's RNG is seeded from frame 0. Optional export:
     // a cart without WC_DETERMINISTIC_RNG simply doesn't get called.
-    if (this.deterministicSeed !== null && typeof exports.wc_set_seed === 'function') {
-      exports.wc_set_seed(this.deterministicSeed);
+    if (typeof exports.wc_set_seed === 'function') {
+      // Entropy by default, determinism by request: a normal load gets a
+      // fresh random seed (so "same first hand every power-on" can't happen);
+      // load({deterministic:{seed}}) pins it for replays/regression.
+      const seed = this.deterministicSeed !== null
+        ? this.deterministicSeed
+        : (Math.random() * 0x100000000) >>> 0;
+      exports.wc_set_seed(seed);
     }
 
     // Call WASI reactor _initialize (emscripten static constructors) if present
