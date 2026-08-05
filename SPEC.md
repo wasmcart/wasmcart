@@ -110,7 +110,11 @@ So the manifest carries only what the cart cannot state for itself:
   delivered whether declared or not. This field is a **presentation hint** in
   the same class as `width`/`height`: a host drawing on-screen touch controls
   uses it to show only what the game needs, and every other host ignores it.
-  Advisory, never binding, never gating.
+  Advisory, never binding, never gating. From the cart's side NOTHING changes
+  either way: the host still writes the full struct every frame, and a
+  control the UI chose not to draw simply never changes -- indistinguishable
+  from a player who never touches it. Carts MUST NOT try to detect or adapt
+  to the hint.
 - Tokens (mirroring `wc_pad_t`): `dpad`, `a`, `b`, `x`, `y`, `l`, `r`,
   `start`, `select`, `left_stick`, `right_stick`, `left_trigger`,
   `right_trigger`, `l3`, `r3`. Unknown tokens MUST be ignored (forward

@@ -135,7 +135,10 @@ Host applications drive the array through the reference hosts'
 Related: the advisory manifest `controls` field (SPEC, Manifest section)
 tells hosts that draw ON-SCREEN touch pads which subset of `wc_pad_t` the
 game reads. It is presentation-only and unrelated to `WC_FLAG_POINTER`,
-which is about the cart reading a pointer itself.
+which is about the cart reading a pointer itself. It never truncates input:
+the host writes the full `wc_pad_t` every frame regardless, and a control
+the UI didn't draw just never changes — the same as a player who never
+touches it.
 
 ## Keyboard Input (Opt-In, ABI v3)
 
