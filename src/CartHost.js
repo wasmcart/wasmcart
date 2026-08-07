@@ -300,6 +300,7 @@ export class CartHost {
     // Asset index for .wasc carts
     this._assetIndex = null;   // Map<path, entry>
     this._ownedGl = null;
+    this._ownedGlCtx = null;
     this._callerGl = null;     // a context the CALLER supplied via glBackend      // a GL context this host created (not the caller's)
     this._assetFd = null;      // file descriptor for on-disk zip reading
     this._assetBuf = null;     // in-memory zip buffer (for Uint8Array source)
@@ -450,8 +451,14 @@ export class CartHost {
       let made = null;
       try {
         const { createWebGL2Context } = await import('webgl-node');
-        made = createWebGL2Context(w, h)?.gl || null;
-      } catch { made = null; }
+        // Keep the WHOLE result, not just .gl: native-gles is multi-context
+        // now, so this context's makeCurrent/destroy are bound to its handle.
+        // Another host (or an active-bezel compositor) in the same process
+        // owning the "current" context is normal, and a cart that never
+        // claims its own draws into someone else's.
+        this._ownedGlCtx = createWebGL2Context(w, h) || null;
+        made = this._ownedGlCtx?.gl || null;
+      } catch { made = null; this._ownedGlCtx = null; }
 
       if (!made) {
         // GL genuinely unavailable (no driver, headless box with no EGL, an
@@ -892,6 +899,12 @@ export class CartHost {
     // having to know about lifecycle at all.
     if (this._suspended) return this._lastFrame ?? null;
 
+    // A GL cart on a context THIS host created must make it current before
+    // the cart's draws run — in a multi-context process, whoever rendered
+    // last owns the current context. Caller-supplied backends manage their
+    // own currency (and browser contexts have no notion of it).
+    if (this.usesGL && this._ownedGlCtx?.makeCurrent) this._ownedGlCtx.makeCurrent();
+
     let timeMs, deltaMs;
     if (this._fixedStepMs > 0) {
       // Deterministic clock: a host (e.g. an automated harness) drives frames
@@ -1221,7 +1234,12 @@ export class CartHost {
     // glBackend belongs to the caller and is left alone).
     if (this._ownedGl) {
       try { this._ownedGl.getExtension('WEBGL_lose_context')?.loseContext(); } catch {}
+      // Release the native EGL context by ITS handle (webgl-node binds
+      // destroy() to it); the old no-arg destroy tore down whichever context
+      // happened to be current, potentially another host's.
+      try { this._ownedGlCtx?.destroy?.(); } catch {}
       this._ownedGl = null;
+      this._ownedGlCtx = null;
     }
 
     // Terminate all worker threads

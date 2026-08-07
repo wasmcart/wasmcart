@@ -75,7 +75,11 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
     if (!nativeGL) throw new Error('no native GL window handle from SDL (try a different video driver)');
     const glResult = createWebGL2Context(window.pixelWidth, window.pixelHeight, { nativeWindow: nativeGL });
     swapBuffers = glResult.swapBuffers;
-    glResult.setSwapInterval?.(0);
+    /* Block on vsync: the present is a cheap GPU swap, and unsynced swaps
+     * land at random phases of the refresh — microstutter at a "perfect"
+     * frame rate. (On macOS the interval only works at all as of
+     * native-gles 0.6.0's Metal backend; before that it was ignored.) */
+    glResult.setSwapInterval?.(1);
     glForResize = glResult.gl;
     return glResult.gl;
   };
