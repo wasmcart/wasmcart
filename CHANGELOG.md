@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.19.0
+
+A cart's engine can now be built and run NATIVELY, off wasm, without
+forking it: `WC_NATIVE_HOST`.
+
+Some engines are C that happens to be compiled to wasm. Built with an
+ordinary toolchain and linked against a host in the same address space,
+such an engine needs no wasm runtime at all -- which matters where one is
+expensive to ship. The reference case: an Android game APK drops from
+about 64 MB to 6 MB, since the JS engine was nearly all of the difference,
+and runs at a locked 60 fps for roughly 40% less CPU.
+
+This is a build target, not an ABI change. The wasm output is
+byte-identical, the exports and struct layouts are unchanged, and a cart
+cannot tell the difference.
+
+- `wc_cart.h`: `wc_debug_mark` gains an extern branch for a native host
+  (the plain non-wasm branch is a no-op stub -- right for a cart built
+  without a host, silently wrong for a host that must supply it), and the
+  debug descriptor gains a native form holding real pointers.
+  `(uint32_t)(uintptr_t)&x` is neither lossless nor a compile-time
+  constant on a 64-bit target.
+- `SPEC.md` documents the target, the parts of the ABI a native host
+  cannot use (`wc_info_t`'s region pointers and the debug descriptor both
+  encode 32-bit offsets into linear memory), and what it costs: native
+  engine code carries the process's authority, so this is for first-party
+  carts you ship yourself, not for running untrusted ones.
+
 ## 0.17.0
 
 Carts are seeded with entropy on every normal load; determinism stays opt-in.
