@@ -194,19 +194,46 @@ typedef struct {
 #define WC_FLAG_DEBUG (1 << 5)  /* cart exports wc_debug_state() */
 #endif
 
+/* The descriptor stores name/addr as uint32 WASM-MEMORY OFFSETS. On a
+ * 64-bit native build those casts truncate a real address AND are not
+ * compile-time constants, so a native build gets a parallel descriptor
+ * holding real pointers. The wasm table is unchanged: same layout, same
+ * bytes, same wc_debug_state() export. */
+#ifdef WC_NATIVE_HOST
+typedef struct {
+    const char *name;
+    void       *addr;
+    uint8_t     type;
+    uint32_t    len;
+} wc_debug_field_native_t;
+
+/* One scalar field. `expr` must be an lvalue whose address is taken. */
+#define WC_DBG(name_str, expr, dbg_type) \
+    { (name_str), (void *)&(expr), (dbg_type), 1 }
+/* An array / byte-buffer field of `count` elements. */
+#define WC_DBG_ARR(name_str, arr, dbg_type, count) \
+    { (name_str), (void *)(arr), (dbg_type), (count) }
+#else
 /* One scalar field. `expr` must be an lvalue whose address is taken. */
 #define WC_DBG(name_str, expr, dbg_type) \
     { (uint32_t)(uintptr_t)(name_str), (uint32_t)(uintptr_t)&(expr), (dbg_type), {0,0,0}, 1 }
 /* An array / byte-buffer field of `count` elements. */
 #define WC_DBG_ARR(name_str, arr, dbg_type, count) \
     { (uint32_t)(uintptr_t)(name_str), (uint32_t)(uintptr_t)(arr), (dbg_type), {0,0,0}, (count) }
+#endif
 
 /* Emit the descriptor table + wc_debug_state(). Table is NUL-terminated by a
  * zero entry. Call OUTSIDE any function, once, listing your fields. */
+#ifdef WC_NATIVE_HOST
+#define WC_DEBUG_FIELDS(...) \
+    static wc_debug_field_native_t wc_debug_table[] = { __VA_ARGS__, {0,0,0,0} }; \
+    wc_debug_field_native_t *wc_debug_state_native(void) { return wc_debug_table; }
+#else
 #define WC_DEBUG_FIELDS(...) \
     static wc_debug_field_t wc_debug_table[] = { __VA_ARGS__, {0,0,0,{0,0,0},0} }; \
     __attribute__((export_name("wc_debug_state"))) \
     wc_debug_field_t *wc_debug_state(void) { return wc_debug_table; }
+#endif
 
 /* ── Deterministic replay (OPT-IN, DEFAULT OFF) ──────────────────────
  *
@@ -261,6 +288,9 @@ typedef struct {
  * hosts stub the import, but the intent is zero call sites when you ship. */
 #ifdef __wasm__
 __attribute__((import_module("env"), import_name("wc_debug_mark")))
+extern void wc_debug_mark(uint32_t id);
+#elif defined(WC_NATIVE_HOST)
+/* native host links this in (see wc_native.h) */
 extern void wc_debug_mark(uint32_t id);
 #else
 static inline void wc_debug_mark(uint32_t id) { (void)id; }
