@@ -631,6 +631,15 @@ typedef signed long int GLintptr;
 // Texture targets
 #define GL_TEXTURE_2D                     0x0DE1
 #define GL_TEXTURE_CUBE_MAP               0x8513
+#define GL_TEXTURE_CUBE_MAP_POSITIVE_X    0x8515
+#define GL_TEXTURE_CUBE_MAP_NEGATIVE_X    0x8516
+#define GL_TEXTURE_CUBE_MAP_POSITIVE_Y    0x8517
+#define GL_TEXTURE_CUBE_MAP_NEGATIVE_Y    0x8518
+#define GL_TEXTURE_CUBE_MAP_POSITIVE_Z    0x8519
+#define GL_TEXTURE_CUBE_MAP_NEGATIVE_Z    0x851A
+#define GL_TEXTURE_3D                     0x806F
+#define GL_TEXTURE_2D_ARRAY               0x8C1A
+#define GL_TEXTURE_WRAP_R                 0x8072
 
 // Texture params
 #define GL_TEXTURE_MIN_FILTER             0x2801
@@ -663,6 +672,21 @@ typedef signed long int GLintptr;
 #define GL_RGB8                           0x8051
 #define GL_RGBA8                          0x8058
 
+// Sized float formats (GLES 3.0 core; on WebGL2 these are renderable only
+// with EXT_color_buffer_float, which the reference hosts request at context
+// creation. Sampling them with a LINEAR filter additionally wants
+// OES_texture_float_linear. Check, don't assume: a format that is legal to
+// allocate is not necessarily renderable or filterable on every driver.)
+#define GL_R16F                           0x822D
+#define GL_RG16F                          0x822F
+#define GL_RGBA16F                        0x881A
+#define GL_R32F                           0x822E
+#define GL_RG32F                          0x8230
+#define GL_RGBA32F                        0x8814
+#define GL_R11F_G11F_B10F                 0x8C3A
+// (GL_HALF_FLOAT / GL_FLOAT, the matching pixel TYPEs, are declared with the
+// other data types above.)
+
 // Shader types
 #define GL_VERTEX_SHADER                  0x8B31
 #define GL_FRAGMENT_SHADER                0x8B30
@@ -679,15 +703,41 @@ typedef signed long int GLintptr;
 #define GL_DRAW_FRAMEBUFFER               0x8CA9
 #define GL_RENDERBUFFER                   0x8D41
 #define GL_COLOR_ATTACHMENT0              0x8CE0
+// Multiple render targets. GLES 3.0 guarantees at least 4 colour
+// attachments; query GL_MAX_COLOR_ATTACHMENTS for the real number rather
+// than assuming, since a deferred renderer sized to 8 will fail to complete
+// its framebuffer on a driver that offers 4.
+#define GL_COLOR_ATTACHMENT1              0x8CE1
+#define GL_COLOR_ATTACHMENT2              0x8CE2
+#define GL_COLOR_ATTACHMENT3              0x8CE3
+#define GL_COLOR_ATTACHMENT4              0x8CE4
+#define GL_COLOR_ATTACHMENT5              0x8CE5
+#define GL_COLOR_ATTACHMENT6              0x8CE6
+#define GL_COLOR_ATTACHMENT7              0x8CE7
 #define GL_DEPTH_ATTACHMENT               0x8D00
 #define GL_STENCIL_ATTACHMENT             0x8D20
 #define GL_DEPTH_STENCIL_ATTACHMENT       0x821A
 #define GL_FRAMEBUFFER_COMPLETE           0x8CD5
 
-// Renderbuffer formats
+// Renderbuffer / depth-texture formats
 #define GL_DEPTH_COMPONENT16              0x81A5
 #define GL_DEPTH_COMPONENT24              0x81A6
+#define GL_DEPTH_COMPONENT32F             0x8CAC
+#define GL_DEPTH_COMPONENT                0x1902
+#define GL_DEPTH_STENCIL                  0x84F9
 #define GL_DEPTH24_STENCIL8               0x88F0
+#define GL_DEPTH32F_STENCIL8              0x8CAD
+#define GL_UNSIGNED_INT_24_8              0x84FA
+
+// Limits, for glGetIntegerv
+#define GL_MAX_COLOR_ATTACHMENTS          0x8CDF
+#define GL_MAX_DRAW_BUFFERS               0x8824
+#define GL_MAX_TEXTURE_SIZE               0x0D33
+#define GL_MAX_CUBE_MAP_TEXTURE_SIZE      0x851C
+#define GL_MAX_3D_TEXTURE_SIZE            0x8073
+#define GL_MAX_ARRAY_TEXTURE_LAYERS       0x88FF
+#define GL_MAX_TEXTURE_IMAGE_UNITS        0x8872
+#define GL_MAX_SAMPLES                    0x8D57
 
 // GetString
 #define GL_VENDOR                         0x1F00
@@ -768,6 +818,14 @@ _GL_IMPORT(glTexParameterf)  extern void glTexParameterf(GLenum target, GLenum p
 _GL_IMPORT(glGenerateMipmap) extern void glGenerateMipmap(GLenum target);
 _GL_IMPORT(glCompressedTexImage2D) extern void glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const void* data);
 
+// 3D / array textures (GLES 3.0). GL_TEXTURE_3D holds a volume, and
+// GL_TEXTURE_2D_ARRAY holds independent layers that do NOT filter into each
+// other -- the distinction matters: a texture atlas as an array avoids the
+// bleed a 3D texture would introduce between slices.
+_GL_IMPORT(glTexImage3D)     extern void glTexImage3D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, const void* pixels);
+_GL_IMPORT(glTexSubImage3D)  extern void glTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, const void* pixels);
+_GL_IMPORT(glTexStorage3D)   extern void glTexStorage3D(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth);
+
 // Shaders
 _GL_IMPORT(glCreateShader)      extern GLuint glCreateShader(GLenum type);
 _GL_IMPORT(glDeleteShader)      extern void glDeleteShader(GLuint shader);
@@ -828,6 +886,10 @@ _GL_IMPORT(glDeleteFramebuffers)     extern void glDeleteFramebuffers(GLsizei n,
 _GL_IMPORT(glBindFramebuffer)        extern void glBindFramebuffer(GLenum target, GLuint framebuffer);
 _GL_IMPORT(glCheckFramebufferStatus) extern GLenum glCheckFramebufferStatus(GLenum target);
 _GL_IMPORT(glFramebufferTexture2D)   extern void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
+// Attach ONE layer of an array/3D texture, which is how a renderer draws into
+// a single cubemap face or array slice.
+_GL_IMPORT(glFramebufferTextureLayer) extern void glFramebufferTextureLayer(GLenum target, GLenum attachment, GLuint texture, GLint level, GLint layer);
+_GL_IMPORT(glBlitFramebuffer)        extern void glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter);
 _GL_IMPORT(glFramebufferRenderbuffer) extern void glFramebufferRenderbuffer(GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer);
 
 // RBOs
