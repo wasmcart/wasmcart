@@ -171,6 +171,17 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
     if (!_redirectFBO) return;
     const cw = ctx.drawingBufferWidth;
     const ch = ctx.drawingBufferHeight;
+    // Presenting must be INVISIBLE to the cart. Everything this function
+    // touches is global GL state the cart also owns, and engines cache it and
+    // skip redundant calls -- so anything left changed here silently corrupts
+    // the NEXT frame. Leaving the window-sized viewport behind did exactly
+    // that: a 1920x1080 cart presented into a 960x540 window then drew its
+    // next frame into a 960x540 corner of its own FBO, so every capture came
+    // back inset and scaled. Snapshot, then restore in full below.
+    const prevViewport = ctx.getParameter(ctx.VIEWPORT);
+    const prevClear = ctx.getParameter(ctx.COLOR_CLEAR_VALUE);
+    const prevScissor = ctx.isEnabled(ctx.SCISSOR_TEST);
+
     ctx.bindFramebuffer(ctx.READ_FRAMEBUFFER, _redirectFBO);
     ctx.bindFramebuffer(ctx.DRAW_FRAMEBUFFER, null);
     if (dst && dst.winW > 0 && dst.winH > 0) {
@@ -189,8 +200,12 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
       ctx.blitFramebuffer(0, 0, _redirectW, _redirectH, 0, 0, cw, ch,
         ctx.COLOR_BUFFER_BIT, ctx.LINEAR);
     }
-    // Restore redirect for next frame
+    // Restore redirect for next frame, and every piece of state above with it.
     ctx.bindFramebuffer(ctx.FRAMEBUFFER, _redirectFBO);
+    if (prevViewport) ctx.viewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
+    else ctx.viewport(0, 0, _redirectW, _redirectH);
+    if (prevClear) ctx.clearColor(prevClear[0], prevClear[1], prevClear[2], prevClear[3]);
+    if (prevScissor) ctx.enable(ctx.SCISSOR_TEST);
   }
 
   function _allocId(table, obj) {
