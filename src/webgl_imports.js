@@ -108,19 +108,29 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
 
   function _ensureRedirectFBO(w, h) {
     if (_redirectFBO && _redirectW === w && _redirectH === h) return;
-    if (_redirectFBO) {
-      ctx.deleteFramebuffer(_redirectFBO);
-      ctx.deleteTexture(_redirectTex);
-      ctx.deleteRenderbuffer(_redirectRBO);
+    // NEVER delete + re-create these on resize. The cart allocates GL names
+    // through the same context, so a delete here lets the driver hand the
+    // recycled name to the cart's next create -- or vice versa. Seen for real
+    // on Mali-G715 (wasmcart-native gl_imports.cpp carries the same warning):
+    // the re-created redirect texture came back with the SAME name as the
+    // cart's live sprite atlas, so every frame rendered INTO the atlas and
+    // every sprite sampled the frame instead of its art. Allocate the names
+    // once and re-spec their storage in place.
+    if (!_redirectFBO) {
+      _redirectFBO = ctx.createFramebuffer();
+      _redirectTex = ctx.createTexture();
+      _redirectRBO = ctx.createRenderbuffer();
     }
-    _redirectFBO = ctx.createFramebuffer();
-    _redirectTex = ctx.createTexture();
-    _redirectRBO = ctx.createRenderbuffer();
 
+    // Don't leak the resize into cart-visible state: engines cache their
+    // texture binding and skip redundant bind calls, so restore whatever the
+    // cart had bound rather than leaving ours current.
+    const prevTex = ctx.getParameter(ctx.TEXTURE_BINDING_2D);
     ctx.bindTexture(0x0DE1, _redirectTex);
     ctx.texImage2D(0x0DE1, 0, ctx.RGBA8, w, h, 0, ctx.RGBA, ctx.UNSIGNED_BYTE, null);
     ctx.texParameteri(0x0DE1, ctx.TEXTURE_MIN_FILTER, ctx.LINEAR);
     ctx.texParameteri(0x0DE1, ctx.TEXTURE_MAG_FILTER, ctx.LINEAR);
+    ctx.bindTexture(0x0DE1, prevTex);
 
     ctx.bindRenderbuffer(ctx.RENDERBUFFER, _redirectRBO);
     ctx.renderbufferStorage(ctx.RENDERBUFFER, ctx.DEPTH24_STENCIL8, w, h);
