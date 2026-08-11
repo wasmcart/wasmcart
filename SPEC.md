@@ -962,6 +962,37 @@ All keycodes follow USB HID Usage Tables. SDL provides these natively. Browser `
 
 ---
 
+## Running a cart's engine natively (WC_NATIVE_HOST)
+
+Some engines (wasmcart-lua) are C that happens to be compiled to wasm. Such
+an engine can also be built with a normal toolchain and linked against a
+host in the same address space -- useful where a wasm runtime is expensive
+to ship: an Android APK drops from ~64 MB to ~6 MB, since the JS engine is
+nearly all of the difference.
+
+This is a build target, not a change to the ABI. Under `WC_NATIVE_HOST`:
+
+- The `wc_*` imports in `wasmcart.h` are declared `extern` rather than
+  stubbed, so the host links real implementations. (The plain non-wasm
+  branch is a set of no-op stubs -- correct for a cart built without a
+  host, silently wrong for a host that must supply them.)
+- `wc_info_t`'s region pointers cannot be used: they are `uint32_t` offsets
+  into wasm linear memory, which is exact under wasm and lossy on a 64-bit
+  target. An engine exposes the real addresses another way instead
+  (wasmcart-lua: `wc_native_regions()` in `wc_native.h`).
+- Likewise the debug descriptor in `wc_cart.h`, whose `name`/`addr` fields
+  are the same 32-bit offsets: `(uint32_t)(uintptr_t)&x` is neither
+  lossless nor a compile-time constant on a 64-bit target, so a native
+  form holding real pointers is emitted instead.
+
+The wasm build is unaffected -- byte-identical output, same exports, same
+struct layouts -- and a cart cannot tell the difference.
+
+**This trades away the sandbox.** Native engine code has whatever authority
+the process has; nothing below still applies to it. That is acceptable for
+first-party carts you build and ship yourself, and NOT acceptable for
+running untrusted carts, which is what the wasm path is for.
+
 ## Security Model
 
 A cart is a plain WebAssembly module with **no ambient authority**. It has no
