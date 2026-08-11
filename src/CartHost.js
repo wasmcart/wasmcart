@@ -744,6 +744,11 @@ export class CartHost {
         nativeGL: options.nativeGL || null,
       });
       imports.gl = glFuncs;
+      // Kept so load() can set up the FBO redirect once the cart's real
+      // resolution is known (see _setupRedirectFBO below). CartHostWeb has
+      // always done this; without it the Node host has no way to reach the
+      // redirect machinery at all.
+      this._glFuncs = glFuncs;
       // Auto-stub any GL imports not covered by webgl_imports.js
       for (const imp of moduleImports) {
         if (imp.module === 'gl' && imp.kind === 'function' && !(imp.name in glFuncs)) {
@@ -878,6 +883,22 @@ export class CartHost {
       // Old cart that imports GL but doesn't set gpu_api - use import detection
       // (will be removed once all carts set gpu_api)
       this.usesGL = !!options.glBackend;
+    }
+
+    // FBO REDIRECT for GL carts (same as CartHostWeb and wasmcart-native).
+    // The cart renders into an offscreen FBO at ITS OWN resolution instead of
+    // straight into the context's default framebuffer. That decouples what the
+    // cart draws from whatever surface the host is presenting to, which is
+    // what lets a host scale the result: presenting a 1080p cart into a
+    // smaller window otherwise puts the picture 1:1 at the surface origin, so
+    // only a corner of it is visible (GL's origin is bottom-left, so the
+    // BOTTOM-left corner). Set up after wc_init, when info holds the cart's
+    // final resolution -- a cart that picks its size at boot reports the
+    // compile-time default before that.
+    if (this.usesGL && this._glFuncs?._setupRedirectFBO
+        && this.info.width > 0 && this.info.height > 0) {
+      this._glFuncs._setupRedirectFBO(this.info.width, this.info.height);
+      this._glRedirected = true;
     }
 
     // Initialize timing
@@ -1025,6 +1046,51 @@ export class CartHost {
    */
   getGlContext() {
     return this._ownedGl || this._callerGl || null;
+  }
+
+  /**
+   * True if this cart renders into an offscreen redirect FBO rather than
+   * straight into the GL context's default framebuffer. Hosts that present to
+   * a window need this: it is what makes presentToSurface() possible.
+   */
+  get glRedirected() {
+    return !!this._glRedirected;
+  }
+
+  /**
+   * Present the cart's rendered frame to the GL context's default framebuffer
+   * (for an attached context, that is the window surface).
+   *
+   * Only meaningful for a GL cart with the FBO redirect active. Without a
+   * `dst` the cart is stretched across the whole surface; pass a letterbox
+   * rect to preserve its aspect ratio in a window of a different size.
+   *
+   * @param {{x:number,y:number,w:number,h:number,winW:number,winH:number}} [dst]
+   *   Destination in top-down window coordinates; see _blitRedirectToCanvas.
+   * @returns {boolean} false if there is nothing to present.
+   */
+  presentToSurface(dst) {
+    if (!this._glRedirected || typeof this._glFuncs?._blitToCanvas !== 'function') return false;
+    this._glFuncs._blitToCanvas(dst);
+    return true;
+  }
+
+  /**
+   * Run `fn(width, height)` with the cart's redirect FBO bound as the GL READ
+   * source, then restore the previous binding.
+   *
+   * This is how a host reads the cart's pixels (screenshot, frame hash). It
+   * matters most when the context is attached to a window: the default
+   * framebuffer is then the window surface, whose contents are UNDEFINED after
+   * a swap, so a plain glReadPixels returns black. The redirect FBO always
+   * holds the frame the cart drew.
+   *
+   * @param {(w:number,h:number)=>void} fn
+   * @returns {boolean} false if this cart has no redirect FBO to read.
+   */
+  withRenderedFrame(fn) {
+    if (!this._glRedirected || typeof this._glFuncs?._withRedirectRead !== 'function') return false;
+    return this._glFuncs._withRedirectRead(fn);
   }
 
   getInfo() {

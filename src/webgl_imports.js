@@ -131,17 +131,54 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
 
     _redirectW = w;
     _redirectH = h;
-    ctx.bindFramebuffer(ctx.FRAMEBUFFER, null);
+    // Leave the REDIRECT bound, not null. A cart that explicitly calls
+    // glBindFramebuffer(0) gets remapped here anyway, but plenty of carts
+    // never bind at all and just draw to whatever is current -- and those
+    // would sail straight past the redirect into the default framebuffer.
+    // That is the difference between a cart whose pixels a host can read
+    // after a buffer swap and one whose frame is gone, so the redirect has
+    // to be the resting state from setup onward, not merely after the first
+    // explicit bind.
+    ctx.bindFramebuffer(ctx.FRAMEBUFFER, _redirectFBO);
   }
 
-  function _blitRedirectToCanvas() {
+  /**
+   * Blit the cart's redirect FBO to the context's default framebuffer.
+   *
+   * With no argument this stretches the cart across the whole surface, which
+   * is right when the surface was sized for the cart. Pass a destination rect
+   * to place it precisely instead -- a host presenting into a window that is
+   * not the cart's size must letterbox, or the aspect ratio is wrong (a
+   * stretch) or the picture sits 1:1 in a corner (no blit at all).
+   *
+   * @param {{x:number,y:number,w:number,h:number,winW:number,winH:number}} [dst]
+   *   Destination rect in TOP-DOWN window coordinates (the convention every
+   *   letterbox helper uses); converted to GL's bottom-up origin here so
+   *   callers don't each have to remember the flip. winW/winH are the full
+   *   surface size, needed to clear the bars around the rect.
+   */
+  function _blitRedirectToCanvas(dst) {
     if (!_redirectFBO) return;
     const cw = ctx.drawingBufferWidth;
     const ch = ctx.drawingBufferHeight;
     ctx.bindFramebuffer(ctx.READ_FRAMEBUFFER, _redirectFBO);
     ctx.bindFramebuffer(ctx.DRAW_FRAMEBUFFER, null);
-    ctx.blitFramebuffer(0, 0, _redirectW, _redirectH, 0, 0, cw, ch,
-      ctx.COLOR_BUFFER_BIT, ctx.LINEAR);
+    if (dst && dst.winW > 0 && dst.winH > 0) {
+      // Repaint the bars every frame: the region outside the rect is never
+      // written by the blit, so without this it keeps whatever was there
+      // (the previous frame at a previous window size, or driver garbage).
+      ctx.viewport(0, 0, dst.winW, dst.winH);
+      ctx.disable(ctx.SCISSOR_TEST);
+      ctx.clearColor(0, 0, 0, 1);
+      ctx.clear(ctx.COLOR_BUFFER_BIT);
+      const gy = dst.winH - dst.y - dst.h;   // top-down rect -> bottom-up GL
+      ctx.blitFramebuffer(0, 0, _redirectW, _redirectH,
+        dst.x, gy, dst.x + dst.w, gy + dst.h,
+        ctx.COLOR_BUFFER_BIT, ctx.LINEAR);
+    } else {
+      ctx.blitFramebuffer(0, 0, _redirectW, _redirectH, 0, 0, cw, ch,
+        ctx.COLOR_BUFFER_BIT, ctx.LINEAR);
+    }
     // Restore redirect for next frame
     ctx.bindFramebuffer(ctx.FRAMEBUFFER, _redirectFBO);
   }
@@ -1411,6 +1448,33 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
   // Expose FBO redirect controls to the host
   funcs._setupRedirectFBO = _ensureRedirectFBO;
   funcs._blitToCanvas = _blitRedirectToCanvas;
+  /**
+   * Bind the redirect FBO as the READ source, run `fn`, then restore.
+   *
+   * A host that wants the cart's pixels (screenshot, frame hash, differ) must
+   * read the redirect FBO, NOT the default framebuffer. When the context is
+   * attached to a window the default framebuffer IS the window surface, whose
+   * contents are undefined after a swap -- reading it yields black or garbage.
+   * The redirect FBO always holds the frame the cart actually drew.
+   *
+   * Scoped rather than a raw handle getter so the binding cannot leak into the
+   * cart's next frame.
+   * @returns {boolean} false if there is no redirect FBO (nothing to read).
+   */
+  funcs._withRedirectRead = (fn) => {
+    if (!_redirectFBO) return false;
+    ctx.bindFramebuffer(ctx.READ_FRAMEBUFFER, _redirectFBO);
+    try { fn(_redirectW, _redirectH); }
+    finally {
+      // Restore the redirect as the FULL binding, NOT null. Unbinding
+      // READ_FRAMEBUFFER points reads at the default framebuffer -- which for
+      // an attached context is the window surface -- so the cart's next frame
+      // (and the next readback) would target the wrong buffer. The redirect
+      // is the resting state everywhere else in this file for the same reason.
+      ctx.bindFramebuffer(ctx.FRAMEBUFFER, _redirectFBO);
+    }
+    return true;
+  };
 
   return funcs;
 }
