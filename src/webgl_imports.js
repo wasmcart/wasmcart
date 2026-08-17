@@ -96,6 +96,14 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
   const _uniformLocs = new Map(); // programId → { byName: Map<string, {loc, id}>, byId: Map<int, loc> }
   let _currentProgramId = 0;
   let _nextUniformId = 0;
+  // uniform id -> GLenum declared type (GL_FLOAT, GL_FLOAT_VEC3, ...), so a
+  // scalar setter can be routed to the matching vector call. See
+  // glGetUniformLocation and glUniform1f.
+  const _uniformTypes = new Map();
+  // uniform id -> declared array length (1 for a plain uniform). An ARRAY
+  // uniform must be set with the *v entry points in WebGL2 even when the
+  // cart only wants element 0.
+  const _uniformSizes = new Map();
 
   // ─── FBO redirect (same as wasmcart-native gl_imports.cpp) ──────────
   // Cart's glBindFramebuffer(0) → redirect FBO with depth+stencil.
@@ -935,6 +943,31 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
       const id = _nextUniformId++;
       entry.byName.set(name, { loc, id });
       entry.byId.set(id, loc);
+
+      // Remember the uniform's DECLARED TYPE, so a cart that sets a vec with
+      // the scalar entry point can still be honoured. Desktop GL takes
+      // glUniform1f on a float member of an array-of-vec3 and so on; WebGL2
+      // enforces an exact match and rejects the call with
+      // GL_INVALID_OPERATION ("Uniform size does not match uniform method"),
+      // leaving the uniform at its previous value. That is a silent
+      // rendering fault, not a crash -- a 3D cart came out lit wrong with
+      // hundreds of these per frame and no other symptom.
+      //
+      // Looked up ONCE per location here rather than per call: getActiveUniform
+      // is a driver round trip and uniform setters run thousands of times a
+      // frame.
+      const base = name.replace(/\[\d+\]$/, '');
+      const p = _programs[prog];
+      const count = ctx.getProgramParameter(p, ctx.ACTIVE_UNIFORMS);
+      for (let i = 0; i < count; i++) {
+        const info = ctx.getActiveUniform(p, i);
+        if (!info) continue;
+        if (info.name === name || info.name.replace(/\[\d+\]$/, '') === base) {
+          _uniformTypes.set(id, info.type);
+          _uniformSizes.set(id, info.size);
+          break;
+        }
+      }
       return id;
     },
 
@@ -943,7 +976,44 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
     glUniform2i: (loc, v0, v1) => { const l = _getUniformLoc(loc); if (l) ctx.uniform2i(l, v0, v1); },
     glUniform3i: (loc, v0, v1, v2) => { const l = _getUniformLoc(loc); if (l) ctx.uniform3i(l, v0, v1, v2); },
     glUniform4i: (loc, v0, v1, v2, v3) => { const l = _getUniformLoc(loc); if (l) ctx.uniform4i(l, v0, v1, v2, v3); },
-    glUniform1f: (loc, v0) => { const l = _getUniformLoc(loc); if (l) ctx.uniform1f(l, v0); },
+    // WebGL2 requires the setter to match the uniform's declared type
+    // exactly, where desktop GL is forgiving. A cart setting a vec with the
+    // scalar call is rejected outright and the uniform keeps its old value,
+    // which shows up as wrong lighting rather than an error the cart can
+    // see. Route by the type recorded at glGetUniformLocation time.
+    glUniform1f: (loc, v0) => {
+      const l = _getUniformLoc(loc);
+      if (!l) return;
+      const type = _uniformTypes.get(loc);
+      // AN ARRAY UNIFORM NEEDS THE *v CALL, even to set one element.
+      // Desktop GL accepts glUniform1f on `uniform float a[16]` and writes
+      // element 0; WebGL2 rejects it ("Uniform size does not match uniform
+      // method") and writes NOTHING. Measured on a 3D cart: 604 rejected
+      // calls into a float[16] light-attenuation array per run, so the
+      // lighting silently kept stale values.
+      if ((_uniformSizes.get(loc) ?? 1) > 1) {
+        if (type === 0x1406) { ctx.uniform1fv(l, [v0]); return; }        // FLOAT
+        if (type === 0x1404 || type === 0x8B56) {                        // INT / BOOL
+          ctx.uniform1iv(l, [v0 | 0]); return;
+        }
+      }
+      switch (type) {
+        // An INT-family uniform set through the float entry point. Desktop GL
+        // converts; WebGL2 rejects and writes nothing. Measured on a 3D cart:
+        // `uniform int point_simple_count` -- the LIGHT COUNT -- was set this
+        // way every frame, so it kept whatever it held and the lighting was
+        // wrong with no error the cart could see.
+        case 0x1404:                                             // INT
+        case 0x8B56: ctx.uniform1i(l, v0 | 0); break;            // BOOL
+        case 0x8B53: ctx.uniform2i(l, v0 | 0, v0 | 0); break;    // INT_VEC2
+        case 0x8B54: ctx.uniform3i(l, v0 | 0, v0 | 0, v0 | 0); break;        // INT_VEC3
+        case 0x8B55: ctx.uniform4i(l, v0 | 0, v0 | 0, v0 | 0, v0 | 0); break; // INT_VEC4
+        case 0x8B50: ctx.uniform2f(l, v0, v0); break;            // FLOAT_VEC2
+        case 0x8B51: ctx.uniform3f(l, v0, v0, v0); break;        // FLOAT_VEC3
+        case 0x8B52: ctx.uniform4f(l, v0, v0, v0, v0); break;    // FLOAT_VEC4
+        default: ctx.uniform1f(l, v0); break;
+      }
+    },
     glUniform2f: (loc, v0, v1) => { const l = _getUniformLoc(loc); if (l) ctx.uniform2f(l, v0, v1); },
     glUniform3f: (loc, v0, v1, v2) => { const l = _getUniformLoc(loc); if (l) ctx.uniform3f(l, v0, v1, v2); },
     glUniform4f: (loc, v0, v1, v2, v3) => { const l = _getUniformLoc(loc); if (l) ctx.uniform4f(l, v0, v1, v2, v3); },
