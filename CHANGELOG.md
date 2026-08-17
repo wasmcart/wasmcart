@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.22.1
+
+Two GL import-layer fixes, both of the silent-wrong-picture kind: nothing
+throws, no cart can see them, and the only symptom is that the frame is wrong.
+
+**`glUniform1f` is routed to the setter WebGL2 will actually accept.** Desktop
+GL converts; WebGL2 enforces an exact type match and REJECTS the call with
+`GL_INVALID_OPERATION`, leaving the uniform at its previous value. A 3D cart
+set `uniform int point_simple_count` — its light count — through the float
+entry point every frame, so the count kept whatever it held and the scene was
+lit wrong. `glGetUniformLocation` now records each location's declared type and
+array size once (`getActiveUniform` is a driver round trip; setters run
+thousands of times a frame) and `glUniform1f` dispatches on it: int/bool →
+`uniform1i`, int vectors → `uniform{2,3,4}i` truncated, float vectors →
+`uniform{2,3,4}f` broadcast, a declared array → the `*v` form even for one
+element, and a plain float straight through.
+
+**The feedback loop the FBO redirect creates is broken before the draw.** The
+redirect makes "the screen" an ordinary 2D texture, which the cart cannot know.
+Against a real default framebuffer, returning to the screen can never loop —
+the screen is not sampleable. Here it can: a sampler still holding the target
+means the draw both reads and writes the same image, and WebGL2 rejects it and
+renders nothing. A match-three cart came out with a board and no jewels,
+because it bakes each sprite into its own canvas and its bind cache left a
+canvas texture on unit 0. Repaired at DRAW time, not at bind time — the cart
+binds its texture *after* returning to the screen, so a bind-time fix is undone
+immediately. Sampler units, the active unit and each FBO's `COLOR_ATTACHMENT0`
+are tracked rather than queried, and the active unit is restored exactly as the
+cart left it (engines cache it and skip binds they consider redundant).
+
+Both are tested at two layers, because the premises fail differently from the
+behaviour. The uniform premise is checked against real GL; the feedback-loop
+premise needs a **real browser** (Playwright) — native-gles/radeonsi accepts
+the looping draw and renders it, so a node-only suite would "prove" that fix
+unnecessary. Controls were run for both: reverting the router fails 7 of 10
+cases, removing the two guard calls fails 3 of 6.
+
+One caveat recorded for the next reader: the array branch of the uniform fix
+does not reproduce as a failure on native-gles. `glUniform1f` on `float[16]` is
+accepted there and the readback confirms it writes, even at `size=16`. It is
+kept because the browser's WebGL2 is the strict validator this exists for.
+
 ## 0.22.0
 
 **The scroll wheel reaches carts.** Every device wasmcart runs on has a
