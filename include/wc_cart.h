@@ -114,6 +114,7 @@
     static wc_info_t    wc_info;                                  \
     static wc_host_info_t wc_host_info;                           \
     static wc_pointer_t wc_pointers[10];                          \
+    static wc_wheel_t   wc_wheel;                                 \
     static uint8_t      wc_keys[32]
 
 /* ── Fill info struct ─────────────────────────────────────────────── */
@@ -143,6 +144,8 @@
     wc_info.audio_sample_rate = 0;  /* 0 = let host decide */     \
     wc_info.pointer_ptr   = (uint32_t)(uintptr_t)wc_pointers;    \
     wc_info.keys_ptr      = (uint32_t)(uintptr_t)wc_keys;        \
+    wc_info.gpu_api       = 0;                                     \
+    wc_info.wheel_ptr     = (uint32_t)(uintptr_t)&wc_wheel;      \
 } while (0)
 
 /* Auto-set WC_FLAG_AUDIO_F32 unless cart opts into legacy I16 */

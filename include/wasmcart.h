@@ -70,6 +70,30 @@ typedef struct {
     uint8_t  _pad[2];
 } wc_pointer_t;
 
+// Scroll wheel (8 bytes — ABI v3.1)
+//
+// SEPARATE FROM THE POINTER ARRAY, because a wheel is not a position: it
+// has no coordinates, no press, and no identity to track across frames.
+// It is a DELTA, and deltas belong beside wc_time.delta_ms rather than in
+// a table of ten things that each have an x and a y.
+//
+// Units are 1/120 of a notch — the WHEEL_DELTA convention. One click of a
+// notched mouse wheel is 120; a trackpad or a free-spin wheel reports
+// whatever fraction it actually moved, so smooth scrolling survives the
+// trip instead of being rounded to a click. Divide by 120.0 to get
+// "notches", which is what LOVE-shaped runtimes hand to wheelmoved().
+//
+// PER-FRAME, HOST-WRITTEN, HOST-CLEARED: the host accumulates every wheel
+// event it receives, writes the total before calling wc_render, and zeroes
+// it afterwards. The cart only ever reads. A cart that never reads it is
+// byte-for-byte unaffected, and a device with no wheel simply leaves zero
+// here forever -- which is the same shape as the nine touch slots a
+// desktop never fills.
+typedef struct {
+    int32_t dx;        // horizontal scroll, 1/120 notch (right positive)
+    int32_t dy;        // vertical scroll, 1/120 notch (UP positive)
+} wc_wheel_t;
+
 // Keyboard keycodes (USB HID scancodes, ABI v3)
 #define WC_KEY_A  0x04
 #define WC_KEY_B  0x05
@@ -213,6 +237,7 @@ typedef struct {
     uint32_t pointer_ptr;      // → wc_pointer_t[10], 0 = not used (ABI v3)
     uint32_t keys_ptr;         // → uint8_t[32] key state bitmask, 0 = not used (ABI v3)
     uint32_t gpu_api;          // 0=2D framebuffer, 1=WebGL2/GLES3, 2=WebGPU, 3=Vulkan
+    uint32_t wheel_ptr;        // → wc_wheel_t, 0 = not used (ABI v3.1)
 } wc_info_t;
 
 // Optional host import: debug logging

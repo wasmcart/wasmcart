@@ -283,6 +283,7 @@ export class CartHost {
     this._u8 = null;
     this._u16 = null;
     this._i16 = null;
+    this._i32 = null;
     this._u32 = null;
     this._f64 = null;
     this._lastByteLength = 0;
@@ -316,7 +317,9 @@ export class CartHost {
     this._pointerState = new Array(MAX_POINTERS).fill(null).map(() => ({
       x: 0, y: 0, buttons: 0, active: 0,
     }));
-    this._pointerEvents = [];  // { type, id, x, y, button }
+    this._pointerEvents = [];
+    // Wheel deltas accumulated since the last frame (1/120 notch units).
+    this._wheelAccum = { dx: 0, dy: 0 };  // { type, id, x, y, button }
 
     // Keyboard input (ABI v3)
     this._keyState = new Uint8Array(KEYS_STATE_SIZE); // 256-bit bitmask
@@ -960,8 +963,13 @@ export class CartHost {
     // Write input pads
     this._writePads(pads || []);
 
-    // Write pointer/keyboard state and deliver events before render
+    // Write pointer/keyboard state and deliver events before render.
+    //
+    // The wheel is written here and CLEARED right after wc_render returns
+    // (see below): it is a per-frame delta, so a flick that survived into
+    // the next frame would keep scrolling on its own.
     this._writePointerState();
+    this._writeWheelState();
     this._writeKeyState();
     this._deliverNetEvents();
     this._deliverPointerEvents();
@@ -991,6 +999,8 @@ export class CartHost {
       this._applyResize(newW, newH);
     }
 
+    // The wheel delta belonged to the frame just rendered.
+    this._clearWheelState();
     this.frameCount++;
 
     // Read framebuffer
@@ -1743,6 +1753,7 @@ export class CartHost {
     this._u8 = new Uint8Array(buf);
     this._u16 = new Uint16Array(buf);
     this._i16 = new Int16Array(buf);
+    this._i32 = new Int32Array(buf);
     this._u32 = new Uint32Array(buf);
     this._f32 = new Float32Array(buf);
     this._f64 = new Float64Array(buf);
@@ -2125,6 +2136,38 @@ export class CartHost {
     this._pointerEvents.push({ type: 'up', id, button });
   }
 
+  // ── scroll wheel ──────────────────────────────────────────────────────
+  //
+  // ACCUMULATE NOW, DELIVER ONCE PER FRAME. Wheel events arrive in bursts
+  // (a trackpad flick is dozens of them) and a cart that read them live
+  // would see a different count depending on how long its frame took.
+  // Adding them up and handing over one delta per frame makes the input
+  // frame-rate independent, which is the same reason wc_time carries
+  // delta_ms rather than a tick count.
+  //
+  // `dy` is POSITIVE UP, matching every platform's "scroll away from you"
+  // and LOVE's wheelmoved. Hosts that receive the opposite convention
+  // (browsers: deltaY grows downward) flip it before calling this.
+  wheel(dx, dy) {
+    this._wheelAccum.dx += dx || 0;
+    this._wheelAccum.dy += dy || 0;
+  }
+
+  _writeWheelState() {
+    if (!this.info || !this.info.wheelPtr || !this.info.wantsPointer) return;
+    this._updateViews();
+    const base = this.info.wheelPtr;
+    this._i32[base >> 2] = this._wheelAccum.dx | 0;
+    this._i32[(base + 4) >> 2] = this._wheelAccum.dy | 0;
+  }
+
+  // Called after the frame: the delta belonged to THAT frame only. Without
+  // this the cart keeps zooming forever off one flick.
+  _clearWheelState() {
+    this._wheelAccum.dx = 0;
+    this._wheelAccum.dy = 0;
+  }
+
   _writePointerState() {
     if (!this.info || !this.info.pointerPtr || !this.info.wantsPointer) return;
     // The cart's WC_FLAG_POINTER is the ground truth — a manifest field
@@ -2282,6 +2325,7 @@ export class CartHost {
     // Read v3 fields (offset 56, 60)
     info.pointerPtr = 0;
     info.keysPtr = 0;
+    info.wheelPtr = 0;
     if (info.version >= 3) {
       const pp = u32[base + 14];
       if (pp > 0 && pp < 0x10000000 && (pp & 1) === 0) {
@@ -2290,6 +2334,14 @@ export class CartHost {
       const kp = u32[base + 15];
       if (kp > 0 && kp < 0x10000000) {
         info.keysPtr = kp;
+      }
+      // v3.1: the wheel. Absent in every cart built before it existed,
+      // which is exactly why it is read defensively and defaults to 0 --
+      // an older cart has whatever was in memory at index 17, so the
+      // range check is what keeps this from writing into its heap.
+      const wp = u32[base + 17];
+      if (wp > 0 && wp < 0x10000000 && (wp & 3) === 0) {
+        info.wheelPtr = wp;
       }
     }
     info.wantsPointer = !!(info.flags & FLAG_POINTER);

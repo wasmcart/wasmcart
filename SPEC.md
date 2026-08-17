@@ -265,6 +265,9 @@ typedef struct {
     uint32_t gpu_api;           // byte offset 64: 0 = 2D framebuffer,
                                 // 1 = WebGL2/GLES3, 2 = WebGPU (reserved),
                                 // 3 = Vulkan (reserved)
+    // v3.1 addition
+    uint32_t wheel_ptr;         // byte offset 68: → wc_wheel_t (8 bytes),
+                                // 0 = not used
 } wc_info_t;
 ```
 
@@ -740,6 +743,41 @@ typedef struct {
 
 // 10 pointer slots, 80 bytes total
 // Cart sets wc_info_t.pointer_ptr to a wc_pointer_t[10] buffer
+```
+
+### Scroll wheel (v3.1)
+
+```c
+typedef struct {
+    int32_t dx;   // horizontal scroll, 1/120 notch, right positive
+    int32_t dy;   // vertical scroll, 1/120 notch, UP positive
+} wc_wheel_t;     // 8 bytes
+
+// Cart sets wc_info_t.wheel_ptr to a wc_wheel_t
+```
+
+A wheel is a DELTA, not a position, so it is not a pointer slot: no
+coordinates, no press, no identity across frames. Same `WC_FLAG_POINTER`
+gate as the array above.
+
+- **Units are 1/120 of a notch** (the `WHEEL_DELTA` convention). One click
+  of a detented wheel = 120; trackpads and precision devices report
+  fractions, so smooth scrolling is not rounded away. Divide by 120.0 for
+  notches.
+- **`dy` is positive UP**, matching "scroll away from you". Hosts receiving
+  the opposite convention (browsers, whose `deltaY` grows downward) flip it
+  before writing.
+- **Host accumulates, writes before `wc_render`, zeroes after.** The cart
+  only reads, and reads a per-frame delta — which is what makes it
+  frame-rate independent, since one trackpad flick is dozens of events.
+- **Zero is normal.** A device with no wheel never writes here, exactly as a
+  desktop never fills touch slots 1-9. The field always exists; hardware
+  that cannot produce it simply leaves it alone. Carts must not gate
+  behaviour on wheel presence — read it and let it be 0.
+- Hosts source it from the platform's own wheel event (`wheel` in a
+  browser, `SDL_MOUSEWHEEL` natively, Android `ACTION_SCROLL` from an
+  attached mouse) and must NOT synthesize it from touch. Pinch is derived
+  by the cart from two pointer slots; see docs/input.md.
 ```
 
 ### Cart exports (host calls into cart - all optional)

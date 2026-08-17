@@ -173,6 +173,7 @@ export const INFO_FIELDS_V3 = {
   POINTER_PTR: 56,  // u32 index 14
   KEYS_PTR:    60,  // u32 index 15
   GPU_API:     64,  // u32 index 16 - 0=2D, 1=WebGL2/GLES3, 2=WebGPU, 3=Vulkan
+  WHEEL_PTR:   68,  // u32 index 17 - wc_wheel_t, 0 = not used (v3.1)
 };
 
 // GPU API values for wc_info_t.gpu_api
@@ -186,6 +187,17 @@ export const GPU_API_VULKAN  = 3;  // reserved
 export const POINTER_SIZE = 8;
 export const MAX_POINTERS = 10;
 export const POINTER_REGION_SIZE = POINTER_SIZE * MAX_POINTERS; // 80 bytes
+
+// Wheel struct layout (8 bytes): i32 dx, i32 dy, in 1/120 notch units.
+//
+// The host ACCUMULATES events, writes the frame's total before wc_render,
+// and zeroes it after -- so the cart reads a per-frame delta and never has
+// to clear anything. A device with no wheel leaves it zero forever, the
+// same way a desktop leaves the nine touch slots inactive.
+export const WHEEL_SIZE = 8;
+// One notch of a detented wheel. Trackpads and free-spin wheels report
+// fractions of this, which is the whole reason the unit is not "clicks".
+export const WHEEL_DELTA = 120;
 
 // Keyboard state bitmask size
 export const KEYS_STATE_SIZE = 32; // 256 bits = 32 bytes

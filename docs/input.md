@@ -132,6 +132,94 @@ Host applications drive the array through the reference hosts'
 `setPointer(id, x, y, buttons, active)` /
 `pointerDown` / `pointerMove` / `pointerUp` methods.
 
+## Scroll Wheel (Opt-In with pointer, ABI v3.1)
+
+A wheel is not a position, so it does not live in the pointer array: it has
+no coordinates, no press, and no identity to track between frames. It is a
+**delta**, and it sits in its own two-field struct beside `wc_time.delta_ms`.
+
+```c
+typedef struct {
+    int32_t dx;   // horizontal scroll, 1/120 notch, right positive
+    int32_t dy;   // vertical scroll, 1/120 notch, UP positive
+} wc_wheel_t;     // 8 bytes; wc_info_t.wheel_ptr → wc_wheel_t
+```
+
+Gated by the same `WC_FLAG_POINTER` as the pointer array (a wheel without a
+pointer is not a thing any host has), and `WC_CART_BUFFERS` /
+`WC_FILL_INFO` already declare and wire it, so an existing cart gets it by
+rebuilding.
+
+**Units are 1/120 of a notch** — the `WHEEL_DELTA` convention. One click of
+a detented mouse wheel is 120. A trackpad, a free-spin wheel, or a
+precision-scroll device reports whatever fraction it actually moved, so
+smooth scrolling survives the trip instead of being rounded to a click.
+Divide by 120.0 for "notches".
+
+**Per-frame, host-written, host-cleared.** The host accumulates every wheel
+event it receives, writes the total before `wc_render`, and zeroes it
+straight after. So:
+
+- The cart only ever READS. There is nothing to clear and no way to miss an
+  event by reading late.
+- The value is a delta for THAT frame, which makes it frame-rate
+  independent — a trackpad flick is dozens of events, and a cart reading
+  them live would behave differently depending on how long its frame took.
+- **Zero is the normal state on most hardware.** A phone with no mouse
+  attached leaves this zero forever, exactly as a desktop leaves the nine
+  touch slots inactive. Both are the same pattern: the field always exists,
+  and hardware that cannot produce it simply never fills it. Do not gate
+  features on "does this device have a wheel" — read it, and let it be 0.
+
+```c
+wc_wheel_t *w = &wc_wheel;              // declared by WC_CART_BUFFERS
+if (w->dy != 0) zoom *= 1.0f + (w->dy / 120.0f) * 0.1f;
+```
+
+### Covering every device: the three-binding rule
+
+This is the pattern camera-style carts keep re-deriving, so it is written
+down once here. Every device a wasmcart runs on has **at least one** of:
+a gamepad, a touchscreen, or a mouse. So a game that needs a continuous
+axis (zoom, throttle, scrub) needs exactly three bindings, and then it is
+universally playable:
+
+| input | pan / move | continuous axis |
+|---|---|---|
+| gamepad | a stick | shoulders/triggers, or the other stick |
+| touch | one-finger drag | **pinch** — compute it yourself from two slots |
+| mouse | drag | **wheel** |
+
+Note what is NOT on that list: mouse buttons as a zoom modifier
+(right-drag, middle-drag). They work, but a phone has no right click, so
+they cover nothing pinch and the wheel do not already cover better.
+
+### Pinch is the CART's job, not the host's
+
+There is no pinch event and there will not be one. SDL2 had
+`SDL_MULTIGESTURE` and SDL3 removed it to a side library; the ecosystem's
+settled answer is that apps derive gestures from raw contacts. You have ten
+slots — that is everything pinch needs:
+
+1. Two slots `active` → pinch begins. Record the distance between them and
+   the midpoint.
+2. Each frame, `zoom *= dist / dist0`.
+3. **Anchor at the midpoint**: after scaling, shift the camera so the world
+   point under the midpoint is still under it. Everyone forgets this, and
+   zooming about the screen centre while pinching a corner is visibly wrong
+   on the first try.
+4. Either slot goes inactive → pinch ends.
+
+### Gesture priority, when a drag can mean two things
+
+If one-finger drag does something irreversible (fling a unit, fire, commit
+an order) and two fingers mean camera, then the second finger landing must
+**cancel** the one-finger action, not complete it. A palm brush or a
+slightly-early second thumb otherwise commits a move the player never
+meant, and touch has no way to take it back. The general rule that falls
+out of this: a tap SELECTS, a drag ACTS, and gaining a contact abandons
+whatever the single contact was doing.
+
 Related: the advisory manifest `controls` field (SPEC, Manifest section)
 tells hosts that draw ON-SCREEN touch pads which subset of `wc_pad_t` the
 game reads. It is presentation-only and unrelated to `WC_FLAG_POINTER`,
