@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.22.0
+
+**The scroll wheel reaches carts.** Every device wasmcart runs on has a
+gamepad, a touchscreen, or a mouse -- so a game needing one continuous axis
+(zoom, throttle, scrub) needs three bindings to be universally playable:
+a stick, a pinch, and a wheel. The first two were already possible. The
+third had nowhere to go: `wc_pointer_t` carries {x, y, buttons, active} and
+nothing else, so hosts dropped every wheel event on the floor.
+
+This is an ADDITIVE ABI change (v3.1). Existing carts are unaffected --
+`wheel_ptr` is a new `wc_info_t` field older carts leave as whatever was at
+index 17, which hosts range-check and ignore. Rebuilding an existing cart
+against the new headers gets it for free, since `WC_CART_BUFFERS` and
+`WC_FILL_INFO` declare and wire the buffer.
+
+- `wc_wheel_t {int32 dx, dy}`, reached through `wc_info_t.wheel_ptr`, gated
+  by the existing `WC_FLAG_POINTER`. A wheel is a DELTA, not a position, so
+  it is its own struct rather than an eleventh pointer slot -- it has no
+  coordinates, no press and no identity to track across frames.
+- **Units: 1/120 of a notch**, the `WHEEL_DELTA` convention. One click of a
+  detented wheel is 120; trackpads and free-spin wheels report the fraction
+  they actually moved, so precision scrolling is not rounded to a click.
+  `dy` is positive UP.
+- **Host accumulates, writes before `wc_render`, zeroes after.** The cart
+  only reads, and what it reads is that frame's delta -- frame-rate
+  independent, which matters because one trackpad flick is dozens of
+  events. Nothing for the cart to clear, and no way to miss an event by
+  reading late.
+- **Zero is the normal state on most hardware,** and that is the point: a
+  phone with no mouse never writes here, exactly as a desktop never fills
+  touch slots 1-9. The field always exists and hardware that cannot produce
+  it leaves it alone, so carts read it unconditionally instead of asking
+  whether a wheel exists.
+- Reference hosts (`CartHost`, `CartHostWeb`) gain `wheel(dx, dy)` for
+  embedders to feed from `wheel` / `SDL_MOUSEWHEEL` / Android
+  `ACTION_SCROLL`. Hosts must NOT synthesize it from touch: pinch is
+  derived by the CART from two pointer slots, which is also the settled
+  answer in SDL (SDL3 removed `SDL_MULTIGESTURE` for the same reason).
+- `docs/input.md` gains the pattern other carts kept re-deriving: the
+  three-binding coverage rule above, how to compute an anchored pinch from
+  two slots (including the shift-the-camera step everyone forgets, which is
+  why zooming a pinched corner looks wrong on the first try), and the
+  gesture-priority rule that a second contact CANCELS an irreversible
+  one-finger drag rather than completing it.
+
 ## 0.19.0
 
 A cart's engine can now be built and run NATIVELY, off wasm, without
