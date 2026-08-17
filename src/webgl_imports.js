@@ -114,6 +114,72 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
   let _redirectW = 0;
   let _redirectH = 0;
 
+  // Which GL_TEXTURE_2D is bound on each texture unit, and which unit is
+  // active. Tracked rather than queried because getParameter() forces a
+  // driver round trip, and this is consulted on every bind of framebuffer 0.
+  // Only needed to spot the redirect texture sitting on a sampler while it
+  // is also the render target -- see glBindFramebuffer.
+  const _samplerUnits = [];
+  let _activeUnit = 0;
+  let _boundFBOisRedirect = false;
+  // COLOR_ATTACHMENT0 of whatever framebuffer draws currently go to, or null
+  // for the real default framebuffer (which is not sampleable and so can
+  // never form a loop). Per-FBO attachments are remembered so switching back
+  // to an earlier framebuffer restores the right answer without a query.
+  let _drawColorAttachment = null;
+  const _fboColor0 = new Map();   // WebGLFramebuffer -> WebGLTexture|null
+
+  /**
+   * Break a feedback loop before a draw that would otherwise be discarded.
+   *
+   * THE REDIRECT MAKES "THE SCREEN" A TEXTURE, and the cart cannot know it.
+   * Against a real default framebuffer, going back to the screen after an
+   * offscreen pass can never form a feedback loop -- the screen is not
+   * sampleable. Here it is: the redirect's colour attachment is an ordinary
+   * 2D texture, so a sampler still holding it means the draw both reads and
+   * writes the same image. WebGL2 rejects that draw outright
+   * (GL_INVALID_OPERATION: "Feedback loop formed between Framebuffer and
+   * active Texture") and renders NOTHING.
+   *
+   * That is how a match-three cart came out with a board and no jewels: it
+   * bakes each sprite into its own canvas, and afterwards the engine's bind
+   * cache left a canvas texture on unit 0 -- which the driver had handed the
+   * same object as the redirect attachment.
+   *
+   * CHECKED AT DRAW TIME, not when framebuffer 0 is bound. The cart binds
+   * its texture AFTER returning to the screen (measured order: bindFBO
+   * redirect, then bindTexture unit 0), so clearing samplers at bind time
+   * fixes nothing -- the cart immediately rebinds and the loop is back.
+   * Draw time is the only point where both halves are known.
+   *
+   * Leaves the ACTIVE unit as it found it: engines cache the active unit and
+   * skip calls they consider redundant, so a stray change here would
+   * misroute the cart's next bind.
+   */
+  function _breakFeedbackLoop() {
+    // The hazard is ANY texture that is both the current draw target and
+    // bound to a sampler -- most often one of the cart's own canvases, not
+    // the redirect. Measured on a match-three cart: at the failing draw the
+    // target was a cart canvas (not the redirect) and that same texture sat
+    // on unit 0.
+    //
+    // `_drawColorAttachment` is tracked on bind/attach rather than queried,
+    // because this runs on every draw and getFramebufferAttachmentParameter
+    // is a driver round trip.
+    const target = _drawColorAttachment;
+    if (!target) return;
+    const saved = _activeUnit;
+    let touched = false;
+    for (let unit = 0; unit < _samplerUnits.length; unit++) {
+      if (_samplerUnits[unit] !== target) continue;
+      ctx.activeTexture(0x84C0 + unit);
+      ctx.bindTexture(0x0DE1, null);
+      _samplerUnits[unit] = null;
+      touched = true;
+    }
+    if (touched) ctx.activeTexture(0x84C0 + saved);
+  }
+
   function _ensureRedirectFBO(w, h) {
     if (_redirectFBO && _redirectW === w && _redirectH === h) return;
     // NEVER delete + re-create these on resize. The cart allocates GL names
@@ -145,6 +211,7 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
 
     ctx.bindFramebuffer(ctx.FRAMEBUFFER, _redirectFBO);
     ctx.framebufferTexture2D(ctx.FRAMEBUFFER, ctx.COLOR_ATTACHMENT0, 0x0DE1, _redirectTex, 0);
+    _fboColor0.set(_redirectFBO, _redirectTex);
     ctx.framebufferRenderbuffer(ctx.FRAMEBUFFER, ctx.DEPTH_STENCIL_ATTACHMENT, ctx.RENDERBUFFER, _redirectRBO);
 
     _redirectW = w;
@@ -158,6 +225,7 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
     // to be the resting state from setup onward, not merely after the first
     // explicit bind.
     ctx.bindFramebuffer(ctx.FRAMEBUFFER, _redirectFBO);
+    _boundFBOisRedirect = true;
   }
 
   /**
@@ -210,6 +278,7 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
     }
     // Restore redirect for next frame, and every piece of state above with it.
     ctx.bindFramebuffer(ctx.FRAMEBUFFER, _redirectFBO);
+    _boundFBOisRedirect = true;
     if (prevViewport) ctx.viewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
     else ctx.viewport(0, 0, _redirectW, _redirectH);
     if (prevClear) ctx.clearColor(prevClear[0], prevClear[1], prevClear[2], prevClear[3]);
@@ -684,8 +753,15 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
     // ─── Textures ───────────────────────────────────────────────────────
     glGenTextures: (n, ptr) => _genObjects(_textures, () => ctx.createTexture(), n, ptr),
     glDeleteTextures: (n, ptr) => _deleteObjects(_textures, (t) => ctx.deleteTexture(t), n, ptr),
-    glBindTexture: (target, id) => ctx.bindTexture(target, id ? _textures[id] : null),
-    glActiveTexture: (unit) => ctx.activeTexture(unit),
+    glBindTexture: (target, id) => {
+      const tex = id ? _textures[id] : null;
+      if (target === 0x0DE1) _samplerUnits[_activeUnit] = tex;  // GL_TEXTURE_2D
+      ctx.bindTexture(target, tex);
+    },
+    glActiveTexture: (unit) => {
+      _activeUnit = unit - 0x84C0;                              // GL_TEXTURE0
+      ctx.activeTexture(unit);
+    },
     glTexImage2D: (target, level, internalformat, width, height, border, format, type, pixelsPtr) => {
       internalformat = _fixInternalFormat(internalformat, format, type);
       format = _fixFormat(format);
@@ -1048,6 +1124,7 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
 
     // ─── Drawing ────────────────────────────────────────────────────────
     glDrawArrays: (mode, first, count) => {
+      _breakFeedbackLoop();
       if (_clientAttribs.size > 0) {
         _uploadClientAttribs(first, count);
         ctx.drawArrays(mode, 0, count);
@@ -1056,6 +1133,7 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
       }
     },
     glDrawElements: (mode, count, type, offsetPtr) => {
+      _breakFeedbackLoop();
       const hasClientIndices = _boundElementBuffer === 0 && offsetPtr !== 0;
       const hasClientAttribs = _clientAttribs.size > 0;
 
@@ -1097,8 +1175,18 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
     glBindFramebuffer: (target, id) => {
       if (id === 0 && _redirectFBO) {
         ctx.bindFramebuffer(target, _redirectFBO);
+        if (target !== 0x8CA8) {                    // not READ_FRAMEBUFFER
+          _boundFBOisRedirect = true;
+          _drawColorAttachment = _redirectTex;
+        }
       } else {
-        ctx.bindFramebuffer(target, id ? _framebuffers[id] : null);
+        const fbo = id ? _framebuffers[id] : null;
+        ctx.bindFramebuffer(target, fbo);
+        if (target !== 0x8CA8) {
+          _boundFBOisRedirect = false;
+          // The real default framebuffer is not a texture, so nothing to guard.
+          _drawColorAttachment = fbo ? (_fboColor0.get(fbo) ?? null) : null;
+        }
       }
       _checkGL('glBindFramebuffer', [target, id]);
     },
@@ -1110,7 +1198,13 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
       return status;
     },
     glFramebufferTexture2D: (target, attachment, textarget, tex, level) => {
-      ctx.framebufferTexture2D(target, attachment, textarget, tex ? _textures[tex] : null, level);
+      const texObj = tex ? _textures[tex] : null;
+      if (attachment === 0x8CE0) {                  // GL_COLOR_ATTACHMENT0
+        const fbo = ctx.getParameter(ctx.FRAMEBUFFER_BINDING);
+        if (fbo) _fboColor0.set(fbo, texObj);
+        if (target !== 0x8CA8) _drawColorAttachment = texObj;
+      }
+      ctx.framebufferTexture2D(target, attachment, textarget, texObj, level);
       _checkGL('glFramebufferTexture2D', arguments);
     },
     glFramebufferRenderbuffer: (target, attachment, rbtarget, rb) => {
