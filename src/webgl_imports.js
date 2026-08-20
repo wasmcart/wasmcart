@@ -1636,6 +1636,62 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
 
   // Expose FBO redirect controls to the host
   funcs._setupRedirectFBO = _ensureRedirectFBO;
+
+  // ─── Teardown ─────────────────────────────────────────────────────────
+  // Delete every GL object this cart created, plus the redirect FBO trio.
+  //
+  // WHY THIS EXISTS. The tables above track every object the cart allocates,
+  // and until now nothing ever walked them at end of life. On an OWNED
+  // context that is fine -- destroying the context frees everything. On a
+  // BORROWED context it is a leak with no ceiling: the shared offscreen
+  // context is process-lifetime, so every cart that ever loaded left its full
+  // GL footprint (1080p render targets, bloom chains, atlases) alive in it
+  // forever. Measured on a romdev server driving formix gate suites: VRAM
+  // climbed ~1 GB per burst of runs until the 8 GB card filled, after which
+  // allocations spilled into GTT -- which is SYSTEM RAM mapped for the GPU --
+  // and reached 26.69 GB of a 54 GB machine in ~90 minutes. Invisible in
+  // ps/top the whole time, because GTT is accounted to the GPU.
+  //
+  // Deleting the redirect trio here does NOT conflict with the Mali
+  // name-recycling warning in _ensureRedirectFBO: that warning is about
+  // re-creating mid-life, while the cart still holds live names a recycled
+  // id could collide with. At teardown the cart's names are being deleted in
+  // the same pass, so there is nothing left to collide.
+  //
+  // Never throws -- teardown runs on paths that are already unwinding, and a
+  // context that is already dead (owned-context destroy) makes every delete a
+  // harmless no-op or exception.
+  funcs._releaseAll = () => {
+    try {
+      // The shared context may not be current (another cart's private context
+      // may be); deletes on a non-current context are undefined per backend.
+      ctx.makeCurrent?.();
+    } catch { /* no makeCurrent on this backend — proceed */ }
+    const sweep = (table, del) => {
+      for (let i = 1; i < table.length; i++) {
+        if (table[i]) { try { del(table[i]); } catch { /* already gone */ } }
+      }
+      table.length = 1; // keep the [null] slot; ids restart cleanly
+    };
+    // Framebuffers/VAOs first: they REFERENCE textures/renderbuffers/buffers,
+    // and deleting containers before contents keeps every delete a clean
+    // "no longer attached anywhere" case.
+    sweep(_framebuffers, (o) => ctx.deleteFramebuffer(o));
+    sweep(_vaos, (o) => ctx.deleteVertexArray(o));
+    sweep(_queries, (o) => ctx.deleteQuery(o));
+    sweep(_syncs, (o) => ctx.deleteSync(o));
+    sweep(_samplers, (o) => ctx.deleteSampler(o));
+    sweep(_programs, (o) => ctx.deleteProgram(o));
+    sweep(_shaders, (o) => ctx.deleteShader(o));
+    sweep(_renderbuffers, (o) => ctx.deleteRenderbuffer(o));
+    sweep(_textures, (o) => ctx.deleteTexture(o));
+    sweep(_buffers, (o) => ctx.deleteBuffer(o));
+    _uniformLocs.clear?.();
+    if (_redirectFBO) { try { ctx.deleteFramebuffer(_redirectFBO); } catch {} _redirectFBO = null; }
+    if (_redirectTex) { try { ctx.deleteTexture(_redirectTex); } catch {} _redirectTex = null; }
+    if (_redirectRBO) { try { ctx.deleteRenderbuffer(_redirectRBO); } catch {} _redirectRBO = null; }
+    _redirectW = 0; _redirectH = 0;
+  };
   funcs._blitToCanvas = _blitRedirectToCanvas;
   /**
    * Bind the redirect FBO as the READ source, run `fn`, then restore.

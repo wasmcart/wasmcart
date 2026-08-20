@@ -796,6 +796,12 @@ export class CartHostWeb {
   }
 
   destroy() {
+    // Delete every GL object this cart created. On a borrowed (shared)
+    // context this is the only cleanup there is -- the context outlives the
+    // cart, and objects nobody deletes accumulate for the life of the page.
+    // Same leak as the Node host; see _releaseAll in webgl_imports.js.
+    try { this._glFuncs?._releaseAll?.(); } catch { /* teardown never throws */ }
+
     // Release a GL context this host created itself (a caller-supplied
     // glBackend belongs to the caller and is left alone).
     if (this._ownedGl) {

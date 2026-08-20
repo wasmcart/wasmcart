@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.23.0
+
+A destroyed cart now deletes every GL object it created.
+
+The object tables in `webgl_imports.js` track every buffer, texture,
+framebuffer, renderbuffer, program, shader, VAO, sampler, query and sync
+the cart allocates — and nothing ever walked them at end of life. On an
+OWNED context that is invisible: destroying the context frees everything.
+On a BORROWED context it is a leak with no ceiling, because the shared
+context outlives every cart, and every cart that ever loaded left its full
+GL footprint (1080p render targets, bloom chains, atlases) alive in it
+forever.
+
+Measured on a romdev server driving formix gate suites through one shared
+offscreen context: VRAM climbed ~1 GB per burst of parallel runs until the
+8 GB card filled, after which allocations spilled into GTT — GPU-mapped
+SYSTEM RAM — and reached 26.69 GB of a 54 GB machine in ~90 minutes.
+Invisible in `ps`/`top` the whole time, because GTT is accounted to the
+GPU rather than the process. With the fix, the same bursts hold dead flat.
+
+`createWebGLImports` now exposes `_releaseAll()`, and `destroy()` (both
+hosts, Node and web) calls it: framebuffers and VAOs first — containers
+before the contents they reference — then programs, shaders, textures,
+buffers, renderbuffers, samplers, queries, syncs, the per-program uniform
+location maps, and the redirect FBO trio, which lives outside the tables
+and leaks separately if teardown only sweeps them. Safe to call twice;
+never throws; makes the context current first where the backend allows,
+because deletes on a non-current context are undefined.
+
+Deleting the redirect trio at teardown does not conflict with the Mali
+name-recycling warning in `_ensureRedirectFBO`: that warning is about
+re-creating MID-LIFE, while the cart still holds live names a recycled id
+could collide with. At teardown the cart's names die in the same pass.
+
 ## 0.22.1
 
 Two GL import-layer fixes, both of the silent-wrong-picture kind: nothing

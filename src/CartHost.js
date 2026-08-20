@@ -1306,6 +1306,16 @@ export class CartHost {
    * Clean up resources (close file descriptor if open, terminate threads)
    */
   destroy() {
+    // Delete every GL object this cart created BEFORE any context teardown.
+    // On an owned context this is redundant (destroying the context frees
+    // everything) but harmless; on a BORROWED context it is the only cleanup
+    // there is -- the shared context outlives every cart, so objects nobody
+    // deletes accumulate for the life of the process. That was a measured
+    // 26.69 GB GTT leak (GPU-mapped SYSTEM RAM) on a server driving repeated
+    // cart loads through one shared context. See _releaseAll in
+    // webgl_imports.js for the full story.
+    try { this._glFuncs?._releaseAll?.(); } catch { /* teardown never throws */ }
+
     // Release a GL context this host created itself (a caller-supplied
     // glBackend belongs to the caller and is left alone).
     if (this._ownedGl) {
