@@ -34,7 +34,7 @@ import {
   MAX_RUMBLE_MS,
   clamp01,
 } from './abi.js';
-import { createWebGLImports } from './webgl_imports.js';
+import { createWebGLImports, noteGlCurrent } from './webgl_imports.js';
 
 /* The manifest's asset root is stripped as a PATH PREFIX from packed entries,
  * so it needs its trailing slash: "app" turns "app/main.lua" into "/main.lua"
@@ -927,7 +927,12 @@ export class CartHost {
     // the cart's draws run — in a multi-context process, whoever rendered
     // last owns the current context. Caller-supplied backends manage their
     // own currency (and browser contexts have no notion of it).
-    if (this.usesGL && this._ownedGlCtx?.makeCurrent) this._ownedGlCtx.makeCurrent();
+    if (this.usesGL && this._ownedGlCtx?.makeCurrent) {
+      this._ownedGlCtx.makeCurrent();
+      // Record the claim so another cart's teardown can hand currency back
+      // here instead of leaving this context unset (see _releaseAll).
+      try { noteGlCurrent(this._ownedGlCtx); } catch {}
+    }
 
     let timeMs, deltaMs;
     if (this._fixedStepMs > 0) {

@@ -19,6 +19,19 @@ function readCString(u8, ptr) {
   return decoder.decode(u8.subarray(ptr, end));
 }
 
+/* WHICH GL CONTEXT IS CURRENT IN THIS PROCESS.
+ *
+ * Module scope on purpose: GL currency is a process-wide singleton, so every
+ * cart in the process shares this one record. A cart that claims currency for
+ * its own teardown can then hand it back to whoever actually had it, instead
+ * of leaving another session's live window presenting against the wrong
+ * context. See _releaseAll for the failure this prevents. */
+let _currentGlCtx = null;
+/** Record that `c` is now the current GL context for this process. Called by
+ *  whoever claims currency (CartHost's per-frame makeCurrent, a host's
+ *  present path) so a teardown elsewhere can restore it. */
+export function noteGlCurrent(c) { _currentGlCtx = c || null; }
+
 /**
  * Create the GL import object for WASM instantiation.
  *
@@ -28,6 +41,23 @@ function readCString(u8, ptr) {
  * @returns {object} import object with GL functions
  */
 export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
+  // WRAP makeCurrent SO EVERY CLAIM IS RECORDED, whoever makes it.
+  //
+  // native-gles dispatches every GL call against ONE process-global current
+  // context; a WebGL2RenderingContext object is just a facade whose calls go
+  // to that global. So whoever called makeCurrent last owns every subsequent
+  // GL call in the process -- including calls made through a DIFFERENT
+  // context facade. Recording each claim here (rather than asking callers to
+  // remember) is what lets _releaseAll put currency back where it found it.
+  if (ctx && typeof ctx.makeCurrent === "function" && !ctx.__wcCurrentWrapped) {
+    const _orig = ctx.makeCurrent.bind(ctx);
+    ctx.makeCurrent = function wcMakeCurrent(...a) {
+      const r = _orig(...a);
+      _currentGlCtx = ctx;
+      return r;
+    };
+    ctx.__wcCurrentWrapped = true;
+  }
   function u8() { return new Uint8Array(getMemory().buffer); }
   function u16() { return new Uint16Array(getMemory().buffer); }
   function u32() { return new Uint32Array(getMemory().buffer); }
@@ -1662,11 +1692,65 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
   // context that is already dead (owned-context destroy) makes every delete a
   // harmless no-op or exception.
   funcs._releaseAll = () => {
+    // RESTORE WHATEVER CONTEXT WAS CURRENT WHEN WE FINISH.
+    //
+    // This claims currency to make its deletes well-defined, and used to
+    // leave it claimed. GL currency is a PROCESS-WIDE singleton, so a cart
+    // tearing down in one session stole it from every other -- including a
+    // host whose context is bound to a LIVE PLAYTEST WINDOW. That window
+    // presents on a 60fps timer that re-claims nothing, so from then on it
+    // blitted with the wrong context current: its FBO is not valid there, so
+    // glCheckFramebufferStatus returned GL_FRAMEBUFFER_INCOMPLETE_MISSING_-
+    // ATTACHMENT (0x8cd7, attachment type GL_NONE, GL_INVALID_OPERATION) and
+    // the window went BLACK at a healthy 60fps -- while a CPU readback of the
+    // cart still showed a perfect picture, because that reads the cart's own
+    // FBO rather than what the window presents.
+    //
+    // Measured deterministically 2026-08-21: one session tearing down a GL
+    // cart blanked another session's window with a human playing in it.
+    const _prevCurrent = _currentGlCtx;
     try {
       // The shared context may not be current (another cart's private context
       // may be); deletes on a non-current context are undefined per backend.
       ctx.makeCurrent?.();
     } catch { /* no makeCurrent on this backend — proceed */ }
+    // UNBIND EVERYTHING THIS CART MIGHT STILL HAVE BOUND, before deleting it.
+    //
+    // Deleting a still-BOUND object leaves the binding point in a
+    // driver-defined state, and on a SHARED context that state outlives this
+    // cart: the next cart's FBO came back
+    // GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT (0x8cd7) and its window
+    // went BLACK at a healthy 60fps. Measured deterministically 2026-08-21 --
+    // one session tearing down a GL cart blanked ANOTHER session's live
+    // playtest window with a human playing in it, while a CPU readback of
+    // that cart still showed a perfect picture.
+    //
+    // Per spec, deleting a bound object reverts the binding to 0 -- but 0 on
+    // this layer is REMAPPED to the redirect FBO (see glBindFramebuffer), so
+    // "revert to 0" is not the no-op it looks like. Dropping every binding
+    // explicitly first makes the sweep order-independent instead of relying
+    // on what the driver does with a half-torn-down binding.
+    try {
+      ctx.bindFramebuffer(0x8D40, null);      // GL_FRAMEBUFFER
+      ctx.bindFramebuffer(0x8CA8, null);      // GL_READ_FRAMEBUFFER
+      ctx.bindFramebuffer(0x8CA9, null);      // GL_DRAW_FRAMEBUFFER
+      ctx.bindRenderbuffer(0x8D41, null);     // GL_RENDERBUFFER
+      ctx.useProgram(null);
+      ctx.bindVertexArray?.(null);
+      ctx.bindBuffer(0x8892, null);           // GL_ARRAY_BUFFER
+      ctx.bindBuffer(0x8893, null);           // GL_ELEMENT_ARRAY_BUFFER
+      // Every texture unit this cart ever bound to, not just unit 0: a
+      // deleted texture left on unit 5 is just as stale.
+      const units = Math.max(_samplerUnits.length, 16);
+      for (let u = 0; u < units; u++) {
+        ctx.activeTexture(0x84C0 + u);
+        ctx.bindTexture(0x0DE1, null);        // GL_TEXTURE_2D
+      }
+      ctx.activeTexture(0x84C0);
+    } catch { /* teardown never throws */ }
+    _boundFBOisRedirect = false;
+    _drawColorAttachment = null;
+    for (let i = 0; i < _samplerUnits.length; i++) _samplerUnits[i] = null;
     const sweep = (table, del) => {
       for (let i = 1; i < table.length; i++) {
         if (table[i]) { try { del(table[i]); } catch { /* already gone */ } }
@@ -1691,6 +1775,11 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
     if (_redirectTex) { try { ctx.deleteTexture(_redirectTex); } catch {} _redirectTex = null; }
     if (_redirectRBO) { try { ctx.deleteRenderbuffer(_redirectRBO); } catch {} _redirectRBO = null; }
     _redirectW = 0; _redirectH = 0;
+    // Hand currency back to whoever had it. If nobody did, leave it alone
+    // rather than guessing -- taking it is what caused the bug.
+    if (_prevCurrent && _prevCurrent !== ctx) {
+      try { _prevCurrent.makeCurrent?.(); _currentGlCtx = _prevCurrent; } catch { /* gone */ }
+    }
   };
   funcs._blitToCanvas = _blitRedirectToCanvas;
   /**

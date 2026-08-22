@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.24.0
+
+A cart teardown no longer corrupts another cart's GL context.
+
+`_releaseAll` claims GL currency so its deletes are well-defined, and
+left it claimed. GL currency is a PROCESS-WIDE singleton, so a cart
+tearing down in one session took it from every other one -- including a
+host whose context was bound to a live playtest window. That window
+presents on a 60fps timer which re-claims nothing, so from then on it
+blitted with the wrong context current, its FBO was not valid there, and
+it went BLACK at a healthy 60fps
+(`GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT`, 0x8cd7, attachment
+`GL_NONE`, `GL_INVALID_OPERATION`).
+
+The symptom is nasty to chase because every instrument said the game was
+fine: a CPU readback of that cart still showed a perfect picture, since
+it reads the cart's own FBO rather than what the window presents. Only an
+OS-level capture of the real window showed black.
+
+Three changes:
+
+- **Currency is recorded and restored.** A module-level `_currentGlCtx`
+  tracks who holds it; `makeCurrent` is wrapped so every claim is
+  recorded whoever makes it, and `_releaseAll` hands currency back to
+  whoever had it instead of keeping it. `noteGlCurrent()` is exported for
+  hosts that claim currency outside this module.
+- **Everything is unbound before it is deleted.** Deleting a still-bound
+  object leaves the binding point driver-defined, and on a shared context
+  that state outlives the cart. Per spec a deleted binding reverts to 0 --
+  but 0 here is REMAPPED to the redirect FBO, so that revert is not the
+  no-op it looks like. Dropping every binding first makes the sweep
+  order-independent.
+- **`CartHost.runFrame` records its per-frame claim**, so a teardown
+  elsewhere restores the right context rather than none.
+
+Requires webgl-node >= 1.5.1, which puts `makeCurrent` on the context
+object. Before that, `ctx.makeCurrent?.()` here was a silent no-op --
+makeCurrent lived only on the wrapper that callers throw away -- which is
+the other half of this bug and the half that actually made it fire.
+
 ## 0.23.0
 
 A destroyed cart now deletes every GL object it created.
