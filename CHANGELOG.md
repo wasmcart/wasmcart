@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.25.0
+
+`npx wasmcart` can now fetch and play `.wasc` carts directly from HTTP and
+HTTPS URLs. Downloads stream to temporary storage, work in windowed, terminal,
+and headless modes, follow redirects, and are removed when playback ends.
+Remote-cart saves use a stable URL-derived path in the user's data directory.
+
 ## 0.24.0
 
 A cart teardown no longer corrupts another cart's GL context.

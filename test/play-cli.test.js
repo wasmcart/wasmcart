@@ -2,9 +2,10 @@
 // The interactive TTY player can't run in CI; these cover everything else.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import os from 'node:os';
@@ -17,6 +18,20 @@ const DETRNG = join(HERE, 'fixtures', 'detrng.wasc');
 
 function play(args) {
   return execFileSync(process.execPath, [BIN, ...args], { encoding: 'utf8' });
+}
+
+function runFront(args) {
+  return new Promise((resolve, reject) => {
+    execFile(process.execPath, [FRONT, ...args], { encoding: 'utf8' }, (error, stdout, stderr) => {
+      if (error) {
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+      } else {
+        resolve({ stdout, stderr });
+      }
+    });
+  });
 }
 
 test('headless run writes a valid PNG with the cart resolution', async () => {
@@ -70,4 +85,30 @@ test('the `wasmcart` front-door bin plays a bare cart path and forwards pack', (
   assert.match(out, /ran 3 frames\s+320x240/);
   const help = execFileSync(process.execPath, [FRONT, '--help'], { encoding: 'utf8' });
   assert.match(help, /wasmcart pack --wasm/);
+});
+
+test('the `wasmcart` front door fetches and plays an HTTP .wasc URL', async () => {
+  const cartBytes = readFileSync(HELLO);
+  const server = createServer((req, res) => {
+    if (req.url?.startsWith('/games/hello.wasc')) {
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': cartBytes.length,
+      });
+      res.end(cartBytes);
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const { port } = server.address();
+    const url = `http://127.0.0.1:${port}/games/hello.wasc?release=1`;
+    const result = await runFront([url, '--frames', '3']);
+    assert.match(result.stderr, /wasmcart-play: fetching http:\/\/127\.0\.0\.1:/);
+    assert.match(result.stdout, /ran 3 frames\s+320x240/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { CartHost } from '../index.js';
-import { makeSaver } from '../src/save.js';
+import { makeSaver, savPathFor } from '../src/save.js';
 import { MAX_DELTA_MS } from '../src/abi.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -340,6 +340,13 @@ test('both players persist saves on every exit path', async () => {
     assert.ok(/process\.on\('SIGTERM'/.test(src), `${f} must persist on SIGTERM`);
     assert.ok(/loadSave\(/.test(src), `${f} must load an existing save on start`);
   }
+});
+
+test('remote carts get stable, collision-resistant local save paths', () => {
+  const a = savPathFor('https://example.com/games/my-game.wasc');
+  assert.equal(a, savPathFor('https://example.com/games/my-game.wasc'));
+  assert.notEqual(a, savPathFor('https://example.com/other/my-game.wasc'));
+  assert.match(a, /wasmcart[\\/]saves[\\/]my-game-[0-9a-f]{16}\.sav$/);
 });
 
 // --- Loop inversion (wc_frame_yield / asyncify) ---

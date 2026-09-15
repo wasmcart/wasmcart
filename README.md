@@ -65,6 +65,7 @@ npm install wasmcart
 
 ```bash
 npx wasmcart game.wasc              # SDL window + audio + gamepad (the default)
+npx wasmcart https://example.com/games/game.wasc # fetch a remote cart and play it
 npx wasmcart game.wasc              # GL carts too - auto-detected, OpenGL window via webgl-node
 npx wasmcart my-cart-dir/           # dev mode: manifest.json + cart.wasm + assets, straight off disk
 npx wasmcart game.wasc --term       # ANSI terminal player (GL carts too, via offscreen readback)
@@ -74,6 +75,11 @@ npx wasmcart game.wasc --no-resize  # pin the window to the cart's declared size
 npx wasmcart game.wasc --stretch    # fill the window, distorting the aspect ratio
 npx wasmcart pack --wasm cart.wasm -o game.wasc                    # packing, same front door
 ```
+
+HTTP and HTTPS carts are streamed to a temporary file so packed assets remain
+lazy-loaded instead of occupying memory for the whole session. Redirects are
+followed. Save data for a remote cart is keyed by its URL and stored under
+`$XDG_DATA_HOME/wasmcart/saves` (or `~/.local/share/wasmcart/saves`).
 
 ### Window sizing
 

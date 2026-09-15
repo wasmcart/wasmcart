@@ -5,7 +5,7 @@
  * the keyboard drives pad 0. Also a headless runner for scripting:
  * step N frames, dump a PNG screenshot and/or a WAV of the audio, exit.
  *
- * Usage: wasmcart-play <cart.wasc | cart-dir> [options]
+ * Usage: wasmcart-play <cart.wasc | cart-dir | https://.../cart.wasc> [options]
  *
  * Options:
  *   --frames <n>     Headless: run n frames, then exit (no terminal UI)
@@ -29,6 +29,7 @@
 import { CartHost } from '../src/CartHost.js';
 import { BUTTON } from '../src/abi.js';
 import { savPathFor, loadSave, makeSaver } from '../src/save.js';
+import { downloadRemoteCart, isRemoteCart } from '../src/remoteCart.js';
 import { writeFileSync } from 'fs';
 import { deflateSync } from 'zlib';
 
@@ -58,7 +59,7 @@ for (let i = 0; i < argv.length; i++) {
     case '--stretch':   opt.stretch = true; break;
     case '--fullscreen': case '-f': opt.fullscreen = true; break;
     case '-h': case '--help':
-      console.log('Usage: wasmcart-play <cart.wasc | cart-dir> [--frames n] [--shot out.png] [--wav out.wav] [--seed n] [--term] [--window] [--gl] [--zoom n] [--width px] [--height px] [--scale cols] [--fps n] [--no-resize] [--stretch] [--fullscreen]');
+      console.log('Usage: wasmcart-play <cart.wasc | cart-dir | URL> [--frames n] [--shot out.png] [--wav out.wav] [--seed n] [--term] [--window] [--gl] [--zoom n] [--width px] [--height px] [--scale cols] [--fps n] [--no-resize] [--stretch] [--fullscreen]');
       console.log('GL carts are auto-detected (the wasm imports tell the player); --gl only FORCES the GL window up front.');
       console.log('The window opens at the cart\'s declared size and is RESIZABLE by default; the frame is');
       console.log('letterboxed (black bars) to preserve the cart\'s aspect ratio. --no-resize pins the window');
@@ -72,9 +73,11 @@ for (let i = 0; i < argv.length; i++) {
 }
 
 if (!cartPath) {
-  console.error('wasmcart-play: pass a .wasc file or a dev-mode cart directory. --help for options.');
+  console.error('wasmcart-play: pass a .wasc file, URL, or dev-mode cart directory. --help for options.');
   process.exit(1);
 }
+
+let remoteCart = null;
 
 // ── minimal PNG encoder (RGB8, filter 0, node zlib) ──────────────────
 
@@ -195,6 +198,13 @@ const KEYMAP = {
 // ── main ─────────────────────────────────────────────────────────────
 
 async function main() {
+  let cartSource = cartPath;
+  if (isRemoteCart(cartPath)) {
+    console.error(`wasmcart-play: fetching ${cartPath}`);
+    remoteCart = await downloadRemoteCart(cartPath);
+    cartSource = remoteCart.path;
+  }
+
   // windowed player (default): SDL window + audio + real key edges, on the
   // org's own stack. --term skips it; headless --frames skips it; a failure
   // (no SDL, no display) falls back to the terminal player below.
@@ -202,7 +212,12 @@ async function main() {
   if (!opt.term && !headless) {
     try {
       const { runWindowed } = await import('./play-window.js');
-      await runWindowed(cartPath, opt, { CartHost, toInt16 });
+      await runWindowed(cartSource, opt, {
+        CartHost,
+        toInt16,
+        saveIdentity: cartPath,
+        cleanupSource: remoteCart?.cleanup,
+      });
       return;
     } catch (e) {
       console.error(`wasmcart-play: windowed mode unavailable (${e.message}) — falling back to terminal.`);
@@ -225,7 +240,7 @@ async function main() {
   // for a cart that imports `gl`, so there is nothing to pass, and a 2D cart
   // never causes one to exist.
   try {
-    await host.load(cartPath, loadOpts);
+    await host.load(cartSource, loadOpts);
   } catch (e) {
     if (/WebGL2 context could not be created/.test(String(e.message))) {
       console.error(`wasmcart-play: ${e.message}`);
@@ -315,6 +330,7 @@ async function main() {
     console.log(`ran ${opt.frames} frames  ${frame.width}x${frame.height}  abi=${info.version}${dbg}` +
       (opt.shot ? `  shot=${opt.shot}` : '') + (opt.wav ? `  wav=${opt.wav}` : ''));
     host.destroy();
+    remoteCart?.cleanup();
     return;
   }
 
@@ -332,6 +348,7 @@ async function main() {
     process.stdout.write('\x1b[?25h\x1b[0m\x1b[2J\x1b[H'); // cursor back, clear
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
     host.destroy();
+    remoteCart?.cleanup();
   };
   process.on('SIGINT', () => { cleanup(); process.exit(0); });
   process.on('SIGTERM', () => { cleanup(); process.exit(0); });
@@ -371,6 +388,7 @@ async function main() {
 }
 
 main().catch((e) => {
+  remoteCart?.cleanup();
   console.error(`wasmcart-play: ${e.message}`);
   process.exit(1);
 });

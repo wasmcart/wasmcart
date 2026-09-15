@@ -34,7 +34,7 @@ const CONTROLLER_BUTTONS = {
   start: 'START', back: 'SELECT', guide: 'SELECT',
 };
 
-export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
+export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdentity = cartPath, cleanupSource }) {
   const sdl = (await import('@kmamal/sdl')).default;
 
   const host = new CartHost();
@@ -50,7 +50,7 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
   const loadOpts = {};
   if (opt.seed !== null) loadOpts.deterministic = { seed: opt.seed };
   // cart SRAM: a .sav next to the cart, loaded before wc_init, written on quit
-  const savPath = savPathFor(cartPath);
+  const savPath = savPathFor(saveIdentity);
   loadOpts.saveData = loadSave(savPath);
 
   // GL is AUTO-DETECTED: this factory is handed to CartHost, which invokes it
@@ -282,6 +282,7 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16 }) {
     try { audioDev?.close(); } catch { /* already gone */ }
     try { window?.destroy(); } catch { /* already gone */ }
     host.destroy();
+    cleanupSource?.();
     process.exit(0);
   }
 
