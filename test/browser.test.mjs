@@ -33,17 +33,26 @@ const HTTP_PORT = 8795;
 
 // Skipping keeps a machine without browsers from going red, but in CI a skip
 // is indistinguishable from a pass -- which is exactly how a suite rots. CI
-// sets REQUIRE_BROWSER=1 so a missing Playwright is a failure there.
+// sets REQUIRE_BROWSER=1 so a missing browser is a failure there.
+//
+// Probe the BROWSER BINARY, not the playwright package: `playwright` is a
+// devDependency, so after `npm ci` the import succeeds on a machine that has
+// never run `npx playwright install` and cannot launch anything.
 const required = process.env.REQUIRE_BROWSER === '1';
 let chromium;
 try {
-  ({ chromium } = await import('playwright'));
+  const pw = await import('playwright');
+  const exe = pw.chromium.executablePath();
+  if (!exe || !existsSync(exe)) {
+    throw new Error(`no chromium binary at ${exe || '(unknown path)'} - run: npx playwright install chromium`);
+  }
+  chromium = pw.chromium;
 } catch (e) {
   if (required) {
-    console.error('browser test REQUIRED but playwright is not installed:', e.message);
+    console.error('browser test REQUIRED but no chromium binary is available:', e.message);
     process.exit(1);
   }
-  console.log('browser test SKIPPED: playwright not installed');
+  console.log('browser test SKIPPED:', e.message);
   process.exit(0);
 }
 

@@ -30,6 +30,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { createWebGLImports } from '../src/webgl_imports.js';
 
 const GL_TEXTURE_2D = 0x0de1;
@@ -168,17 +169,29 @@ test('drawing to the real default framebuffer is never guarded', () => {
 
 // ── the premise, in a real browser ──
 //
-// REQUIRE_BROWSER=1 makes a missing Playwright a failure (CI), matching
-// test/browser.test.mjs. Otherwise it skips: a machine without browsers should
-// not go red, but a skip must not look like a pass either.
+// REQUIRE_BROWSER=1 makes a missing browser a failure (CI). Otherwise it skips:
+// a machine without browsers should not go red, but a skip must not look like a
+// pass either.
+//
+// The guard probes the BROWSER BINARY, not the playwright package. Those are
+// two different things and conflating them is what kept CI red from 0.22.1 to
+// 0.25.0: `playwright` is a devDependency, so `npm ci` makes the import
+// succeed, the skip never fires, and chromium.launch() then dies on a binary
+// that only `npx playwright install` puts on disk -- a step that runs AFTER
+// `npm test` in the workflow. executablePath() + existsSync is the signal that
+// actually answers "can this machine launch a browser right now?".
 const required = process.env.REQUIRE_BROWSER === '1';
 let chromium = null;
-try { ({ chromium } = await import('playwright')); } catch { /* not installed */ }
+try {
+  const pw = await import('playwright');
+  const exe = pw.chromium.executablePath();
+  if (exe && existsSync(exe)) chromium = pw.chromium;
+} catch { /* playwright not installed at all */ }
 
 test('PREMISE: a real browser REJECTS the looping draw', {
-  skip: !chromium && !required && 'playwright not installed',
+  skip: !chromium && !required && 'no chromium binary (npx playwright install chromium)',
 }, async () => {
-  assert.ok(chromium, 'REQUIRE_BROWSER=1 but playwright is missing');
+  assert.ok(chromium, 'REQUIRE_BROWSER=1 but no chromium binary is installed');
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
