@@ -10,6 +10,10 @@ name: CI
 on:
   push:
     branches: [main]
+    # Tags run the same checks, so a release tag is verified as tagged rather
+    # than only as it was on main. This still does not publish: see above.
+    tags:
+      - 'v*'
   pull_request:
     branches: [main]
   workflow_dispatch:

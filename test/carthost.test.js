@@ -5,11 +5,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { CartHost } from '../index.js';
 import { makeSaver, savPathFor } from '../src/save.js';
 import { MAX_DELTA_MS } from '../src/abi.js';
+import { inflateRawSync } from 'node:zlib';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELLO = join(HERE, 'fixtures', 'hello.wasc');
@@ -770,4 +771,90 @@ test('a growable cart gets its payload, staged beyond its own data', async () =>
       'the staging region must sit at or beyond the cart data high-water mark');
   }
   host.destroy();
+});
+
+
+/* Minimal zip reader for the fixtures: enough to lift one entry by name. */
+function unzipEntry(buf, want) {
+  for (let i = buf.length - 22; i >= 0; i--) {
+    if (buf.readUInt32LE(i) !== 0x06054b50) continue;      // end of central dir
+    let p = buf.readUInt32LE(i + 16);
+    const n = buf.readUInt16LE(i + 10);
+    for (let e = 0; e < n; e++) {
+      const nameLen = buf.readUInt16LE(p + 28);
+      const extraLen = buf.readUInt16LE(p + 30);
+      const cmtLen = buf.readUInt16LE(p + 32);
+      const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
+      const method = buf.readUInt16LE(p + 10);
+      const size = buf.readUInt32LE(p + 20);
+      const lho = buf.readUInt32LE(p + 42);
+      if (name === want) {
+        const lNameLen = buf.readUInt16LE(lho + 26);
+        const lExtraLen = buf.readUInt16LE(lho + 28);
+        const start = lho + 30 + lNameLen + lExtraLen;
+        const raw = buf.subarray(start, start + size);
+        return method === 0 ? raw : inflateRawSync(raw);
+      }
+      p += 46 + nameLen + extraLen + cmtLen;
+    }
+  }
+  throw new Error(`no ${want} in archive`);
+}
+
+/*
+ * _filelist.txt is how a cart enumerates its own assets: a ROM picker or a
+ * bezel picker reads it with the ordinary asset calls, because the ABI has no
+ * directory call. It has to say the same thing in both load modes.
+ *
+ * The dev-directory loader used to skip building it, so an enumerating cart
+ * worked when packed and silently saw nothing under `npx wasmcart <dir>` --
+ * a missing feature that reads as "no ROMs found". The archive loaders also
+ * listed each asset twice, once bare and once `app/`-prefixed, because the
+ * lookup index deliberately holds both spellings.
+ */
+test('_filelist.txt lists every asset once, identically in dev and packed modes', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wc-filelist-'));
+  try {
+    // A cart directory whose manifest points at app/, like the emulator carts.
+    // Reuse the fixture's own cart.wasm so the host's export checks pass; a
+    // .wasc is a zip, and its single stored/deflated entry is easy to lift.
+    const wasm = unzipEntry(readFileSync(HELLO), 'cart.wasm');
+    assert.ok(wasm.length > 0, 'lifted cart.wasm out of the fixture');
+
+    mkdirSync(join(dir, 'app', 'roms'), { recursive: true });
+    mkdirSync(join(dir, 'app', 'bezels', 'nes'), { recursive: true });
+    writeFileSync(join(dir, 'cart.wasm'), wasm);
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({
+      name: 'filelist probe', entry: 'cart.wasm', assets: 'app/',
+      width: 320, height: 240,
+    }));
+    writeFileSync(join(dir, 'app', 'roms', 'game.nes'), 'a');
+    writeFileSync(join(dir, 'app', 'roms', 'game2.nes'), 'b');
+    writeFileSync(join(dir, 'app', 'bezels', 'nes', 'main.lua'), 'c');
+
+    const listOf = async (target) => {
+      const cart = new CartHost();
+      await cart.load(target);
+      const raw = new TextDecoder().decode(cart._fileListBuf ?? new Uint8Array());
+      cart.destroy();
+      return raw.split('\n').filter(Boolean).sort();
+    };
+
+    const devList = await listOf(dir);
+    assert.deepEqual(devList, [
+      'bezels/nes/main.lua', 'roms/game.nes', 'roms/game2.nes',
+    ], 'dev directory enumerates nested assets, prefix stripped');
+
+    // Same cart, packed. Must agree exactly -- no duplicates, no app/ spelling.
+    const { execFileSync } = await import('node:child_process');
+    const wasc = join(dir, 'probe.wasc');
+    execFileSync(process.execPath,
+      [join(HERE, '..', 'bin', 'wasmcart-pack.js'), '--source', dir, '--output', wasc],
+      { stdio: 'ignore' });
+
+    assert.deepEqual(await listOf(wasc), devList,
+      'a packed cart lists the same assets as the directory it came from');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

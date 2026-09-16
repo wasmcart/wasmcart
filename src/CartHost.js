@@ -234,6 +234,34 @@ const MAX_ASSET_SIZE = 256 * 1024 * 1024;
 // Max entries in a .wasc archive
 const MAX_ARCHIVE_ENTRIES = 100000;
 
+/*
+ * Every file under `dir`, as forward-slash paths relative to it, so a dev
+ * directory produces the same _filelist.txt an archive does. Bounded by
+ * MAX_ARCHIVE_ENTRIES for the same reason the archive loaders are: a cart
+ * asking for the list should not be able to make the host walk an unbounded
+ * tree. Symlinked directories are not followed.
+ */
+function listDirRelative(dir) {
+  const out = [];
+  const walk = (abs, rel) => {
+    if (out.length >= MAX_ARCHIVE_ENTRIES) return;
+    let entries;
+    try {
+      entries = readdirSync(abs, { withFileTypes: true });
+    } catch {
+      return;   // unreadable subtree: the asset calls report per-path anyway
+    }
+    for (const e of entries) {
+      if (out.length >= MAX_ARCHIVE_ENTRIES) return;
+      const childRel = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(join(abs, e.name), childRel);
+      else if (e.isFile()) out.push(childRel);
+    }
+  };
+  walk(dir, '');
+  return out;
+}
+
 // Last-resort size for a host-provisioned offscreen GL context, used only
 // when neither the manifest nor the caller says anything. The context must
 // exist before the cart is instantiated, so this is chosen before
@@ -1410,6 +1438,7 @@ export class CartHost {
     // Build asset index (strip 'assets/' prefix if the manifest specifies an assets root)
     const assetsPrefix = assetPrefixOf(manifest);
     this._assetIndex = new Map();
+    const assetNames = new Set();
     for (const [path, entry] of index) {
       if (path === 'manifest.json' || path === wasmName) continue;
 
@@ -1426,10 +1455,16 @@ export class CartHost {
       if (assetPath !== path) {
         this._assetIndex.set(path, entry);
       }
+      // The listing carries each asset ONCE, under the same prefix-stripped
+      // name a cart passes to wc_load_asset. The index deliberately holds
+      // both spellings so either lookup resolves; a cart enumerating "roms/*"
+      // must not see every ROM twice, nor a path that differs from the
+      // dev-directory spelling of the same cart.
+      assetNames.add(assetPath);
     }
 
     // Generate virtual _filelist.txt with all asset paths
-    const fileList = [...this._assetIndex.keys()].filter(p => !p.startsWith('assets/')).join('\n');
+    const fileList = [...assetNames].filter(p => !p.startsWith('assets/')).join('\n');
     this._fileListBuf = Buffer.from(fileList, 'utf8');
 
     this._assetFd = fd;
@@ -1466,6 +1501,7 @@ export class CartHost {
     // Build asset index
     const assetsPrefix = assetPrefixOf(manifest);
     this._assetIndex = new Map();
+    const assetNames = new Set();
     for (const [path, entry] of index) {
       if (path === 'manifest.json' || path === wasmName) continue;
       if (entry.uncompressedSize > MAX_ASSET_SIZE) continue;
@@ -1478,10 +1514,16 @@ export class CartHost {
       if (assetPath !== path) {
         this._assetIndex.set(path, entry);
       }
+      // The listing carries each asset ONCE, under the same prefix-stripped
+      // name a cart passes to wc_load_asset. The index deliberately holds
+      // both spellings so either lookup resolves; a cart enumerating "roms/*"
+      // must not see every ROM twice, nor a path that differs from the
+      // dev-directory spelling of the same cart.
+      assetNames.add(assetPath);
     }
 
     // Generate virtual _filelist.txt with all asset paths
-    const fileList = [...this._assetIndex.keys()].filter(p => !p.startsWith('assets/')).join('\n');
+    const fileList = [...assetNames].filter(p => !p.startsWith('assets/')).join('\n');
     this._fileListBuf = new TextEncoder().encode(fileList);
 
     this._assetBuf = u8;
@@ -1504,7 +1546,15 @@ export class CartHost {
     const assetsDir = join(dirPath, assetPrefixOf(manifest));
     this._assetDir = assetsDir;
     this._hasAssets = true;
-    // No index needed - we'll read files directly from disk
+    // No index needed - we'll read files directly from disk.
+
+    // _filelist.txt still has to exist here. Both archive loaders build it
+    // from their entry index, and a cart that enumerates its assets (a ROM
+    // picker, a bezel picker) would otherwise work when packed and silently
+    // see nothing in dev mode, which is the same bug class as an asset that
+    // loads but renders black: the failure looks like "no ROMs" rather than
+    // like a missing feature.
+    this._fileListBuf = new TextEncoder().encode(listDirRelative(assetsDir).join('\n'));
 
     return wasmBytes;
   }
