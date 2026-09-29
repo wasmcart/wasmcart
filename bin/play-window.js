@@ -262,6 +262,23 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
           gl.clear(gl.COLOR_BUFFER_BIT);
         }
       }
+      // A GL cart that renders through the REDIRECT FBO has drawn nothing into
+      // the default framebuffer, so swapping alone presents an empty surface -
+      // a black window, with no GL error to explain it. presentToSurface()
+      // blits the redirect FBO onto the window. Carts that draw straight into
+      // the default framebuffer return false here and are unaffected.
+      //
+      // Found with a Defold cart (91 env.gl* imports, FBO-redirected): black in
+      // the window while the SAME cart rendered correctly headless and through
+      // romdev, because both of those read the redirect FBO rather than the
+      // swapped surface.
+      if (host.glRedirected) {
+        const pw = window.pixelWidth, ph = window.pixelHeight;
+        const r = opt.stretch ? { x: 0, y: 0, w: pw, h: ph, winW: pw, winH: ph }
+          : (() => { const f = fitRect(info.width, info.height, pw, ph);
+                     return { x: f.x, y: f.y, w: f.width, h: f.height, winW: pw, winH: ph }; })();
+        host.presentToSurface(r);
+      }
       swapBuffers();
       return;
     }
