@@ -780,10 +780,20 @@ export class CartHost {
       // always done this; without it the Node host has no way to reach the
       // redirect machinery at all.
       this._glFuncs = glFuncs;
-      // Auto-stub any GL imports not covered by webgl_imports.js
+      // Auto-stub any GL imports not covered by webgl_imports.js.
+      //
+      // A stub returns 0, and for a QUERY that zero reads as a real answer
+      // rather than as a failure. glGetActiveUniformBlockiv stubbed this way
+      // reported a 2-byte uniform block for a 64-byte mat4: the engine sized
+      // its UBO from that, uploaded garbage, and every vertex collapsed to a
+      // point, with no GL error and no failed draw call. The screen just stays
+      // empty. So name them - a silent stub is the difference between a
+      // five-minute fix and a multi-day hunt.
+      const _glStubbed = [];
       for (const imp of moduleImports) {
         if (imp.module === 'gl' && imp.kind === 'function' && !(imp.name in glFuncs)) {
           glFuncs[imp.name] = () => 0;
+          _glStubbed.push(imp.name);
         }
       }
       // Also provide GL functions under 'env' module for carts that use
@@ -795,6 +805,13 @@ export class CartHost {
         // Note: must overwrite auto-stubs (which run before GL wiring)
         if (imp.name.startsWith('gl') && imp.name in glFuncs) {
           imports.env[imp.name] = glFuncs[imp.name];
+        }
+        // A GL name under env that we do NOT implement keeps the generic env
+        // auto-stub installed above, which returns 0. Name it for the same
+        // reason as the `gl` module case: this is the path a big engine
+        // actually imports GL through, so it is where the silence hurts.
+        else if (imp.name.startsWith('gl')) {
+          _glStubbed.push(`env.${imp.name}`);
         }
         // Emscripten GL wrapper (e.g. env.emscripten_glEnable -> glEnable)
         else if (imp.name.startsWith('emscripten_gl')) {
@@ -810,6 +827,9 @@ export class CartHost {
             imports.env[imp.name] = () => 0;
           }
         }
+      }
+      if (_glStubbed.length) {
+        console.warn(`wasmcart: ${_glStubbed.length} GL import(s) not implemented, stubbed to return 0: ${_glStubbed.join(', ')}`);
       }
     }
 

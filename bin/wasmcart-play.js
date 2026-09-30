@@ -233,6 +233,9 @@ async function main() {
   // wherever it was last played.
   const savPath = savPathFor(cartPath);
   loadOpts.saveData = loadSave(savPath);
+  // Declared here because EVERY exit path has to save, not just the
+  // interactive one; assigned once the host exists.
+  let persistSave = () => {};
 
   // GL carts render fine here. Rendering on the GPU and displaying as ANSI
   // are orthogonal: the frame is read back and every path below sees the same
@@ -248,6 +251,8 @@ async function main() {
     }
     throw e;
   }
+  // The cart's memory exists from here on, so the saver can read it.
+  persistSave = makeSaver(host, savPath);
 
   /*
    * Did a GL readback actually capture a rendered frame?
@@ -329,6 +334,13 @@ async function main() {
     const dbg = host.info?.hasDebug ? ` debug=[${(host.readDebugState() || []).map((f) => f.name).join(',')}]` : '';
     console.log(`ran ${opt.frames} frames  ${frame.width}x${frame.height}  abi=${info.version}${dbg}` +
       (opt.shot ? `  shot=${opt.shot}` : '') + (opt.wav ? `  wav=${opt.wav}` : ''));
+    // Persist BEFORE destroy(), exactly as the interactive and windowed
+    // players do: getSaveData() reads the cart's linear memory, which is gone
+    // afterwards. This branch used to return without saving at all, so a cart
+    // calling its save API during a headless run kept the data for that run
+    // and lost it on the next one -- and the load side worked, so a
+    // save-then-load check inside ONE run passed while nothing persisted.
+    persistSave();
     host.destroy();
     remoteCart?.cleanup();
     return;
@@ -339,7 +351,6 @@ async function main() {
     console.error('wasmcart-play: not a TTY — use --frames N (with --shot/--wav) for headless runs.');
     process.exit(1);
   }
-  const persistSave = makeSaver(host, savPath);
   let cleaned = false;
   const cleanup = () => {
     if (cleaned) return;
