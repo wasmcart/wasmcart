@@ -1401,6 +1401,68 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
     },
 
     // ─── Shader introspection ───────────────────────────────────────────
+    /**
+     * glGetActiveUniformBlockiv - uniform BLOCK queries, notably
+     * GL_UNIFORM_BLOCK_DATA_SIZE.
+     *
+     * WITHOUT THIS, A UNIFORM-BLOCK ENGINE UPLOADS A GARBAGE-SIZED UBO. A
+     * missing GL import is auto-stubbed to return 0, so the engine read a block
+     * size of 2 bytes for what is really a 64-byte mat4, allocated and uploaded
+     * that, and the shader then sampled an essentially unwritten buffer: every
+     * vertex multiplied by a zero view-projection matrix collapses to a point.
+     * No GL error is raised anywhere - the draw call succeeds and the screen
+     * stays empty. This is what kept Defold carts from EVER drawing geometry.
+     *
+     * WebGL2 exposes it as getActiveUniformBlockParameter(program, index,
+     * pname), returning a value (or a Uint32Array for ACTIVE_UNIFORM_INDICES)
+     * rather than writing through a pointer.
+     */
+    glGetActiveUniformBlockiv: (prog, blockIndex, pname, paramsPtr) => {
+      if (!paramsPtr) return;
+      const p = _programs[prog];
+      if (!p) return;
+      let v;
+      try {
+        v = ctx.getActiveUniformBlockParameter(p, blockIndex, pname);
+      } catch {
+        // Leave the caller's buffer untouched: writing a zero here reads as a
+        // real answer, which is exactly how this bug stayed hidden.
+        return;
+      }
+      if (v == null) return;
+      const i32v = i32();
+      if (typeof v === 'boolean') { i32v[paramsPtr >> 2] = v ? 1 : 0; return; }
+      if (typeof v === 'number')  { i32v[paramsPtr >> 2] = v | 0;     return; }
+      for (let i = 0; i < v.length; i++) i32v[(paramsPtr >> 2) + i] = v[i] | 0;
+    },
+
+    /**
+     * glGetActiveUniformsiv - per-uniform queries, notably GL_UNIFORM_BLOCK_INDEX.
+     *
+     * Same class of bug: auto-stubbed to 0, it left the caller's block index at
+     * -1, so a block-qualified uniform name (`vs_uniforms.view_proj`) was never
+     * stripped to the canonical name (`view_proj`) the material looks up.
+     */
+    glGetActiveUniformsiv: (prog, count, indicesPtr, pname, paramsPtr) => {
+      if (!paramsPtr || !indicesPtr || count <= 0) return;
+      const p = _programs[prog];
+      if (!p) return;
+      const i32v = i32();
+      const idx = [];
+      for (let i = 0; i < count; i++) idx.push(i32v[(indicesPtr >> 2) + i]);
+      let out;
+      try {
+        out = ctx.getActiveUniforms(p, idx, pname);
+      } catch {
+        return;
+      }
+      if (!out) return;
+      for (let i = 0; i < count; i++) {
+        const v = out[i];
+        i32v[(paramsPtr >> 2) + i] = typeof v === 'boolean' ? (v ? 1 : 0) : (v | 0);
+      }
+    },
+
     glGetActiveUniform: (prog, index, bufSize, lengthPtr, sizePtr, typePtr, namePtr) => {
       const info = ctx.getActiveUniform(_programs[prog], index);
       const mem = u8();
