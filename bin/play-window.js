@@ -224,10 +224,31 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
 
   let frame = null;
   let ticks = 0;
+  // --stats: measure what the cart ACTUALLY gets, in wall-clock terms. The
+  // windowed loop is audio-paced when the cart has an audio ring, so the rate
+  // is set by how fast that ring drains, not by the display. A cart that
+  // produces no audio starves the loop and crawls, and without a number on it
+  // that reads as "the game is slow" with nothing to point at.
+  let statsFrames = 0, statsSince = performance.now(), statsAudio = 0;
+  const reportStats = () => {
+    const now = performance.now();
+    const elapsed = now - statsSince;
+    if (elapsed < 1000) return;
+    const fps = (statsFrames * 1000) / elapsed;
+    console.error(`wasmcart: ${fps.toFixed(1)} fps  (${statsFrames} frames in ${elapsed.toFixed(0)} ms, ` +
+      `${statsAudio} audio samples)`);
+    statsFrames = 0; statsAudio = 0; statsSince = now;
+  };
+
   const step = () => {
     syncTextInputState();
     frame = host.runFrame(pad());
     ticks++;
+    if (opt.stats) {
+      statsFrames++;
+      if (frame.audio) statsAudio += frame.audio.length;
+      reportStats();
+    }
     if (audioDev && frame.audio && frame.audio.length) {
       const i16 = toInt16(frame.audio);
       if (i16) audioDev.enqueue(Buffer.from(i16.buffer, i16.byteOffset, i16.byteLength));
@@ -315,27 +336,30 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
     quit();
   });
 
-  // pacing: audio-paced when the cart has an audio ring, timer otherwise
-  const hasAudio = !!(audioDev && info.audioCap > 0);
-  const TARGET_QUEUED = rate * 4 * 0.08; // ~80ms of s16 stereo
-  if (hasAudio) {
-    const tick = async () => {
-      if (closing) return;
-      let n = 0;
-      while (audioDev.queued < TARGET_QUEUED && n < 5) { step(); n++; }
-      if (n > 0) await present();
-      if (opt.frames > 0 && ticks >= opt.frames) return quit();
-      setTimeout(tick, 4);
-    };
-    tick();
-  } else {
-    const tick = async () => {
-      if (closing) return;
-      step();
-      await present();
-      if (opt.frames > 0 && ticks >= opt.frames) return quit();
-      setTimeout(tick, 1000 / 60);
-    };
-    tick();
-  }
+  /*
+   * Video and audio are paced INDEPENDENTLY.
+   *
+   * This loop used to derive the frame rate from the audio queue: step frames
+   * only while the queue was below a target, then present once per batch. That
+   * makes the visible frame rate a side effect of how fast the cart happens to
+   * drain audio -- up to five simulated frames per presented one, so motion
+   * advances in jumps -- and a cart that is silent at that moment starves the
+   * loop entirely.
+   *
+   * A frame is drawn every tick with the real elapsed time as dt, which is what
+   * the cart's physics integrates against, and swapBuffers blocks on vsync so
+   * the rate settles at the display's refresh. Audio is pushed from the same
+   * step but gates nothing: it is a ring the device drains on its own clock.
+   */
+  const tick = async () => {
+    if (closing) return;
+    step();
+    await present();
+    if (opt.frames > 0 && ticks >= opt.frames) return quit();
+    // setImmediate rather than a timer: the vsync wait inside swapBuffers is
+    // what paces this, and a timer on top of it only adds jitter. With vsync
+    // unavailable the frame cost itself bounds the loop.
+    setImmediate(tick);
+  };
+  tick();
 }
