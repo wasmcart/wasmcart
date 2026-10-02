@@ -138,6 +138,9 @@ Use the reusable **wasmcart-sdl2** backend (its own repo/package) for SDL2 games
 ```
 
 The SDL2 backend provides video (GL surface), audio (ring buffer),
-and input (gamepad) - all wired to the wasmcart ABI.
+and input - all wired to the wasmcart ABI. Pads, keyboard, the pointer array
+and the scroll wheel arrive as ordinary SDL events (gamepad, key, mouse,
+finger and `SDL_MOUSEWHEEL`); see the wasmcart-sdl2 README for the four
+`SDL_WASMCART_Set*` calls a cart makes in `wc_init()`.
 
 Validated on: Neverball ES, Neverputt ES, Flare ES, and a 2D platformer port.
