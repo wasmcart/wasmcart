@@ -351,15 +351,36 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
    * the rate settles at the display's refresh. Audio is pushed from the same
    * step but gates nothing: it is a ring the device drains on its own clock.
    */
+  /*
+   * What bounds the loop depends on how the frame reaches the window.
+   *
+   * A GL cart presents through swapBuffers, which waits for vsync, so the
+   * display sets the rate and a timer on top of it would only add jitter.
+   *
+   * A 2D cart presents through window.render(), an SDL blit that does NOT
+   * wait. Left to spin it saturates the event queue and the cart ends up
+   * running slower than if it had been paced, so that path keeps a timer.
+   */
+  const paceWithVsync = !!swapBuffers;
+  // Backstop. Vsync is what bounds the GL path, and it is not guaranteed: a
+  // driver may ignore the swap interval, a compositor may hand an unredirected
+  // window no sync at all. Free-running then produces audio far faster than the
+  // device drains it -- measured at 3 MB/s against a 188 KB/s drain -- and the
+  // queue grows without limit. When the cart is that far ahead, wait instead of
+  // stepping. This gates nothing in the normal case: a cart keeping pace never
+  // reaches the threshold.
+  const AUDIO_BACKLOG_LIMIT = rate * 4 * 0.25; // ~250 ms of s16 stereo
   const tick = async () => {
     if (closing) return;
+    if (audioDev && audioDev.queued > AUDIO_BACKLOG_LIMIT) {
+      setTimeout(tick, 4);
+      return;
+    }
     step();
     await present();
     if (opt.frames > 0 && ticks >= opt.frames) return quit();
-    // setImmediate rather than a timer: the vsync wait inside swapBuffers is
-    // what paces this, and a timer on top of it only adds jitter. With vsync
-    // unavailable the frame cost itself bounds the loop.
-    setImmediate(tick);
+    if (paceWithVsync) setImmediate(tick);
+    else setTimeout(tick, 1000 / 60);
   };
   tick();
 }
