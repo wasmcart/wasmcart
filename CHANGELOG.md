@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.27.0
+
+GL carts that use uniform blocks draw, a GL cart's window is no longer
+black, and saves survive headless runs.
+
+- `glGetActiveUniformBlockiv` and `glGetActiveUniformsiv` are implemented.
+  Auto-stubbed to 0, the first reported a 2-byte uniform block for a 64-byte
+  mat4, so an engine sized its UBO from that and every vertex collapsed to a
+  point with no GL error. Generic to any cart using uniform blocks; found on
+  Defold carts. On a failed query both now leave the caller's buffer alone
+  instead of writing a plausible zero.
+- Auto-stubbed GL imports are named in one startup warning, for both the
+  `gl` module and the `env` spelling big engines use, so this bug class is
+  one line instead of an empty screen.
+- `wasmcart-play --window` presents the redirect FBO with
+  `presentToSurface()` (letterboxed, or stretched under `--stretch`). A
+  redirected GL cart drew nothing into the default framebuffer, so the window
+  was black while headless runs and romdev looked fine. Carts drawing straight
+  into the default framebuffer are unaffected.
+- Headless `wasmcart-play` (`--frames` without `--window`) now persists
+  the save block on exit like the interactive and windowed players.
+
+## 0.26.0
+
+`_filelist.txt` (how a cart enumerates its assets) is identical in every
+load mode. The dev-directory loader now builds it, where before a cart saw
+nothing under `npx wasmcart <dir>`, and the archive loaders no longer list
+every asset twice. A dev directory and the `.wasc` packed from it return
+byte-identical listings; lookups still accept both spellings.
+
+## 0.25.1
+
+Test harness only: the Playwright guards check for the browser binary
+rather than the package, so CI skips the browser tests cleanly when no
+browser is installed instead of failing.
+
 ## 0.25.0
 
 `npx wasmcart` can now fetch and play `.wasc` carts directly from HTTP and
