@@ -284,7 +284,7 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
     }
     if (!frame) return;
     const opts = opt.stretch ? undefined
-      : { dstRect: fitRect(frame.width, frame.height, window.width, window.height) };
+      : { dstRect: fitRect(frame.width, frame.height, window.pixelWidth, window.pixelHeight) };
     await window.render(frame.width, frame.height, frame.width * 4, 'bgra32',
       Buffer.from(frame.framebuffer.buffer, frame.framebuffer.byteOffset, frame.framebuffer.byteLength),
       opts);
