@@ -15,6 +15,7 @@
  *   --seed <n>       Deterministic run: fixed clock + wc_set_seed(n)
  *   --scale <cols>   Terminal width in columns (default: fit the window)
  *   --fps <n>        Terminal refresh rate (default 30; logic always runs 60)
+ *   --stats          Print measured frame rate every second (stderr)
  *
  * Keys: arrows/WASD = d-pad, x=A z=B a=X s=Y, Enter=Start, Tab=Select,
  *       [ ]=L R, q or Ctrl-C = quit.
@@ -38,7 +39,7 @@ import { deflateSync } from 'zlib';
 const argv = process.argv.slice(2);
 let cartPath = null;
 // resizable + letterbox are the DEFAULTS; --no-resize and --stretch opt out.
-const opt = { frames: 0, shot: null, wav: null, seed: null, scale: 0, fps: 30, term: false, window: false, gl: false, zoom: 0, width: 0, height: 0, resizable: true, stretch: false, fullscreen: false };
+const opt = { frames: 0, shot: null, wav: null, seed: null, scale: 0, fps: 30, stats: false, term: false, window: false, gl: false, zoom: 0, width: 0, height: 0, resizable: true, stretch: false, fullscreen: false };
 
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -49,6 +50,7 @@ for (let i = 0; i < argv.length; i++) {
     case '--seed':   opt.seed = parseInt(argv[++i], 10) >>> 0; break;
     case '--scale':  opt.scale = parseInt(argv[++i], 10) || 0; break;
     case '--fps':    opt.fps = Math.max(1, Math.min(60, parseInt(argv[++i], 10) || 30)); break;
+    case '--stats':  opt.stats = true; break;
     case '--term':   opt.term = true; break;
     case '--window': opt.window = true; break;
     case '--gl':     opt.gl = true; break;
@@ -59,7 +61,7 @@ for (let i = 0; i < argv.length; i++) {
     case '--stretch':   opt.stretch = true; break;
     case '--fullscreen': case '-f': opt.fullscreen = true; break;
     case '-h': case '--help':
-      console.log('Usage: wasmcart-play <cart.wasc | cart-dir | URL> [--frames n] [--shot out.png] [--wav out.wav] [--seed n] [--term] [--window] [--gl] [--zoom n] [--width px] [--height px] [--scale cols] [--fps n] [--no-resize] [--stretch] [--fullscreen]');
+      console.log('Usage: wasmcart-play <cart.wasc | cart-dir | URL> [--frames n] [--shot out.png] [--wav out.wav] [--seed n] [--term] [--window] [--gl] [--zoom n] [--width px] [--height px] [--scale cols] [--fps n] [--stats] [--no-resize] [--stretch] [--fullscreen]');
       console.log('GL carts are auto-detected (the wasm imports tell the player); --gl only FORCES the GL window up front.');
       console.log('The window opens at the cart\'s declared size and is RESIZABLE by default; the frame is');
       console.log('letterboxed (black bars) to preserve the cart\'s aspect ratio. --no-resize pins the window');

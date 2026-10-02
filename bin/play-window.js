@@ -224,11 +224,11 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
 
   let frame = null;
   let ticks = 0;
-  // --stats: measure what the cart ACTUALLY gets, in wall-clock terms. The
-  // windowed loop is audio-paced when the cart has an audio ring, so the rate
-  // is set by how fast that ring drains, not by the display. A cart that
-  // produces no audio starves the loop and crawls, and without a number on it
-  // that reads as "the game is slow" with nothing to point at.
+  // --stats: measure what the cart ACTUALLY gets, in wall-clock terms, and how
+  // much audio it produced for those frames. "The game feels slow" has several
+  // possible causes -- the host not calling, the display not presenting, the
+  // cart not keeping up -- and they need different fixes, so print the numbers
+  // rather than leaving it to be guessed at.
   let statsFrames = 0, statsSince = performance.now(), statsAudio = 0;
   const reportStats = () => {
     const now = performance.now();
