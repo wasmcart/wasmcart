@@ -15,6 +15,10 @@
  *     without hand-translating it into flags. The flag form above generates a
  *     manifest instead, which cannot express a cart whose manifest already
  *     says something specific.
+ *
+ *   --files  also record the asset list in the manifest (optional `files`), so
+ *     the archive can be unzipped and served as a cart DIRECTORY on the web,
+ *     where _filelist.txt has no other source. A .wasc itself never needs it.
  */
 
 import { createWriteStream, readFileSync, statSync, readdirSync } from 'fs';
@@ -38,6 +42,7 @@ let netDataChannel = false;
 let usePointer = false;
 let useKeyboard = false;
 let controls = null;   // array of pad-subset tokens (SPEC: manifest 'controls')
+let writeFiles = false; // --files: record the asset list (SPEC: manifest 'files')
 
 for (let i = 0; i < args.length; i++) {
   switch (args[i]) {
@@ -86,6 +91,9 @@ for (let i = 0; i < args.length; i++) {
     case '--controls':
       if (!controls) controls = [];
       controls.push(...args[++i].split(',').map((t) => t.trim()).filter(Boolean));
+      break;
+    case '--files':
+      writeFiles = true;
       break;
     case '--help':
     case '-h':
@@ -264,6 +272,24 @@ if (cartWidth > 0 && cartHeight > 0) {
   manifest.height = cartHeight;
 }
 
+// --files: the asset list, built from exactly what goes into the archive
+// (walkDir below skips dotfiles), relative to the asset prefix. In --source
+// mode it replaces any list the tree's manifest carried, since an archive's
+// list must describe the archive.
+if (writeFiles) {
+  if (sourceDir) {
+    const raw = manifest.assets;
+    const prefix = raw === undefined || raw === null || raw === '' ? 'assets/' : String(raw).replace(/\/?$/, '/');
+    manifest.files = walkDir(sourceDir, '')
+      .map(({ relPath }) => relPath)
+      .filter((p) => p.startsWith(prefix))
+      .map((p) => p.slice(prefix.length))
+      .sort();
+  } else {
+    manifest.files = assetsDir ? walkDir(assetsDir, '').map(({ relPath }) => relPath).sort() : [];
+  }
+}
+
 // Collect asset files
 function walkDir(dir, base) {
   const files = [];
@@ -386,6 +412,8 @@ function printUsage() {
   console.log(`  --controls <list>  Comma-separated pad subset the game reads (advisory`);
   console.log(`                     hint for hosts drawing on-screen touch controls, e.g.`);
   console.log(`                     dpad,a,b,start; repeatable; omit for the retro default)`);
+  console.log(`  --files            Record the asset list in the manifest (optional; lets the`);
+  console.log(`                     unzipped cart be served as a directory on the web)`);
   console.log(`  --ws <domain>      Allow WebSocket to domain (repeatable)`);
   console.log(`  --data-channel     (deprecated, no-op: host-supplied peers need no grant)`);
   console.log(`  --pointer          (deprecated, no-op: the cart sets WC_FLAG_POINTER)`);

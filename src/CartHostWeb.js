@@ -1,6 +1,7 @@
 // CartHostWeb.js - Browser version of CartHost
 // No Node.js dependencies. Uses fflate for sync inflate.
-// Accepts Uint8Array of .wasc (ZIP) or bare .wasm bytes.
+// Accepts Uint8Array of .wasc (ZIP) or bare .wasm bytes, or a URL: a .wasc/.wasm
+// fetched whole, or a cart directory whose assets are fetched on demand (JSPI).
 
 import {
   ABI_VERSION,
@@ -131,6 +132,34 @@ const MAX_ASSET_SIZE = 256 * 1024 * 1024;
 // Max entries in a .wasc archive
 const MAX_ARCHIVE_ENTRIES = 100000;
 
+/* JSPI (JavaScript Promise Integration): lets a synchronous wasm import return
+ * a promise and suspends the cart's whole stack until it settles. It is what
+ * makes a directory cart's assets loadable on demand without changing the
+ * cart: the engine still calls wc_load_asset and gets its bytes back on the
+ * next line. Chrome/Edge 137, Firefox 153, Safari 27. */
+function hasJSPI() {
+  return typeof WebAssembly.Suspending === 'function' &&
+         typeof WebAssembly.promising === 'function';
+}
+
+// An asset path as a URL path: each segment escaped, the separators kept.
+function assetUrlPath(path) {
+  return path.split('/').map(encodeURIComponent).join('/');
+}
+
+// Fetches in flight at once when prefetching a directory cart's whole `files`
+// list (the no-JSPI fallback). Enough to fill a connection, few enough not to
+// trip a server's per-client limits.
+const PREFETCH_CONCURRENCY = 6;
+
+/* A cart source that names a cart DIRECTORY served over HTTP: a URL whose path
+ * does not end in .wasc or .wasm. Those two are still fetched whole. */
+function isDirectoryUrl(source) {
+  const s = source instanceof URL ? source.href : source;
+  const path = s.split(/[?#]/)[0];
+  return !/\.(wasc|wasm)$/i.test(path);
+}
+
 
 export class CartHostWeb {
   constructor() {
@@ -169,6 +198,21 @@ export class CartHostWeb {
     this._assetIndex = null;
     this._assetBuf = null;
     this._hasAssets = false;
+
+    // Directory carts (load(url) of a cart directory). _lazy means assets are
+    // fetched on demand through JSPI and every cart entry point is async; see
+    // _loadFromDirectory. _dirAssets holds fetched bytes: in lazy mode only
+    // from a size query until the load that almost always follows, and for
+    // the whole run when the no-JSPI fallback prefetched everything.
+    // _dirSizes remembers sizes (and misses, as -1) so a repeated size query
+    // does not refetch.
+    this._lazy = false;
+    this._dirAssetBase = null;
+    this._dirAssets = new Map();
+    this._dirSizes = new Map();
+    this._dirListed = null;    // Set of manifest `files`, when there is one
+    this._fileListWarned = false;
+    this._inflight = null;     // the frame promise while a lazy frame runs
 
     // Networking (ABI v3)
     this._manifest = null;
@@ -209,7 +253,10 @@ export class CartHostWeb {
 
   /**
    * Load and instantiate a cart.
-   * @param {Uint8Array} source - .wasc (ZIP) bytes or bare .wasm bytes
+   * @param {Uint8Array|string|URL} source - .wasc (ZIP) bytes or bare .wasm
+   *   bytes; or a URL: a .wasc/.wasm is fetched whole, anything else is a cart
+   *   DIRECTORY whose assets are fetched on demand (see _loadFromDirectory).
+   *   A lazily loaded directory cart's runFrame() returns a promise.
    * @param {object} [options]
    * @param {Uint8Array} [options.saveData] - existing save data to load
    * @param {WebGL2RenderingContext|Function} [options.glBackend] - the context, OR a factory
@@ -257,6 +304,17 @@ export class CartHostWeb {
     let glCtx = typeof options.glBackend === 'function' ? null : (options.glBackend || null);
     this._drawProgress(glCtx, 0);
 
+    // A URL: a cart directory (assets fetched on demand), or a .wasc/.wasm
+    // fetched whole and then handled exactly like bytes.
+    if (typeof source === 'string' || source instanceof URL) {
+      if (isDirectoryUrl(source)) {
+        return this._loadWasm(await this._loadFromDirectory(source), options, glCtx);
+      }
+      const res = await fetch(source);
+      if (!res.ok) throw new Error(`could not fetch ${source}: HTTP ${res.status}`);
+      source = new Uint8Array(await res.arrayBuffer());
+    }
+
     const u8 = source instanceof Uint8Array ? source : new Uint8Array(source);
     let wasmBytes;
 
@@ -272,6 +330,10 @@ export class CartHostWeb {
       throw new Error('Invalid cart data: expected .wasc (ZIP) or .wasm bytes');
     }
 
+    return this._loadWasm(wasmBytes, options, glCtx);
+  }
+
+  async _loadWasm(wasmBytes, options, glCtx) {
     // Compile and validate
     this._drawProgress(glCtx, 0.1);
     const module = await WebAssembly.compile(wasmBytes);
@@ -280,6 +342,11 @@ export class CartHostWeb {
     // Detect thread usage
     const threadAnalysis = this._analyzeModule(module);
     this.isThreaded = threadAnalysis.isThreaded;
+    if (this.isThreaded && this._dirAssetBase) {
+      // Worker threads read assets from the archive buffer, which a directory
+      // cart does not have, and a JSPI suspension cannot reach a worker.
+      throw new Error('threaded carts cannot run from a cart directory yet; pack it as a .wasc');
+    }
 
     // For threaded carts: create shared memory and store module for worker reuse
     if (this.isThreaded) {
@@ -393,12 +460,17 @@ export class CartHostWeb {
           ex.asyncify_start_unwind(this._asyncify.buf);
           this._asyncify.unwound = true;
         },
-        wc_asset_size: (pathPtr, pathLen) => {
-          return this._assetSize(pathPtr, pathLen);
-        },
-        wc_load_asset: (pathPtr, pathLen, destPtr, maxSize) => {
-          return this._loadAsset(pathPtr, pathLen, destPtr, maxSize);
-        },
+        // A lazy directory cart gets these as JSPI Suspending imports: they may
+        // return a promise (an asset still being fetched), which suspends the
+        // cart until the bytes arrive. See _loadFromDirectory.
+        // A directory cart without JSPI had every listed file prefetched, so
+        // the same functions answer synchronously from that cache.
+        wc_asset_size: this._suspendable(this._dirAssetBase
+          ? (pathPtr, pathLen) => this._dirAssetSize(pathPtr, pathLen)
+          : (pathPtr, pathLen) => this._assetSize(pathPtr, pathLen)),
+        wc_load_asset: this._suspendable(this._dirAssetBase
+          ? (pathPtr, pathLen, destPtr, maxSize) => this._dirLoadAsset(pathPtr, pathLen, destPtr, maxSize)
+          : (pathPtr, pathLen, destPtr, maxSize) => this._loadAsset(pathPtr, pathLen, destPtr, maxSize)),
         // Pad name query
         wc_pad_name: (padId, bufPtr, bufLen) => {
           return this._padName(padId, bufPtr, bufLen);
@@ -685,16 +757,19 @@ export class CartHostWeb {
       exports.wc_set_seed(s[0]);
     }
 
-    // WASI reactor init
+    // WASI reactor init. Static constructors and wc_init are where most
+    // engines open their data files, so on a lazy directory cart both can
+    // suspend on a fetch: awaiting the entry point covers that (and is a no-op
+    // await for every other cart).
     if (typeof exports._initialize === 'function') {
-      exports._initialize();
+      await this._entry('_initialize')();
       this._updateViews();
     }
 
     // Cart init
     this._drawProgress(glCtx, 0.95);
     if (typeof exports.wc_init === 'function') {
-      exports.wc_init();
+      await this._entry('wc_init')();
       this._updateViews();
     }
 
@@ -733,6 +808,85 @@ export class CartHostWeb {
     // having to know about lifecycle.
     if (this._suspended) return this._lastFrame ?? null;
 
+    // A lazy directory cart can suspend mid-frame on an asset fetch, so its
+    // frame is a promise: `await host.runFrame(pads)` works for every cart.
+    // A call while that frame is still running gets the same promise rather
+    // than re-entering the cart -- its C stack is suspended in linear memory,
+    // and a second entry would run on top of it.
+    if (this._lazy) {
+      if (!this._inflight) {
+        this._inflight = this._serial(() => this._driveAsync(this._frame(pads)))
+          .finally(() => { this._inflight = null; });
+      }
+      return this._inflight;
+    }
+    return this._drive(this._frame(pads));
+  }
+
+  /*
+   * One frame, written ONCE for both kinds of cart. Every call into the cart
+   * is a `yield [exportName, args]`, and a driver performs it: _drive calls the
+   * raw export synchronously (archives, and directory carts without JSPI);
+   * _driveAsync awaits the JSPI-promising export one call at a time (lazy
+   * directory carts). A cart call that throws is thrown back into the
+   * generator, so try/catch inside it behaves as if the call were direct.
+   */
+  _drive(gen) {
+    const ex = this.instance.exports;
+    let step = gen.next();
+    while (!step.done) {
+      const [name, args] = step.value;
+      let result;
+      try {
+        result = ex[name](...args);
+      } catch (e) {
+        step = gen.throw(e);
+        continue;
+      }
+      step = gen.next(result);
+    }
+    return step.value;
+  }
+
+  async _driveAsync(gen) {
+    let step = gen.next();
+    while (!step.done) {
+      const [name, args] = step.value;
+      let result;
+      try {
+        result = await this._entry(name)(...args);
+      } catch (e) {
+        step = gen.throw(e);
+        continue;
+      }
+      step = gen.next(result);
+    }
+    return step.value;
+  }
+
+  /* A cart export as the current cart must be entered: raw, or wrapped with
+   * WebAssembly.promising on a lazy directory cart (a JSPI Suspending import
+   * traps if its caller did not come in through promising -- even when it
+   * would have returned a plain value). Wrappers are made once per export. */
+  _entry(name) {
+    const fn = this.instance.exports[name];
+    if (!this._lazy) return fn;
+    this._promisingExports ??= new Map();
+    let wrapped = this._promisingExports.get(name);
+    if (!wrapped) {
+      wrapped = WebAssembly.promising(fn);
+      this._promisingExports.set(name, wrapped);
+    }
+    return wrapped;
+  }
+
+  // An import that may need to suspend: Suspending on a lazy directory cart,
+  // otherwise the plain function.
+  _suspendable(fn) {
+    return this._lazy ? new WebAssembly.Suspending(fn) : fn;
+  }
+
+  *_frame(pads) {
     const now = performance.now();
     // Clamp: a long stall must not become a giant time step. See CartHost --
     // this is the general guard, since a GC pause or a background tab throttle
@@ -758,10 +912,10 @@ export class CartHostWeb {
     this._writePointerState();
     this._writeWheelState();
     this._writeKeyState();
-    this._deliverNetEvents();
-    this._deliverPointerEvents();
-    this._deliverKeyEvents();
-    this._deliverTextEvents();
+    yield* this._deliverNetEvents();
+    yield* this._deliverPointerEvents();
+    yield* this._deliverKeyEvents();
+    yield* this._deliverTextEvents();
 
     // Call wc_render (with asyncify resume/suspend for loop-owning carts)
     const asyncEx = this.instance.exports;
@@ -770,7 +924,7 @@ export class CartHostWeb {
       this._asyncify.rewinding = true;
       this._asyncify.suspended = false;
     }
-    asyncEx.wc_render();
+    yield ['wc_render', []];
     if (this._asyncify.unwound) {
       asyncEx.asyncify_stop_unwind();
       this._asyncify.suspended = true;
@@ -882,6 +1036,9 @@ export class CartHostWeb {
 
     this._assetIndex = null;
     this._assetBuf = null;
+    this._dirAssets.clear();
+    this._dirSizes.clear();
+    this._promisingExports = null;
     this._sharedMemory = null;
     this._compiledModule = null;
     this.instance = null;
@@ -947,6 +1104,168 @@ export class CartHostWeb {
     this._hasAssets = this._assetIndex.size > 0;
 
     return wasmBytes;
+  }
+
+  // --- Cart directory loading ---
+
+  /*
+   * A cart DIRECTORY served over HTTP: manifest.json (optional, as in a .wasc),
+   * the entry wasm, and the asset tree under the manifest's asset prefix. Only
+   * the wasm is downloaded before the cart starts. An HTTP server cannot list a
+   * directory, so:
+   *
+   * - Sizes and loads need no index. Each asset is fetched by name the first
+   *   time the cart asks for it; a 404 is a missing asset (-1), exactly as in
+   *   an archive. With JSPI the cart suspends on that fetch (see hasJSPI).
+   * - Only the virtual _filelist.txt needs the list, and it comes from the
+   *   manifest's OPTIONAL `files` array. Absent, _filelist.txt is missing (-1)
+   *   and the host says so once. Most carts never ask for it. When present it
+   *   is also taken as complete: a path not on it is answered -1 locally,
+   *   which saves a round trip per probe for engines that search paths.
+   * - Without JSPI, the cart cannot wait for a fetch, so every file in `files`
+   *   is downloaded before it starts; with no `files` either, there is no way
+   *   to know what to fetch and the load fails with a message saying why.
+   */
+  async _loadFromDirectory(source) {
+    const pageBase = typeof location !== 'undefined' ? location.href : undefined;
+    let base = new URL(source, pageBase);
+    if (!base.pathname.endsWith('/')) base = new URL(base.pathname + '/' + base.search, base);
+
+    let manifest = {};
+    const mres = await fetch(new URL('manifest.json', base));
+    if (mres.ok) {
+      manifest = await mres.json();
+      this._manifest = manifest;
+    } else if (mres.status !== 404) {
+      throw new Error(`could not fetch ${new URL('manifest.json', base)}: HTTP ${mres.status}`);
+    }
+
+    const wasmName = manifest.entry || 'cart.wasm';
+    if (!validateAssetPath(wasmName)) throw new Error(`manifest entry is not a cart-relative path: ${wasmName}`);
+    const wres = await fetch(new URL(assetUrlPath(wasmName), base));
+    if (!wres.ok) throw new Error(`could not fetch ${new URL(wasmName, base)}: HTTP ${wres.status}`);
+    const wasmBytes = new Uint8Array(await wres.arrayBuffer());
+
+    this._dirAssetBase = new URL(assetUrlPath(assetPrefixOf(manifest)), base);
+    this._hasAssets = true;
+
+    const files = Array.isArray(manifest.files)
+      ? manifest.files.filter(p => typeof p === 'string' && validateAssetPath(p))
+      : null;
+    if (files) {
+      this._fileListBuf = new TextEncoder().encode(files.join('\n'));
+      // With a list, a path not on it is known missing without a request.
+      // Engines probe search paths file by file (neverball: 178 misses before
+      // its first frame), and on a real network every probe is a round trip.
+      this._dirListed = new Set(files);
+    }
+
+    if (hasJSPI()) {
+      this._lazy = true;
+    } else if (files) {
+      await this._prefetchDirectory(files);
+    } else {
+      throw new Error(
+        'this browser has no WebAssembly JSPI, so a cart directory\'s assets cannot be ' +
+        'fetched on demand, and the manifest has no `files` list to download up front. ' +
+        'Serve the cart as a .wasc, or add `files` (wasmcart index <dir>).');
+    }
+    return wasmBytes;
+  }
+
+  // The no-JSPI fallback: download every listed file before the cart starts.
+  async _prefetchDirectory(files) {
+    let next = 0;
+    const worker = async () => {
+      while (next < files.length) {
+        const path = files[next++];
+        const data = await this._fetchDirAsset(path);
+        if (data) this._dirAssets.set(path, data);
+        this._dirSizes.set(path, data ? data.length : -1);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(PREFETCH_CONCURRENCY, files.length) }, worker));
+  }
+
+  // One asset's bytes, or null when it does not exist (or cannot be fetched).
+  async _fetchDirAsset(path) {
+    const url = new URL(assetUrlPath(path), this._dirAssetBase);
+    let res;
+    try {
+      res = await fetch(url);
+    } catch (e) {
+      console.warn(`wasmcart: could not fetch asset ${path}: ${e?.message ?? e}`);
+      return null;
+    }
+    if (!res.ok) {
+      if (res.status !== 404) console.warn(`wasmcart: could not fetch asset ${path}: HTTP ${res.status}`);
+      return null;
+    }
+    const data = new Uint8Array(await res.arrayBuffer());
+    if (data.length > MAX_ASSET_SIZE) {
+      console.warn(`wasmcart: asset ${path} is larger than the ${MAX_ASSET_SIZE}-byte limit; treating it as missing`);
+      return null;
+    }
+    return data;
+  }
+
+  /* The bytes for `path`: a Uint8Array or null now, or (lazy cart, not yet
+   * fetched) a promise of one. A cached miss stays a miss. */
+  _dirAsset(path) {
+    if (this._dirAssets.has(path)) return this._dirAssets.get(path);
+    if (this._dirSizes.get(path) === -1) return null;
+    if (!this._lazy) return null;  // prefetched: anything not fetched is not listed
+    if (this._dirListed && !this._dirListed.has(path)) return null;
+    return this._fetchDirAsset(path).then((data) => {
+      this._dirSizes.set(path, data ? data.length : -1);
+      // Kept only until the load that a size query almost always precedes;
+      // _dirLoadAsset drops it once the cart has its own copy.
+      if (data) this._dirAssets.set(path, data);
+      return data;
+    });
+  }
+
+  // The _filelist.txt answer for a directory cart, or null after warning once.
+  _dirFileList() {
+    if (this._fileListBuf) return this._fileListBuf;
+    if (!this._fileListWarned) {
+      this._fileListWarned = true;
+      console.warn(
+        'wasmcart: the cart asked for _filelist.txt, but a cart directory cannot be ' +
+        'listed over HTTP and its manifest has no `files` list; reporting it missing. ' +
+        'Add one with: wasmcart index <dir>');
+    }
+    return null;
+  }
+
+  _dirAssetSize(pathPtr, pathLen) {
+    const path = this._readPath(pathPtr, pathLen);
+    if (!path) return -1;
+    if (path === '_filelist.txt') return this._dirFileList()?.length ?? -1;
+    const known = this._dirSizes.get(path);
+    if (known !== undefined) return known;
+    const data = this._dirAsset(path);
+    if (data instanceof Promise) return data.then(d => (d ? d.length : -1));
+    return data ? data.length : -1;
+  }
+
+  _dirLoadAsset(pathPtr, pathLen, destPtr, maxSize) {
+    const path = this._readPath(pathPtr, pathLen);
+    if (!path) return -1;
+    const copy = (data) => {
+      if (!data) return -1;
+      const copyLen = Math.min(data.length, maxSize);
+      this._updateViews();
+      this._u8.set(data.subarray(0, copyLen), destPtr);
+      // A lazy cart now holds its own copy, so a whole-file load releases ours
+      // (a 100 MB pk3 should not live twice). The size stays cached, and a
+      // later load of the same file refetches -- usually from the HTTP cache.
+      if (this._lazy && copyLen === data.length) this._dirAssets.delete(path);
+      return copyLen;
+    };
+    if (path === '_filelist.txt') return copy(this._dirFileList());
+    const data = this._dirAsset(path);
+    return data instanceof Promise ? data.then(copy) : copy(data);
   }
 
   // --- Asset API ---
@@ -1151,7 +1470,10 @@ export class CartHostWeb {
 
   // --- Networking (ABI v3) ---
 
-  _withTempWasmData(data, callback) {
+  /* Copy `data` into cart memory, make the cart call `name(...lead, ptr, len)`
+   * (a generator step, see _frame), then free the copy. The free happens after
+   * the call completes even when a lazy cart suspended inside it. */
+  *_withTempWasmData(data, name, ...lead) {
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
     const len = bytes.length;
     const malloc = this.instance.exports.malloc;
@@ -1162,14 +1484,14 @@ export class CartHostWeb {
       if (ptr === 0) return;
       this._updateViews();
       this._u8.set(bytes, ptr);
-      try { callback(ptr, len); } finally { free(ptr); }
+      try { yield [name, [...lead, ptr, len]]; } finally { free(ptr); }
     } else {
       const memSize = this.memory.buffer.byteLength;
       const scratchStart = memSize - 65536;
       if (len > 65536 || len === 0) return;
       this._updateViews();
       this._u8.set(bytes, scratchStart);
-      callback(scratchStart, len);
+      yield [name, [...lead, scratchStart, len]];
     }
   }
 
@@ -1321,7 +1643,7 @@ export class CartHostWeb {
     return peer.transport ?? TRANSPORT_UNKNOWN;
   }
 
-  _deliverNetEvents() {
+  *_deliverNetEvents() {
     const exports = this.instance.exports;
 
     for (const [peerId, peer] of this._peers) {
@@ -1329,21 +1651,17 @@ export class CartHostWeb {
         const evt = peer.eventQueue.shift();
         if (evt.type === 'connect' && exports.wc_peer_on_connect) {
           const nameBytes = new TextEncoder().encode(String(peer.name ?? ''));
-          this._withTempWasmData(nameBytes, (ptr, len) => {
-            exports.wc_peer_on_connect(peerId, ptr, len);
-          });
+          yield* this._withTempWasmData(nameBytes, 'wc_peer_on_connect', peerId);
         } else if (evt.type === 'message' && exports.wc_peer_on_message) {
           const buf = evt.data instanceof ArrayBuffer ? new Uint8Array(evt.data)
             : evt.data instanceof Uint8Array ? evt.data
             : new Uint8Array(evt.data);
-          this._withTempWasmData(buf, (ptr, len) => {
-            exports.wc_peer_on_message(peerId, ptr, len);
-          });
+          yield* this._withTempWasmData(buf, 'wc_peer_on_message', peerId);
         } else if (evt.type === 'disconnect') {
           peer.closed = true;
-          if (exports.wc_peer_on_disconnect) exports.wc_peer_on_disconnect(peerId);
+          if (exports.wc_peer_on_disconnect) yield ['wc_peer_on_disconnect', [peerId]];
         } else if (evt.type === 'error' && exports.wc_peer_on_error) {
-          exports.wc_peer_on_error(peerId);
+          yield ['wc_peer_on_error', [peerId]];
         }
       }
     }
@@ -1480,17 +1798,17 @@ export class CartHostWeb {
     }
   }
 
-  _deliverPointerEvents() {
+  *_deliverPointerEvents() {
     if (!this.info?.wantsPointer) return;
     const exports = this.instance.exports;
     while (this._pointerEvents.length > 0) {
       const evt = this._pointerEvents.shift();
       if (evt.type === 'down' && exports.wc_ptr_on_down) {
-        exports.wc_ptr_on_down(evt.id, evt.x, evt.y, evt.button);
+        yield ['wc_ptr_on_down', [evt.id, evt.x, evt.y, evt.button]];
       } else if (evt.type === 'move' && exports.wc_ptr_on_move) {
-        exports.wc_ptr_on_move(evt.id, evt.x, evt.y);
+        yield ['wc_ptr_on_move', [evt.id, evt.x, evt.y]];
       } else if (evt.type === 'up' && exports.wc_ptr_on_up) {
-        exports.wc_ptr_on_up(evt.id, evt.button);
+        yield ['wc_ptr_on_up', [evt.id, evt.button]];
       }
     }
   }
@@ -1529,32 +1847,30 @@ export class CartHostWeb {
 
   get textInputActive() { return this._textActive; }
 
-  _deliverTextEvents() {
+  *_deliverTextEvents() {
     if (this._textEvents.length === 0) return;
     const fn = this.instance?.exports?.wc_on_text;
     if (typeof fn !== 'function') { this._textEvents.length = 0; return; }
     while (this._textEvents.length > 0) {
       const bytes = new TextEncoder().encode(this._textEvents.shift());
       if (bytes.length === 0) continue;
-      this._withTempWasmData(bytes, (ptr, len) => {
-        try {
-          fn(ptr, len);
-        } catch (e) {
-          console.warn("wasmcart: cart's wc_on_text() threw:", e?.message ?? e);
-        }
-      });
+      try {
+        yield* this._withTempWasmData(bytes, 'wc_on_text');
+      } catch (e) {
+        console.warn("wasmcart: cart's wc_on_text() threw:", e?.message ?? e);
+      }
     }
   }
 
-  _deliverKeyEvents() {
+  *_deliverKeyEvents() {
     if (!this.info?.wantsKeyboard) return;
     const exports = this.instance.exports;
     while (this._keyEvents.length > 0) {
       const evt = this._keyEvents.shift();
       if (evt.type === 'down' && exports.wc_kb_on_down) {
-        exports.wc_kb_on_down(evt.keycode, evt.modifiers);
+        yield ['wc_kb_on_down', [evt.keycode, evt.modifiers]];
       } else if (evt.type === 'up' && exports.wc_kb_on_up) {
-        exports.wc_kb_on_up(evt.keycode, evt.modifiers);
+        yield ['wc_kb_on_up', [evt.keycode, evt.modifiers]];
       }
     }
   }
@@ -1829,11 +2145,26 @@ export class CartHostWeb {
   _callLifecycle(name) {
     const fn = this.instance?.exports?.[name];
     if (typeof fn !== 'function') return;
+    const warn = (e) => console.warn(`wasmcart: cart's ${name}() threw:`, e?.message ?? e);
+    if (this._lazy) {
+      // These arrive from browser events at any moment, possibly while a frame
+      // is suspended on a fetch; queue behind it instead of re-entering.
+      this._serial(() => this._entry(name)()).catch(warn);
+      return;
+    }
     try {
       fn();
     } catch (e) {
-      console.warn(`wasmcart: cart's ${name}() threw:`, e?.message ?? e);
+      warn(e);
     }
+  }
+
+  /* Run `task` after every cart call already queued on a lazy cart, so calls
+   * into it never overlap (see runFrame). Returns the task's promise. */
+  _serial(task) {
+    const run = (this._cartQueue ?? Promise.resolve()).then(task);
+    this._cartQueue = run.catch(() => {});
+    return run;
   }
 
   _padName(padId, bufPtr, bufLen) {

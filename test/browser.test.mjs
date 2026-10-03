@@ -68,8 +68,30 @@ const MIME = { '.js': 'text/javascript', '.mjs': 'text/javascript',
                '.html': 'text/html', '.wasm': 'application/wasm',
                '.wasc': 'application/octet-stream', '.json': 'application/json' };
 
-const http = createServer((req, res) => {
-  const path = decodeURIComponent(req.url.split('?')[0]);
+// Cart-directory tests (5-7) assert on WHAT was fetched and WHEN, so every
+// request is logged, and asset responses are delayed so a lazy load really
+// has to suspend instead of racing a cache.
+const requests = [];
+const DIRCART = '/test/fixtures/dircart/';
+// The same directory served with a manifest that carries a `files` list.
+const DIRCART_LISTED = '/test/fixtures/dircart-listed/';
+const LISTED_MANIFEST = JSON.stringify({
+  name: 'dircart-listed',
+  files: ['hello.txt', 'data/key.txt', 'data/late.bin'],
+});
+
+const http = createServer(async (req, res) => {
+  let path = decodeURIComponent(req.url.split('?')[0]);
+  requests.push(path);
+  if (path.startsWith(DIRCART_LISTED)) {
+    if (path === DIRCART_LISTED + 'manifest.json') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(LISTED_MANIFEST);
+      return;
+    }
+    path = DIRCART + path.slice(DIRCART_LISTED.length);
+  }
+  if (path.startsWith(DIRCART + 'assets/')) await new Promise((r) => setTimeout(r, 40));
   const file = join(ROOT, path === '/' ? 'test/browser-fixture.html' : path);
   if (!file.startsWith(ROOT) || !existsSync(file)) { res.writeHead(404); res.end(); return; }
   res.writeHead(200, {
@@ -178,6 +200,136 @@ const denied = await page.evaluate(async (wsPort) => {
   return id;
 }, WS_PORT);
 check('ungranted cart refused (-1)', denied, -1);
+
+// ─── 5. a cart DIRECTORY, assets fetched on demand through JSPI ───────────
+// dircart has no manifest.json (optional) and no `files` list. Read back what
+// the CART saw (its results struct) and which files the host fetched when.
+const readResults = () => page.evaluate(() => {
+  const h = window.__dirHost;
+  const p = h.instance.exports.dc_results();
+  const v = new Int32Array(h.memory.buffer, p, 10);
+  const str = (ptr) => {
+    const u8 = new Uint8Array(h.memory.buffer);
+    let end = ptr; while (u8[end]) end++;
+    return new TextDecoder().decode(u8.subarray(ptr, end));
+  };
+  return {
+    init_size: v[0], init_loaded: v[1], missing_size: v[2], list_size: v[3],
+    list_loaded: v[4], late_loaded: v[5], late_frame: v[6], key_loaded: v[7],
+    frames: v[8], late_sum: v[9] >>> 0,
+    hello: str(h.instance.exports.dc_hello()), key: str(h.instance.exports.dc_key()),
+  };
+});
+const fetchedAssets = () => requests.filter((p) => p.includes('/assets/'))
+  .map((p) => p.split('/assets/')[1]);
+
+const jspi = await page.evaluate(() => typeof WebAssembly.Suspending === 'function');
+check('this Chromium has JSPI', jspi, true);
+
+requests.length = 0;
+const loaded = await page.evaluate(async () => {
+  const { CartHostWeb } = await import('/web.js');
+  const host = new CartHostWeb();
+  window.__dirHost = host;
+  await host.load('/test/fixtures/dircart/', {});
+  return { lazy: host._lazy, info: host.getInfo().width };
+});
+check('directory cart loads lazily', loaded, { lazy: true, info: 64 });
+let r = await readResults();
+check('wc_init: size of an asset fetched on demand', r.init_size, 22);
+check('wc_init: asset bytes arrive', [r.init_loaded, r.hello], [22, 'hello from a directory']);
+check('missing asset is -1', r.missing_size, -1);
+check('no files list: _filelist.txt is missing', [r.list_size, r.list_loaded], [-1, -1]);
+check('only what init asked for was fetched', fetchedAssets(), ['hello.txt', 'nope.txt']);
+
+const frames = await page.evaluate(async () => {
+  const h = window.__dirHost;
+  const out = [];
+  for (let i = 0; i < 4; i++) {
+    const f = await h.runFrame([]);
+    out.push(f.framebuffer[1]);   // green channel of pixel 0 (XRGB bytes: B,G,R,X)
+  }
+  return out;
+});
+r = await readResults();
+check('frame 3 suspended mid-render and finished it', [r.late_loaded, r.late_frame, r.late_sum], [3000, 3, 382428]);
+check('pixels written after the fetch (red, red, green, green)', frames, [0, 0, 255, 255]);
+check('late.bin fetched only when the frame needed it', fetchedAssets().slice(2), ['data/late.bin']);
+
+// A keyboard callback that loads an asset is entered through JSPI too.
+await page.evaluate(async () => {
+  const h = window.__dirHost;
+  h.keyDown(4, 0);
+  await h.runFrame([]);
+  h.keyUp(4, 0);
+});
+r = await readResults();
+check('asset loaded inside wc_kb_on_down', [r.key_loaded, r.key], [9, 'key asset']);
+
+// Overlapping runFrame calls share one frame instead of re-entering the cart.
+const overlap = await page.evaluate(async () => {
+  const h = window.__dirHost;
+  const before = h.instance.exports.dc_results();
+  const v = () => new Int32Array(h.memory.buffer, before, 10)[8];
+  const n0 = v();
+  const a = h.runFrame([]);
+  const b = h.runFrame([]);
+  await Promise.all([a, b]);
+  return { same: a === b, ran: v() - n0 };
+});
+check('a second runFrame during a frame does not re-enter', overlap, { same: true, ran: 1 });
+await page.evaluate(() => { window.__dirHost.destroy(); window.__dirHost = null; });
+
+// ─── 6. the optional manifest `files` list feeds _filelist.txt ────────────
+requests.length = 0;
+await page.evaluate(async () => {
+  const { CartHostWeb } = await import('/web.js');
+  const host = new CartHostWeb();
+  window.__dirHost = host;
+  await host.load('/test/fixtures/dircart-listed/', {});
+});
+r = await readResults();
+const list = await page.evaluate(() => {
+  const h = window.__dirHost;
+  const u8 = new Uint8Array(h.memory.buffer);
+  let p = h.instance.exports.dc_list(), e = p; while (u8[e]) e++;
+  return new TextDecoder().decode(u8.subarray(p, e));
+});
+check('files list served as _filelist.txt', [r.list_size, list],
+      [list.length, 'hello.txt\ndata/key.txt\ndata/late.bin']);
+check('missing asset still -1', r.missing_size, -1);
+check('with a list, an unlisted path is answered locally (no request)', fetchedAssets(), ['hello.txt']);
+await page.evaluate(() => { window.__dirHost.destroy(); window.__dirHost = null; });
+
+// ─── 7. without JSPI: prefetch the files list, or refuse with a reason ────
+requests.length = 0;
+const noJspi = await page.evaluate(async () => {
+  const { CartHostWeb } = await import('/web.js');
+  const saved = WebAssembly.Suspending;
+  delete WebAssembly.Suspending;
+  try {
+    const listed = new CartHostWeb();
+    await listed.load('/test/fixtures/dircart-listed/', {});
+    window.__dirHost = listed;
+    const f1 = listed.runFrame([]);    // synchronous again: no promise
+    const sync = !(f1 instanceof Promise);
+    listed.runFrame([]); listed.runFrame([]);
+    let refused = null;
+    try {
+      await new CartHostWeb().load('/test/fixtures/dircart/', {});
+    } catch (e) { refused = e.message; }
+    return { lazy: listed._lazy, sync, refused };
+  } finally {
+    WebAssembly.Suspending = saved;
+  }
+});
+r = await readResults();
+check('no JSPI + files: prefetched, runs synchronously', [noJspi.lazy, noJspi.sync], [false, true]);
+check('no JSPI + files: every listed file fetched before start',
+      fetchedAssets().sort(), ['data/key.txt', 'data/late.bin', 'hello.txt']);
+check('no JSPI + files: assets load from the prefetch', [r.init_loaded, r.late_loaded, r.late_sum], [22, 3000, 382428]);
+check('no JSPI, no files: refused with the reason', /no WebAssembly JSPI/.test(noJspi.refused ?? ''), true);
+await page.evaluate(() => { window.__dirHost.destroy(); window.__dirHost = null; });
 
 await browser.close();
 ws.kill();

@@ -129,6 +129,23 @@ So the manifest carries only what the cart cannot state for itself:
   comma-separated; unknown tokens warn at pack time but still pack, since
   hosts tolerate them by rule).
 
+**`files`** (array of strings, optional)
+- Every asset path, relative to the asset prefix (`assets`, default
+  `assets/`). It exists for ONE case: a cart directory served over HTTP (see
+  Cart directories), where a web host has no way to list the directory and so
+  no other source for `_filelist.txt`. Wherever the host can enumerate the
+  assets itself -- a `.wasc` (the zip index) or a local directory -- the real
+  listing wins and this field is ignored.
+- Optional at every layer: no host requires it, a cart runs without it, and
+  without it only `_filelist.txt` is missing (`-1`) on the web. Sizes and
+  loads never need it. Most carts never read `_filelist.txt` at all.
+- Generated, not hand-written: `wasmcart index <dir>` writes it (`--check`
+  verifies, `--remove` drops it), and `wasmcart-pack --files` records it in
+  an archive so the archive can be unzipped and served as a directory. A host
+  loading a local directory whose `files` disagrees with the directory SHOULD
+  warn, naming the files: a stale list only fails once deployed, as files that
+  load by name but are missing from the listing.
+
 **`pointer`** / **`keyboard`** — **REMOVED.** These were the double gate
 described above: the cart set `WC_FLAG_POINTER`/`WC_FLAG_KEYBOARD` and the
 manifest had to independently agree, or input was silently dropped. The flag
@@ -1117,6 +1134,39 @@ asset API:
   for it to resolve to a host file.
 - A cart therefore cannot read the user's files, other carts' assets, or anything
   on the host - its entire readable world is the assets it shipped with.
+
+### Cart directories
+
+A cart need not be packed. A **cart directory** is the unzipped form of a
+`.wasc`: `manifest.json` (optional), the entry wasm, and the asset tree under
+the asset prefix. Hosts that can read a directory load it directly (dev mode).
+A web host can load one **served over HTTP**, which lets a cart start before
+its assets are downloaded:
+
+- The asset ABI stays synchronous. A web host MAY satisfy `wc_asset_size` and
+  `wc_load_asset` by fetching `<dir>/<prefix>/<path>` on first use and
+  suspending the cart until the bytes arrive, with JavaScript Promise
+  Integration (JSPI). The cart sees an ordinary call that returns its bytes;
+  ported engines that read files deep inside their own code need no change.
+  A fetch inside `wc_render` stalls that frame, as a slow disk would.
+- While a cart is suspended the host MUST NOT call into it again (a frame, an
+  input callback, a lifecycle callback): its C stack is live in linear
+  memory. Such a host's frame call is asynchronous, and calls queue.
+- A `404` is a missing asset (`-1`), as in an archive. Path validation is
+  unchanged.
+- HTTP cannot list a directory, so `_filelist.txt` comes from the manifest's
+  optional `files` list (see Manifest), or is missing (`-1`) without one.
+  When `files` is present a host MAY treat it as complete and answer a path
+  not on it with `-1` without a request: engines probe search paths file by
+  file, and on a network every probe is a round trip.
+- A web host without JSPI cannot suspend a cart on a fetch. It MAY download
+  every file in `files` before starting the cart; with no `files` either it
+  cannot know what to fetch and MUST fail the load with a message saying so
+  (never start a cart whose asset reads will all fail).
+
+`CartHostWeb` implements this: `load(url)` of a directory URL (one not ending
+in `.wasc`/`.wasm`), and `await runFrame()`, which returns a promise only
+for a lazily loaded cart.
 
 ### Saving is host-managed
 

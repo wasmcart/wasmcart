@@ -161,6 +161,15 @@ the host is running a pre-0.17.0 wasmcart.
 |--------|-------------|
 | `.wasm` | Standalone WASM file, assets embedded as C arrays |
 | `.wasc` | ZIP archive: `manifest.json` + `cart.wasm` + `assets/` (recommended for games with assets) |
+| cart directory | The same tree unzipped. Runs locally (`npx wasmcart <dir>`), and on the web straight from a static server: `await host.load('/games/mygame/')` |
+
+A cart directory on the web starts after only its wasm downloads: in a browser
+with JSPI (Chrome/Edge 137+, Firefox 153+, Safari 27+) each asset is fetched
+the first time the cart asks for it, and the cart waits on that fetch inside
+its ordinary `wc_load_asset` call, so ported engines need no change. Drive such
+a cart with `await host.runFrame(pads)`. A cart that enumerates its assets
+(`_filelist.txt`) needs the optional manifest `files` list there, since HTTP
+cannot list a directory: `npx wasmcart index <dir>` writes it.
 
 ## The ABI
 

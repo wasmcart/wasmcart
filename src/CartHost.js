@@ -1,5 +1,5 @@
 import { readFile, stat } from 'fs/promises';
-import { openSync, readSync, closeSync, readdirSync, statSync } from 'fs';
+import { openSync, readSync, closeSync, statSync } from 'fs';
 import { join, extname } from 'path';
 import { open as yauzlOpen } from 'yauzl';
 import { inflateRawSync } from 'zlib';
@@ -36,6 +36,7 @@ import {
   clampTrigger,
 } from './abi.js';
 import { createWebGLImports, noteGlCurrent } from './webgl_imports.js';
+import { listDirRelative, diffFileList } from './assetFiles.js';
 
 /* The manifest's asset root is stripped as a PATH PREFIX from packed entries,
  * so it needs its trailing slash: "app" turns "app/main.lua" into "/main.lua"
@@ -235,32 +236,17 @@ const MAX_ASSET_SIZE = 256 * 1024 * 1024;
 // Max entries in a .wasc archive
 const MAX_ARCHIVE_ENTRIES = 100000;
 
-/*
- * Every file under `dir`, as forward-slash paths relative to it, so a dev
- * directory produces the same _filelist.txt an archive does. Bounded by
- * MAX_ARCHIVE_ENTRIES for the same reason the archive loaders are: a cart
- * asking for the list should not be able to make the host walk an unbounded
- * tree. Symlinked directories are not followed.
- */
-function listDirRelative(dir) {
-  const out = [];
-  const walk = (abs, rel) => {
-    if (out.length >= MAX_ARCHIVE_ENTRIES) return;
-    let entries;
-    try {
-      entries = readdirSync(abs, { withFileTypes: true });
-    } catch {
-      return;   // unreadable subtree: the asset calls report per-path anyway
-    }
-    for (const e of entries) {
-      if (out.length >= MAX_ARCHIVE_ENTRIES) return;
-      const childRel = rel ? `${rel}/${e.name}` : e.name;
-      if (e.isDirectory()) walk(join(abs, e.name), childRel);
-      else if (e.isFile()) out.push(childRel);
-    }
-  };
-  walk(dir, '');
-  return out;
+// listDirRelative lives in assetFiles.js, shared with `wasmcart index`.
+
+function warnStaleFileList(declared, onDisk, dirPath) {
+  const { missing, unlisted } = diffFileList(declared, onDisk);
+  if (!missing.length && !unlisted.length) return;
+  const show = (list) => list.slice(0, 5).join(', ') + (list.length > 5 ? `, ... (${list.length} in all)` : '');
+  const parts = [];
+  if (unlisted.length) parts.push(`on disk but not listed: ${show(unlisted)}`);
+  if (missing.length) parts.push(`listed but not on disk: ${show(missing)}`);
+  console.warn(`wasmcart: manifest.json \`files\` in ${dirPath} is out of date (${parts.join('; ')}). ` +
+    `A web host serving this directory lists only \`files\`. Regenerate it: wasmcart index ${dirPath}`);
 }
 
 // Last-resort size for a host-provisioned offscreen GL context, used only
@@ -1555,10 +1541,17 @@ export class CartHost {
 
   async _loadFromDirectory(dirPath) {
     // Dev mode: load manifest.json + cart.wasm + assets from a directory
+    // The manifest is optional here too (SPEC), as it already was for a .wasc
+    // and for a directory served to the web host: absent, every field takes
+    // its default and the entry is cart.wasm.
     const manifestPath = join(dirPath, 'manifest.json');
-    const manifestBuf = await readFile(manifestPath);
-    const manifest = JSON.parse(manifestBuf.toString('utf8'));
-    this._manifest = manifest;
+    let manifest = {};
+    try {
+      manifest = JSON.parse((await readFile(manifestPath)).toString('utf8'));
+      this._manifest = manifest;
+    } catch (e) {
+      if (e.code !== 'ENOENT') throw e;
+    }
 
     const wasmName = manifest.entry || 'cart.wasm';
     const wasmBytes = await readFile(join(dirPath, wasmName));
@@ -1575,7 +1568,15 @@ export class CartHost {
     // see nothing in dev mode, which is the same bug class as an asset that
     // loads but renders black: the failure looks like "no ROMs" rather than
     // like a missing feature.
-    this._fileListBuf = new TextEncoder().encode(listDirRelative(assetsDir).join('\n'));
+    const onDisk = listDirRelative(assetsDir);
+    this._fileListBuf = new TextEncoder().encode(onDisk.join('\n'));
+
+    // The manifest's optional `files` list is what a WEB host serves as
+    // _filelist.txt for this same directory, since HTTP cannot list it. Here
+    // the real directory wins, so a stale list would only show up once the
+    // cart is deployed -- as files that load by name but are missing from the
+    // listing. Catch it now, by name.
+    if (Array.isArray(manifest.files)) warnStaleFileList(manifest.files, onDisk, dirPath);
 
     return wasmBytes;
   }

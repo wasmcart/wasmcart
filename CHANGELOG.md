@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+A cart can run on the web from an unpacked **cart directory**, starting
+before its assets are downloaded.
+
+- `CartHostWeb.load(url)` takes a cart directory URL (or a .wasc/.wasm URL,
+  fetched whole). With JSPI (Chrome/Edge 137+, Firefox 153+, Safari 27+) each
+  asset is fetched the first time the cart asks for it, and the cart is
+  suspended on that fetch, so `wc_load_asset` still returns bytes on the next
+  line and ported engines need no change. Only the entry wasm is downloaded
+  before the cart starts.
+- For such a cart `runFrame()` returns a promise (`await host.runFrame()`
+  works for every cart). Input and lifecycle callbacks are awaited one at a
+  time and never overlap a suspended frame.
+- New optional manifest field `files`: the asset list, used only to serve
+  `_filelist.txt` for a cart directory on the web (HTTP cannot list one).
+  `wasmcart index <dir>` writes it (`--check`, `--remove`), `wasmcart-pack
+  --files` records it in an archive, and the node host warns by name when a
+  directory's list is stale.
+- Without JSPI, a cart directory with `files` is prefetched whole and runs
+  synchronously; without `files` the load fails and says why.
+- The node host loads a cart directory with no `manifest.json`, as the spec
+  already allowed for a .wasc.
+
 ## 0.27.0
 
 GL carts that use uniform blocks draw, a GL cart's window is no longer
