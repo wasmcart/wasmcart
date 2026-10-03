@@ -7,3 +7,9 @@ test/fixtures/*.sav
 # Fixture intermediates: the .wasc is the artifact tests load, and it
 # contains the wasm. Tracking both just duplicates it in the repo.
 test/fixtures/*.wasm
+
+# The libretro core writes a log NEXT TO THE CART it loads (libretro.c), so
+# running any cart from this tree drops one beside it -- test/fixtures/ in
+# particular. A run byproduct, not a build artifact.
+wasmcart.log
+**/wasmcart.log
