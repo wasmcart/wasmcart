@@ -16,7 +16,7 @@
  * first game controller if one is plugged in.
  */
 
-import { BUTTON } from '../src/abi.js';
+import { BUTTON, WHEEL_DELTA } from '../src/abi.js';
 import { fitRect } from '../src/letterbox.js';
 import { savPathFor, loadSave, makeSaver } from '../src/save.js';
 
@@ -151,6 +151,111 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
   window.on('keyUp', (e) => {
     const name = KEYMAP[(e.key ?? e.scancode ?? '').toString().toLowerCase()];
     if (name) held.delete(name);
+  });
+
+  /* --- mouse ---------------------------------------------------------------
+   *
+   * The cart sees CART-SPACE pixels, so every event is run backwards through
+   * the same letterbox that put the frame on screen. Without that inversion a
+   * click lands wherever the window happens to be sized, which is correct
+   * only at 1:1 and silently wrong at every other size.
+   *
+   * TWO COORDINATE SPACES. SDL reports mouse position in WINDOW coordinates
+   * (logical points -- it packs SDL_MouseMotionEvent.x/y straight through),
+   * while the letterbox rect is computed in DRAWABLE pixels; on a HiDPI
+   * display those differ by the backing scale factor. So the position is
+   * scaled by pixelWidth/width rather than assumed to be in either space:
+   * the ratio is 1 on a normal display and 2 on a Retina one, and the
+   * arithmetic is identical either way.
+   *
+   * OUTSIDE THE FRAME IS NOT A POSITION. The letterbox bars are not part of
+   * the cart's picture, and x/y go over the wire as int16, so an unclamped
+   * position there would report a coordinate the cart cannot have. The
+   * pointer is reported INACTIVE while the cursor is over the bars instead,
+   * which is the same shape as a touch that is not currently touching --
+   * and `active` is the field a cart already has to check.
+   */
+  const MOUSE_ID = 0;   // pointer 0 is the mouse; 1+ are touch slots
+  // SDL button numbers are 1=LEFT 2=MIDDLE 3=RIGHT (verified against
+  // sdl.mouse.BUTTON), and the ABI's bits are 0=primary 1=secondary
+  // 2=middle. That is a REMAP, not an offset: subtracting one would quietly
+  // swap right and middle.
+  const MOUSE_BUTTON_BIT = { 1: 0, 3: 1, 2: 2 };
+  // Stays inactive until the cursor is first seen inside the frame, so a cart
+  // cannot read a stale (0,0) pointer before the mouse has ever moved.
+  let mouseInside = false;
+
+  /** Window-space event coords -> cart-space pixels, or null when outside. */
+  const toCart = (ex, ey) => {
+    const pw = window.pixelWidth, ph = window.pixelHeight;
+    if (!pw || !ph) return null;
+    // Logical -> drawable. The guards keep a zero-sized (minimized) window
+    // from dividing by zero.
+    const px = ex * (window.width ? pw / window.width : 1);
+    const py = ey * (window.height ? ph / window.height : 1);
+    if (opt.stretch) {
+      // --stretch fills the drawable, so the whole window is cart space.
+      return {
+        x: Math.min(info.width - 1, Math.max(0, Math.floor(px * info.width / pw))),
+        y: Math.min(info.height - 1, Math.max(0, Math.floor(py * info.height / ph))),
+      };
+    }
+    const r = fitRect(info.width, info.height, pw, ph);
+    if (px < r.x || py < r.y || px >= r.x + r.width || py >= r.y + r.height) return null;
+    // Clamped because the rect is rounded to integers: the last fractional
+    // pixel of a scaled-up frame can otherwise compute info.width exactly.
+    return {
+      x: Math.min(info.width - 1, Math.floor((px - r.x) * info.width / r.width)),
+      y: Math.min(info.height - 1, Math.floor((py - r.y) * info.height / r.height)),
+    };
+  };
+
+  window.on('mouseMove', (e) => {
+    const p = toCart(e.x, e.y);
+    if (!p) {
+      // Left the picture: drop the pointer rather than pinning it to an edge,
+      // so a cart can tell "cursor elsewhere" from "cursor against the wall".
+      if (mouseInside) { host.setPointer(MOUSE_ID, 0, 0, 0, false); mouseInside = false; }
+      return;
+    }
+    // pointerMove updates position but does NOT set `active` (only
+    // pointerDown does), so entering the frame has to activate explicitly --
+    // otherwise a cart that gates on `active` sees nothing until the first
+    // click, and a crosshair/cursor never appears under a moving mouse.
+    if (!mouseInside) {
+      mouseInside = true;
+      host.setPointer(MOUSE_ID, p.x, p.y, 0, true);
+    }
+    host.pointerMove(MOUSE_ID, p.x, p.y);
+  });
+
+  window.on('mouseButtonDown', (e) => {
+    const bit = MOUSE_BUTTON_BIT[e.button];
+    if (bit === undefined) return;   // a side/extra button the ABI has no bit for
+    const p = toCart(e.x, e.y);
+    if (!p) return;                  // a press on the bars is not a press on the cart
+    mouseInside = true;
+    host.pointerDown(MOUSE_ID, p.x, p.y, bit);
+  });
+
+  window.on('mouseButtonUp', (e) => {
+    const bit = MOUSE_BUTTON_BIT[e.button];
+    if (bit === undefined) return;
+    // Released ALWAYS, even outside the frame: a button pressed inside and
+    // released over the bars must not stay stuck down forever.
+    host.pointerUp(MOUSE_ID, bit);
+  });
+
+  /* Wheel. The ABI's unit is 1/120 of a notch (WHEEL_DELTA) with UP positive.
+   * SDL's wheel.y is also up-positive and is passed through unscaled, so the
+   * conversion is a multiply, not a negate. `flipped` is SDL_MOUSEWHEEL_FLIPPED
+   * -- the platform has already inverted the values for "natural" scrolling --
+   * so undoing it here keeps one direction meaning one thing to every cart.
+   * CartHost accumulates these and delivers one delta per frame. */
+  window.on('mouseWheel', (e) => {
+    const sign = e.flipped ? -1 : 1;
+    host.wheel(Math.round((e.dx || 0) * WHEEL_DELTA * sign),
+               Math.round((e.dy || 0) * WHEEL_DELTA * sign));
   });
   // Split out of quit() so every exit path can reach it: a save that only
   // survives a graceful window close is not a save. Defined HERE, above the
