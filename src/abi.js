@@ -1,7 +1,12 @@
 // wasmcart ABI v3 definitions (backward compatible with v1 and v2)
 
-export const ABI_VERSION = 3;
-export const MIN_ABI_VERSION = 1; // oldest version we still support
+export const ABI_VERSION = 4;
+// v4 widened the pad's triggers from uint8 to int16, which MOVED `connected`
+// from byte 12 to 14. A cart built against v1-v3 reads `connected` at 12,
+// which is now a trigger byte, so it would see every pad as unplugged. That
+// is a silent, baffling failure, so those carts are refused at load with a
+// version error instead: rebuild against the v4 header.
+export const MIN_ABI_VERSION = 4;
 
 // Button bitmask positions (matches common gamepad layout)
 export const BUTTON = {
@@ -19,13 +24,29 @@ export const BUTTON = {
   RIGHT:   1 << 11,
   L3:      1 << 12,
   R3:      1 << 13,
+  // v4: the rest of SDL2's controller button set, which libretro mirrors.
+  // A pad without one of these never sets the bit, so a cart can read them
+  // unconditionally.
+  GUIDE:    1 << 14,
+  MISC1:    1 << 15,
+  PADDLE1:  1 << 16,
+  PADDLE2:  1 << 17,
+  PADDLE3:  1 << 18,
+  PADDLE4:  1 << 19,
+  TOUCHPAD: 1 << 20,
 };
 
-// WCPad struct layout (16 bytes per pad)
-// u16 buttons
+// WCPad struct layout (20 bytes per pad)
+// u32 buttons                       (21 bits used, 21-31 reserved)
 // i16 left_x, left_y, right_x, right_y
-// u8  left_trigger, right_trigger, connected, _pad
-export const PAD_SIZE = 16;
+// i16 left_trigger, right_trigger   (0..32767, never negative)
+// u8  connected, _pad[3]
+//
+// Every analog axis is int16, which is bit-for-bit SDL2's and libretro's own
+// representation, so a native host passes values straight through. Triggers
+// were uint8 through v3; see the note on wc_pad_t in include/wasmcart.h for
+// why the inconsistency was worth a breaking change.
+export const PAD_SIZE = 20;
 export const MAX_PADS = 4;
 export const INPUT_REGION_SIZE = PAD_SIZE * MAX_PADS; // 64 bytes
 
@@ -63,6 +84,23 @@ export const SCRATCH_BYTES = 65536;
 export function clamp01(v) {
   return v > 0 ? (v < 1 ? v : 1) : 0;
 }
+
+/**
+ * Clamp a pad trigger to its wire range, 0..32767.
+ *
+ * Triggers are one-directional, so a negative value is meaningless and
+ * becomes 0 rather than wrapping to a huge positive. The clamp is the point:
+ * a caller that scaled a trigger like a stick (by 32767 from a 0..1 float,
+ * or past full travel) previously overflowed the old uint8 silently, which
+ * made a resting trigger report a number that moved on its own. NaN maps to
+ * 0 for the same reason clamp01 does it.
+ */
+export function clampTrigger(v) {
+  return v > 0 ? (v < TRIGGER_MAX ? Math.round(v) : TRIGGER_MAX) : 0;
+}
+
+/** Full travel on a pad trigger. Matches SDL2 and libretro. */
+export const TRIGGER_MAX = 32767;
 
 // WCTime struct layout (20 bytes)
 // f64 time_ms (offset 0)

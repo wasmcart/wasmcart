@@ -30,7 +30,10 @@ static uint8_t  host_info[128];
 static uint32_t info[20];
 
 WC_EXPORT uint32_t *wc_get_info(void) {
-  info[0]  = 3;                            /* version */
+  info[0]  = 4;                            /* version — ABI v4; this cart is
+                                              deliberately header-free, so the
+                                              number is literal and must be
+                                              bumped by hand */
   info[1]  = W;
   info[2]  = H;
   info[3]  = (uint32_t)(uintptr_t)fb;

@@ -20,6 +20,7 @@
 import { createWriteStream, readFileSync, statSync, readdirSync } from 'fs';
 import { resolve, relative, join, basename, extname } from 'path';
 import { ZipFile } from 'yazl';
+import { ABI_VERSION } from '../src/abi.js';
 
 // Parse arguments
 const args = process.argv.slice(2);
@@ -200,7 +201,10 @@ if (netWebsocket) {
 const manifest = sourceManifest ? { ...sourceManifest } : {
   name: gameName,
   version: gameVersion,
-  abi: 3,
+  // From the constant, not a literal: this was pinned at 3 and kept emitting
+  // 3 after the ABI moved to 4, so freshly packed carts described themselves
+  // with the previous version.
+  abi: ABI_VERSION,
   entry: 'cart.wasm',
 };
 if (sourceManifest) {

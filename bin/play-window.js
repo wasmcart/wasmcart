@@ -27,8 +27,8 @@ const KEYMAP = {
   '[': 'L', ']': 'R',
 };
 
-// SDL's trigger axes, which are stored in the pad struct as a single unsigned
-// byte rather than as a signed int16 like the sticks.
+// SDL's trigger axes. Same width as the sticks (int16) as of ABI v4, but
+// unsigned: a trigger travels one way, so its float is taken as magnitude.
 const TRIGGER_AXES = new Set(['leftTrigger', 'rightTrigger']);
 
 const CONTROLLER_BUTTONS = {
@@ -310,15 +310,13 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
     ctrl.on('buttonUp', (e) => { const n = CONTROLLER_BUTTONS[e.button]; if (n) held.delete(n); });
     ctrl.on('axisMotion', (e) => {
       if (!(e.axis in analog)) return;
-      // TRIGGERS ARE A DIFFERENT WIDTH FROM STICKS. SDL reports every axis as
-      // a float, but the pad struct stores sticks as int16 and triggers as a
-      // SINGLE BYTE (CartHost writes _u8 at offset+10/+11). Scaling a trigger
-      // by 32767 overflows that byte and wraps: measured on an X360 pad whose
-      // triggers rest near 0.5, rest became 16384 -> 0 and a light pull
-      // became 14991 -> 143, so a resting trigger reported garbage that moved
-      // on its own. Triggers are also unsigned: they travel one way.
+      // Every analog axis is int16 as of ABI v4, so sticks and triggers share
+      // one scale factor. Triggers are UNSIGNED (0..32767, one direction),
+      // which is the only thing separating them here: SDL hands both over as
+      // a float, and a pad whose trigger rests near 0.5 would otherwise
+      // report half-pressed as a negative stick value.
       analog[e.axis] = TRIGGER_AXES.has(e.axis)
-        ? Math.max(0, Math.min(255, Math.round(Math.abs(e.value ?? 0) * 255)))
+        ? Math.max(0, Math.min(32767, Math.round(Math.abs(e.value ?? 0) * 32767)))
         : Math.max(-32767, Math.min(32767, Math.round((e.value ?? 0) * 32767)));
     });
   };

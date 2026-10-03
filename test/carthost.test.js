@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { ABI_VERSION, MIN_ABI_VERSION } from '../src/abi.js';
 import { tmpdir } from 'node:os';
 import { CartHost } from '../index.js';
 import { makeSaver, savPathFor } from '../src/save.js';
@@ -22,7 +23,9 @@ test('loads a .wasc cart and reports info', async () => {
   const info = cart.getInfo();
   assert.equal(cart.usesGL, false, 'hello is a 2D cart');
   assert.ok(info.width > 0 && info.height > 0);
-  assert.ok(info.version >= 1 && info.version <= 3);
+  // Against the constants, not a literal: this read `<= 3` and started
+  // failing the moment the ABI moved to 4, which says nothing about the host.
+  assert.ok(info.version >= MIN_ABI_VERSION && info.version <= ABI_VERSION);
   cart.destroy();
 });
 

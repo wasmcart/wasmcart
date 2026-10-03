@@ -28,21 +28,37 @@ This means:
 
 The cart never needs to know what controller is physically connected.
 
-### wc_pad_t Layout (16 bytes per pad)
+### wc_pad_t Layout (20 bytes per pad)
 
 ```c
 typedef struct {
-    uint16_t buttons;        // Bitmask (WC_BTN_A, WC_BTN_B, etc.)
+    uint32_t buttons;        // Bitmask (WC_BTN_A, WC_BTN_B, etc.)
     int16_t  left_x;         // Left stick X: -32768 to 32767
     int16_t  left_y;         // Left stick Y: -32768 to 32767
     int16_t  right_x;        // Right stick X: -32768 to 32767
     int16_t  right_y;        // Right stick Y: -32768 to 32767
-    uint8_t  left_trigger;   // Left trigger: 0-255
-    uint8_t  right_trigger;  // Right trigger: 0-255
+    int16_t  left_trigger;   // Left trigger: 0 to 32767, never negative
+    int16_t  right_trigger;  // Right trigger: 0 to 32767, never negative
     uint8_t  connected;      // 1 if controller is connected
     uint8_t  _pad[3];        // Alignment padding
 } wc_pad_t;
 ```
+
+**Every analog axis is `int16`, triggers included.** Sticks are
+-32768..32767 and triggers are 0..32767, which is bit-for-bit what SDL2 and
+libretro already report, so a native host assigns the value straight through
+with no arithmetic. Only the browser needs conversion, because the Gamepad
+API uses floats: divide by 32767.
+
+> **Changed in ABI v4.** Triggers were `uint8_t` (0-255) through v3 and
+> `buttons` was `uint16_t`. The trigger inconsistency caused three separate
+> host bugs -- one scaled a trigger like a stick and wrapped the byte, one
+> shifted by 8 instead of 7 so a full press read as half, and one fed 0..1
+> into a transform expecting -1..1 so both triggers read as HELD at rest.
+> A cart built against v1-v3 is **refused at load**, because v4 moved every
+> field after `buttons` and an old cart would read `connected` out of a
+> trigger byte and report every pad as unplugged. Rebuild against the v4
+> header.
 
 ### Button Mapping (W3C Standard Gamepad)
 
@@ -62,11 +78,30 @@ typedef struct {
 | 11 | `WC_BTN_RIGHT` | buttons[15] | D-pad Right | D-pad Right | D-pad Right |
 | 12 | `WC_BTN_L3` | buttons[10] | LS Click | L3 | LS Click |
 | 13 | `WC_BTN_R3` | buttons[11] | RS Click | R3 | RS Click |
+| 14 | `WC_BTN_GUIDE` | buttons[16] | Guide | PS | Home |
+| 15 | `WC_BTN_MISC1` | (none) | Share | Microphone | Capture |
+| 16 | `WC_BTN_PADDLE1` | (none) | P1 (Elite) | - | - |
+| 17 | `WC_BTN_PADDLE2` | (none) | P2 (Elite) | - | - |
+| 18 | `WC_BTN_PADDLE3` | (none) | P3 (Elite) | - | - |
+| 19 | `WC_BTN_PADDLE4` | (none) | P4 (Elite) | - | - |
+| 20 | `WC_BTN_TOUCHPAD` | (none) | - | Touchpad click | - |
 
-Bits 14-15 are unassigned. Note the wasmcart bit is NOT the W3C index — the
-two orders differ (W3C puts the analog triggers at buttons[6]/[7]; wasmcart
-has no trigger bits at all). The triggers are analog-only here: read
-`left_trigger`/`right_trigger` (0-255).
+Bits 21-31 are reserved; a cart must not assign its own meaning to them.
+
+Bits 14-20 were added in v4 and complete parity with SDL2's controller button
+set, which libretro mirrors. A pad that lacks one of these simply never sets
+the bit -- the same shape as a desktop never filling the nine touch slots --
+so a cart may read them unconditionally. Only `WC_BTN_GUIDE` has a slot in
+the W3C standard mapping; a browser cannot report paddles, a microphone
+button or a touchpad click at all, so a runtime presenting a cart as a web
+gamepad drops those six rather than inventing indices for them.
+
+Note the wasmcart bit is NOT the W3C index -- the two orders differ. W3C puts
+the analog triggers at buttons[6]/[7]; wasmcart has no trigger bits at all,
+because they are analog here: read `left_trigger`/`right_trigger`
+(0-32767). A runtime presenting them as digital buttons should use a low
+threshold rather than half travel, since a pad resting slightly off zero
+would otherwise flicker.
 
 ### Axes
 

@@ -33,6 +33,7 @@ import {
   SCRATCH_BYTES,
   MAX_RUMBLE_MS,
   clamp01,
+  clampTrigger,
 } from './abi.js';
 import { createWebGLImports, noteGlCurrent } from './webgl_imports.js';
 
@@ -2636,15 +2637,20 @@ export class CartHost {
         continue;
       }
 
-      this._u16[offset >> 1] = pad.buttons || 0;
-      this._i16[(offset + 2) >> 1] = pad.leftX || 0;
-      this._i16[(offset + 4) >> 1] = pad.leftY || 0;
-      this._i16[(offset + 6) >> 1] = pad.rightX || 0;
-      this._i16[(offset + 8) >> 1] = pad.rightY || 0;
-      this._u8[offset + 10] = pad.leftTrigger || 0;
-      this._u8[offset + 11] = pad.rightTrigger || 0;
-      this._u8[offset + 12] = 1; // connected
-      this._u8[offset + 13] = 0; // padding
+      // u32 as of ABI v4: 21 button bits, so the paddles and touchpad fit.
+      this._u32[offset >> 2] = pad.buttons >>> 0 || 0;
+      this._i16[(offset + 4) >> 1] = pad.leftX || 0;
+      this._i16[(offset + 6) >> 1] = pad.leftY || 0;
+      this._i16[(offset + 8) >> 1] = pad.rightX || 0;
+      this._i16[(offset + 10) >> 1] = pad.rightY || 0;
+      // int16 as of ABI v4, 0..32767. Clamped rather than truncated: a caller
+      // handing over a stick-scaled value used to silently wrap the old byte.
+      this._i16[(offset + 12) >> 1] = clampTrigger(pad.leftTrigger);
+      this._i16[(offset + 14) >> 1] = clampTrigger(pad.rightTrigger);
+      this._u8[offset + 16] = 1; // connected
+      this._u8[offset + 17] = 0; // padding
+      this._u8[offset + 18] = 0;
+      this._u8[offset + 19] = 0;
     }
   }
 

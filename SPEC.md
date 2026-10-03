@@ -1,6 +1,6 @@
 # wasmcart Specification
 
-> **ABI version: 3.** This is the normative specification for the wasmcart virtual
+> **ABI version: 4.** This is the normative specification for the wasmcart virtual
 > cartridge format - the host↔cart contract that any conforming host (see the
 > reference implementations in [`src/`](src/)) and any cart must follow. The
 > machine-readable form of these constants lives in [`src/abi.js`](src/abi.js); the
@@ -90,7 +90,7 @@ So the manifest carries only what the cart cannot state for itself:
 {
   "name": "Game Name",
   "version": "1.0.0",
-  "abi": 3,
+  "abi": 4,
   "entry": "cart.wasm",
   "players": 4,
   "net": {

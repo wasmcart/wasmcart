@@ -8,22 +8,38 @@ import {
   FLAG_DEBUG, DEBUG_TYPE, DEBUG_TYPE_WIDTH, DEBUG_TYPE_NAME, DEBUG_FIELD_SIZE,
 } from '../src/abi.js';
 
-test('ABI version is current (3) and min-supported is sane', () => {
-  assert.equal(ABI_VERSION, 3);
+test('ABI version is current (4) and min-supported is sane', () => {
+  assert.equal(ABI_VERSION, 4);
   assert.ok(MIN_ABI_VERSION >= 1 && MIN_ABI_VERSION <= ABI_VERSION);
+  // v4 moved every field after the buttons, so a v1-v3 cart cannot be read
+  // with v4 offsets: it must be REFUSED, not reinterpreted. If this ever
+  // drops below 4, an old cart loads and reads a shifted struct -- it would
+  // see `connected` as a trigger byte and report every pad as unplugged.
+  assert.equal(MIN_ABI_VERSION, 4);
 });
 
-test('BUTTON bitmask has 14 distinct single-bit values', () => {
+test('BUTTON bitmask has 21 distinct single-bit values', () => {
   const vals = Object.values(BUTTON);
-  assert.equal(vals.length, 14);
+  // 14 through v3, plus GUIDE, MISC1, PADDLE1-4 and TOUCHPAD in v4, which
+  // completes parity with SDL2's controller button set.
+  assert.equal(vals.length, 21);
   // every value is a single set bit
   for (const v of vals) assert.equal(v & (v - 1), 0, `${v} is not a single bit`);
   // all distinct
   assert.equal(new Set(vals).size, vals.length);
+  // Must all fit the u32 field, and the top 11 bits stay reserved.
+  for (const v of vals) assert.ok(v > 0 && v <= 0x00100000, `${v} outside bits 0-20`);
+  // The pre-v4 bits keep their meanings: a renumbering would silently remap
+  // every existing cart's controls.
+  assert.equal(BUTTON.A, 1 << 0);
+  assert.equal(BUTTON.R3, 1 << 13);
+  assert.equal(BUTTON.GUIDE, 1 << 14);
 });
 
 test('pad + input region layout is consistent', () => {
-  assert.equal(PAD_SIZE, 16);
+  // 20 as of v4: u32 buttons (4) + 4 sticks (8) + 2 triggers (4) +
+  // connected (1) + 3 padding.
+  assert.equal(PAD_SIZE, 20);
   assert.equal(MAX_PADS, 4);
   assert.equal(INPUT_REGION_SIZE, PAD_SIZE * MAX_PADS);
 });
