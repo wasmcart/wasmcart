@@ -23,6 +23,7 @@ import {
   MAX_DELTA_MS,
   MAX_RUMBLE_MS,
   clamp01,
+  clampTrigger,
 } from './abi.js';
 import { createWebGLImports } from './webgl_imports.js';
 import { inflateSync } from 'fflate';
@@ -525,6 +526,49 @@ export class CartHostWeb {
     // unnoticed -- the yield became `() => -1`, the cart's main loop never
     // unwound, and the first frame hung the tab. So warn: a silently stubbed
     // import is a real incompatibility, not a nothing.
+    // setjmp/longjmp, which MUST be real rather than stubbed.
+    //
+    // A cart built with -enable-emscripten-sjlj (any large C/C++ engine that
+    // uses setjmp) longjmps by calling _emscripten_throw_longjmp, and the
+    // invoke_* trampolines catch that throw and record it with setThrew. The
+    // node host has had this since the beginning; this host had neither, so
+    // both got the () => -1 stub below. A longjmp then returned -1 instead of
+    // unwinding, and the cart's loop spun forever: a hung tab with a warning
+    // in the console as the only clue. Exactly the failure the comment above
+    // describes, in a second guise.
+    //
+    // The stub is also wrong for a different reason on invoke_ji/invoke_jiji,
+    // which return i64: () => -1 throws "Cannot convert -1 to a BigInt".
+    imports.env._emscripten_throw_longjmp = () => {
+      const e = new Error('longjmp');
+      e._emscripten_longjmp = true;
+      throw e;
+    };
+    for (const imp of moduleImports) {
+      if (imp.module === 'env' && imp.kind === 'function'
+          && imp.name.startsWith('invoke_') && !(imp.name in imports.env)) {
+        // The signature is encoded in the name (invoke_<sig>), but only the
+        // arity matters here: the first argument is the function-table index
+        // and the rest pass straight through.
+        imports.env[imp.name] = (index, ...args) => {
+          const ex = this.instance.exports;
+          const sp = ex.emscripten_stack_get_current?.() ?? ex.stackSave?.();
+          try {
+            return ex.__indirect_function_table.get(index)(...args);
+          } catch (e) {
+            if (sp !== undefined) (ex._emscripten_stack_restore ?? ex.stackRestore)?.(sp);
+            // Only a wasm longjmp (or the thrown marker above) is expected
+            // here; anything else is a real error and must not be swallowed.
+            if (e instanceof WebAssembly.Exception || (e && e._emscripten_longjmp)) {
+              ex.setThrew?.(1, 0);
+              return 0;
+            }
+            throw e;
+          }
+        };
+      }
+    }
+
     for (const imp of moduleImports) {
       if (imp.module === 'env' && imp.kind === 'function') {
         if (!(imp.name in imports.env)) {
@@ -1657,15 +1701,20 @@ export class CartHostWeb {
         continue;
       }
 
-      this._u16[offset >> 1] = pad.buttons || 0;
-      this._i16[(offset + 2) >> 1] = pad.leftX || 0;
-      this._i16[(offset + 4) >> 1] = pad.leftY || 0;
-      this._i16[(offset + 6) >> 1] = pad.rightX || 0;
-      this._i16[(offset + 8) >> 1] = pad.rightY || 0;
-      this._u8[offset + 10] = pad.leftTrigger || 0;
-      this._u8[offset + 11] = pad.rightTrigger || 0;
-      this._u8[offset + 12] = 1; // connected
-      this._u8[offset + 13] = 0; // padding
+      // u32 as of ABI v4: 21 button bits, so the paddles and touchpad fit.
+      this._u32[offset >> 2] = pad.buttons >>> 0 || 0;
+      this._i16[(offset + 4) >> 1] = pad.leftX || 0;
+      this._i16[(offset + 6) >> 1] = pad.leftY || 0;
+      this._i16[(offset + 8) >> 1] = pad.rightX || 0;
+      this._i16[(offset + 10) >> 1] = pad.rightY || 0;
+      // int16 as of ABI v4, 0..32767. Clamped rather than truncated: a caller
+      // handing over a stick-scaled value used to silently wrap the old byte.
+      this._i16[(offset + 12) >> 1] = clampTrigger(pad.leftTrigger);
+      this._i16[(offset + 14) >> 1] = clampTrigger(pad.rightTrigger);
+      this._u8[offset + 16] = 1; // connected
+      this._u8[offset + 17] = 0; // padding
+      this._u8[offset + 18] = 0;
+      this._u8[offset + 19] = 0;
     }
   }
 
