@@ -27,6 +27,10 @@ const KEYMAP = {
   '[': 'L', ']': 'R',
 };
 
+// SDL's trigger axes, which are stored in the pad struct as a single unsigned
+// byte rather than as a signed int16 like the sticks.
+const TRIGGER_AXES = new Set(['leftTrigger', 'rightTrigger']);
+
 const CONTROLLER_BUTTONS = {
   dpadUp: 'UP', dpadDown: 'DOWN', dpadLeft: 'LEFT', dpadRight: 'RIGHT',
   a: 'A', b: 'B', x: 'X', y: 'Y',
@@ -280,19 +284,59 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
   window.on('blur',     () => host.blur());
   window.on('focus',    () => host.focus());
 
-  // first plugged-in game controller, if any
+  /* --- game controller ----------------------------------------------------
+   *
+   * OPENED ON deviceAdd, NOT ONCE AT STARTUP. SDL does not fill its device
+   * list at the same moment on every platform: on Linux it is already
+   * populated when the module finishes importing, but on macOS it is empty
+   * and fills a second or two later as IOKit reports the device. A one-shot
+   * read of devices[0] therefore found the pad on Linux and silently found
+   * nothing on a Mac, so only the keyboard and mouse ever reached the cart
+   * while the controller itself worked fine in other software.
+   *
+   * Listening also gets reconnects for free, which a startup-only read never
+   * could: a Bluetooth pad that drops mid-session comes back.
+   */
   let ctrl = null;
-  try {
-    const dev = sdl.controller.devices[0];
-    if (dev) {
+  const openController = (dev) => {
+    if (ctrl || !dev) return;                       // pad 0 only; see the rumble note below
+    try {
       ctrl = sdl.controller.openDevice(dev);
-      ctrl.on('buttonDown', (e) => { const n = CONTROLLER_BUTTONS[e.button]; if (n) held.add(n); });
-      ctrl.on('buttonUp', (e) => { const n = CONTROLLER_BUTTONS[e.button]; if (n) held.delete(n); });
-      ctrl.on('axisMotion', (e) => {
-        const v = Math.round((e.value ?? 0) * 32767);
-        if (e.axis in analog) analog[e.axis] = v;
-      });
+    } catch {
+      ctrl = null;                                  // unplugged between the event and here
+      return;
     }
+    ctrl.on('buttonDown', (e) => { const n = CONTROLLER_BUTTONS[e.button]; if (n) held.add(n); });
+    ctrl.on('buttonUp', (e) => { const n = CONTROLLER_BUTTONS[e.button]; if (n) held.delete(n); });
+    ctrl.on('axisMotion', (e) => {
+      if (!(e.axis in analog)) return;
+      // TRIGGERS ARE A DIFFERENT WIDTH FROM STICKS. SDL reports every axis as
+      // a float, but the pad struct stores sticks as int16 and triggers as a
+      // SINGLE BYTE (CartHost writes _u8 at offset+10/+11). Scaling a trigger
+      // by 32767 overflows that byte and wraps: measured on an X360 pad whose
+      // triggers rest near 0.5, rest became 16384 -> 0 and a light pull
+      // became 14991 -> 143, so a resting trigger reported garbage that moved
+      // on its own. Triggers are also unsigned: they travel one way.
+      analog[e.axis] = TRIGGER_AXES.has(e.axis)
+        ? Math.max(0, Math.min(255, Math.round(Math.abs(e.value ?? 0) * 255)))
+        : Math.max(-32767, Math.min(32767, Math.round((e.value ?? 0) * 32767)));
+    });
+  };
+  try {
+    // Already listed (the Linux case), plus anything that arrives later (the
+    // macOS case, and any reconnect on either).
+    openController(sdl.controller.devices[0]);
+    sdl.controller.on('deviceAdd', (e) => openController(e.device ?? sdl.controller.devices[0]));
+    sdl.controller.on('deviceRemove', (e) => {
+      const gone = e.device;
+      if (!ctrl || (gone && ctrl.device && gone.id !== undefined && ctrl.device.id !== gone.id)) return;
+      try { ctrl.close(); } catch { /* already gone with the hardware */ }
+      ctrl = null;
+      // Drop held pad buttons: a cart must not keep walking because the
+      // controller was yanked mid-press.
+      for (const n of Object.values(CONTROLLER_BUTTONS)) held.delete(n);
+      for (const k of Object.keys(analog)) analog[k] = 0;
+    });
   } catch { /* controllers are optional */ }
 
   // Route cart rumble to the SDL device. Only pad 0 is wired, matching the
