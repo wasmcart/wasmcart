@@ -362,6 +362,10 @@ export class CartHost {
    * @param {string|Uint8Array} source - file path (.wasc), directory path (dev mode), or .wasc zip bytes
    * @param {object} [options]
    * @param {Uint8Array} [options.saveData] - existing save data to load
+   * @param {boolean|'msaa'} [options.directPresent] - GL carts: draw straight into the context's default
+   *   framebuffer when it is exactly the cart's size (no redirect FBO, no copy); 'msaa' also for a
+   *   multisampled context. Off by default; not for embedders that scale the cart into a window.
+   * @param {boolean} [options.antialias] - a host-created GL context gets a 4x multisampled surface
    * @param {object|Function} [options.glBackend] - WebGL2RenderingContext (from webgl-node or browser),
    *   OR a factory (sync or async) returning one. The factory is invoked once, only if the cart's
    *   wasm imports from the "gl" module - so launchers don't need to know a cart is GL up front.
@@ -474,7 +478,9 @@ export class CartHost {
         // Another host (or an active-bezel compositor) in the same process
         // owning the "current" context is normal, and a cart that never
         // claims its own draws into someone else's.
-        this._ownedGlCtx = createWebGL2Context(w, h) || null;
+        // antialias: true (load option, opt in) asks webgl-node for a 4x
+        // multisampled surface, a browser canvas made with antialias: true
+        this._ownedGlCtx = createWebGL2Context(w, h, { antialias: options.antialias === true }) || null;
         made = this._ownedGlCtx?.gl || null;
       } catch { made = null; this._ownedGlCtx = null; }
 
@@ -755,11 +761,28 @@ export class CartHost {
 
     // Wire up GL imports if cart uses GL
     if (this.usesGL) {
+      // DIRECT PRESENT (opt in): with directPresent: true the cart draws
+      // straight into the context's default framebuffer when that is exactly
+      // the cart's size, instead of into the redirect FBO, as CartHostWeb does
+      // for a matching canvas. That saves a full-surface copy per presented
+      // frame, and with a multisampled context ('msaa', for an antialias
+      // context) the cart's own MSAA resolve too. Off by default: an embedder
+      // that scales or letterboxes the cart into a window (presentToSurface
+      // with a rect) needs the redirect. withRenderedFrame still works; it
+      // reads the default framebuffer.
+      const gl = options.glBackend;
+      const directPresent = !options.directPresent ? null : (w, h) => {
+        const a = typeof gl.getContextAttributes === 'function' ? gl.getContextAttributes() : null;
+        if (!a || !a.depth || !a.stencil) return false;
+        if (a.antialias && options.directPresent !== 'msaa') return false;
+        return gl.drawingBufferWidth === w && gl.drawingBufferHeight === h;
+      };
       const glFuncs = createWebGLImports({
         getMemory: () => this.memory,
         ctx: options.glBackend,
         getMalloc: () => this.instance?.exports?.malloc || null,
         nativeGL: options.nativeGL || null,
+        directPresent,
       });
       imports.gl = glFuncs;
       // Kept so load() can set up the FBO redirect once the cart's real
