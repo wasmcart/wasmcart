@@ -159,6 +159,18 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
   let _drawColorAttachment = null;
   const _fboColor0 = new Map();   // WebGLFramebuffer -> WebGLTexture|null
 
+  // The viewport, clear colour and scissor enable the cart last set, which
+  // the per-frame blit must restore. Tracked through the imports rather than
+  // read back with getParameter()/isEnabled(): in Chromium those are
+  // synchronous round trips to the GPU process, so querying them every
+  // frame made the page wait for the whole frame's GL work at each present
+  // (half the frame time of a draw-heavy cart). null = not yet known; the
+  // first present reads the real value once (the host's loading screen
+  // sets these before the cart runs).
+  let _cartViewport = null;
+  let _cartClear = null;
+  let _cartScissor = null;
+
   /**
    * Break a feedback loop before a draw that would otherwise be discarded.
    *
@@ -284,9 +296,12 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
     // that: a 1920x1080 cart presented into a 960x540 window then drew its
     // next frame into a 960x540 corner of its own FBO, so every capture came
     // back inset and scaled. Snapshot, then restore in full below.
-    const prevViewport = ctx.getParameter(ctx.VIEWPORT);
-    const prevClear = ctx.getParameter(ctx.COLOR_CLEAR_VALUE);
-    const prevScissor = ctx.isEnabled(ctx.SCISSOR_TEST);
+    if (!_cartViewport) _cartViewport = Array.from(ctx.getParameter(ctx.VIEWPORT));
+    if (!_cartClear) _cartClear = Array.from(ctx.getParameter(ctx.COLOR_CLEAR_VALUE));
+    if (_cartScissor === null) _cartScissor = ctx.isEnabled(ctx.SCISSOR_TEST);
+    const prevViewport = _cartViewport;
+    const prevClear = _cartClear;
+    const prevScissor = _cartScissor;
 
     ctx.bindFramebuffer(ctx.READ_FRAMEBUFFER, _redirectFBO);
     ctx.bindFramebuffer(ctx.DRAW_FRAMEBUFFER, null);
@@ -652,8 +667,8 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
 
   const funcs = {
     // ─── State ──────────────────────────────────────────────────────────
-    glEnable: (cap) => ctx.enable(cap),
-    glDisable: (cap) => ctx.disable(cap),
+    glEnable: (cap) => { if (cap === 0x0C11) _cartScissor = true; ctx.enable(cap); },
+    glDisable: (cap) => { if (cap === 0x0C11) _cartScissor = false; ctx.disable(cap); },
     glGetError: () => ctx.getError(),
     glFinish: () => ctx.finish(),
     glFlush: () => ctx.flush(),
@@ -729,10 +744,10 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
     },
 
     // ─── Viewport / Clear ───────────────────────────────────────────────
-    glViewport: (x, y, w, h) => ctx.viewport(x, y, w, h),
+    glViewport: (x, y, w, h) => { _cartViewport = [x, y, w, h]; ctx.viewport(x, y, w, h); },
     glScissor: (x, y, w, h) => ctx.scissor(x, y, w, h),
     glClear: (mask) => ctx.clear(mask),
-    glClearColor: (r, g, b, a) => ctx.clearColor(r, g, b, a),
+    glClearColor: (r, g, b, a) => { _cartClear = [r, g, b, a]; ctx.clearColor(r, g, b, a); },
     glClearDepthf: (d) => ctx.clearDepth(d),
     glClearStencil: (s) => ctx.clearStencil(s),
 
