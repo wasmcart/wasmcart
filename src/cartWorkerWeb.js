@@ -31,14 +31,14 @@ function readZipEntryFromBuffer(buf, entry) {
 
 function assetSize(pathPtr, pathLen) {
   if (!assetIndex) return -1;
-  const path = new TextDecoder().decode(new Uint8Array(memory.buffer, pathPtr, pathLen));
+  const path = new TextDecoder().decode(new Uint8Array(memory.buffer, pathPtr, pathLen).slice());
   const entry = assetIndex.get(path);
   return entry ? entry.uncompressedSize : -1;
 }
 
 function loadAsset(pathPtr, pathLen, destPtr, maxSize) {
   if (!assetIndex) return -1;
-  const path = new TextDecoder().decode(new Uint8Array(memory.buffer, pathPtr, pathLen));
+  const path = new TextDecoder().decode(new Uint8Array(memory.buffer, pathPtr, pathLen).slice());
   const entry = assetIndex.get(path);
   if (!entry) return -1;
   if (entry.uncompressedSize > maxSize) return -1;

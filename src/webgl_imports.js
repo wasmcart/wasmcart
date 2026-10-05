@@ -13,10 +13,17 @@
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
+// TextDecoder.decode refuses a view of a SharedArrayBuffer (a threaded
+// cart's memory) in browsers, so decode a copy: slice() of any typed array
+// returns one backed by an ordinary ArrayBuffer.
+function decodeBytes(u8, start, end) {
+  return decoder.decode(u8.buffer instanceof ArrayBuffer ? u8.subarray(start, end) : u8.slice(start, end));
+}
+
 function readCString(u8, ptr) {
   let end = ptr;
   while (u8[end] !== 0) end++;
-  return decoder.decode(u8.subarray(ptr, end));
+  return decodeBytes(u8, ptr, end);
 }
 
 /* WHICH GL CONTEXT IS CURRENT IN THIS PROCESS.
@@ -957,7 +964,7 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL, direct
         const strPtr = ptrs[(stringsPtr >> 2) + i];
         if (lens && lens[(lengthsPtr >> 2) + i] > 0) {
           const len = lens[(lengthsPtr >> 2) + i];
-          fullSource += decoder.decode(mem.subarray(strPtr, strPtr + len));
+          fullSource += decodeBytes(mem, strPtr, strPtr + len);
         } else {
           fullSource += readCString(mem, strPtr);
         }

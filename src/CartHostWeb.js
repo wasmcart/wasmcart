@@ -546,7 +546,7 @@ export class CartHostWeb {
           try {
             const name = new TextDecoder().decode(
               new Uint8Array(this.memory.buffer, namePtr,
-                new Uint8Array(this.memory.buffer).indexOf(0, namePtr) - namePtr));
+                new Uint8Array(this.memory.buffer).indexOf(0, namePtr) - namePtr).slice());
             if (!this._memfsFiles) this._memfsFiles = new Map();
             this._memfsFiles.set(name, { ptr: dataPtr, size });
             return 0;
