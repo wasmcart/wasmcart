@@ -27,6 +27,25 @@ import {
   clampTrigger,
 } from './abi.js';
 import { createWebGLImports } from './webgl_imports.js';
+
+/**
+ * Whether a cart of w x h can draw straight into this context's default
+ * framebuffer instead of the redirect FBO (see webgl_imports.js). Only a
+ * browser canvas qualifies, sized exactly to the cart (no scaling, no
+ * letterbox), with depth and stencil (the redirect provides both) and without
+ * MSAA (the redirect has none, so a multisampled surface would change the
+ * cart's pixels). Pass { directPresent: false } to load() to always redirect.
+ */
+function canPresentDirect(gl, w, h) {
+  if (!gl || typeof gl.getContextAttributes !== 'function') return false;
+  const c = gl.canvas;
+  const browserCanvas = (typeof HTMLCanvasElement !== 'undefined' && c instanceof HTMLCanvasElement) ||
+    (typeof OffscreenCanvas !== 'undefined' && c instanceof OffscreenCanvas);
+  if (!browserCanvas) return false;
+  const a = gl.getContextAttributes();
+  if (!a || !a.depth || !a.stencil || a.antialias) return false;
+  return gl.drawingBufferWidth === w && gl.drawingBufferHeight === h;
+}
 import { inflateSync } from 'fflate';
 
 /* The manifest's asset root is stripped as a PATH PREFIX from packed entries,
@@ -672,6 +691,7 @@ export class CartHostWeb {
         getMemory: () => this.memory,
         ctx: options.glBackend,
         getMalloc: () => this.instance?.exports?.malloc || null,
+        directPresent: options.directPresent === false ? null : (w, h) => canPresentDirect(options.glBackend, w, h),
       });
       this._glFuncs = glFuncs;
       imports.gl = glFuncs;

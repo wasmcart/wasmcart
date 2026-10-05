@@ -40,7 +40,7 @@ export function noteGlCurrent(c) { _currentGlCtx = c || null; }
  * @param {WebGL2RenderingContext} options.ctx - WebGL2 rendering context
  * @returns {object} import object with GL functions
  */
-export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
+export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL, directPresent }) {
   // WRAP makeCurrent SO EVERY CLAIM IS RECORDED, whoever makes it.
   //
   // native-gles dispatches every GL call against ONE process-global current
@@ -144,6 +144,18 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
   let _redirectW = 0;
   let _redirectH = 0;
 
+  // DIRECT PRESENT: when the host says the context's default framebuffer can
+  // stand in for the redirect (directPresent(w, h) returns true: a browser
+  // canvas exactly the cart's size, with depth + stencil and no MSAA), the
+  // cart draws straight into it and nothing is blitted. That is what a page
+  // using WebGL directly does. The per-frame blit it replaces cost more than
+  // a whole small three.js frame in Chromium: the GPU process runs a
+  // full-surface copy plus its state changes for every runFrame.
+  // Readback then reads the default framebuffer, which is only defined until
+  // the browser composites -- the same rule as any WebGL page, and the same
+  // rule the blit target already had.
+  let _direct = false;
+
   // Which GL_TEXTURE_2D is bound on each texture unit, and which unit is
   // active. Tracked rather than queried because getParameter() forces a
   // driver round trip, and this is consulted on every bind of framebuffer 0.
@@ -223,7 +235,20 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
   }
 
   function _ensureRedirectFBO(w, h) {
-    if (_redirectFBO && _redirectW === w && _redirectH === h) return;
+    if (directPresent && directPresent(w, h)) {
+      // The redirect's names, if a previous size made them, stay allocated
+      // (see the Mali note below); they are simply no longer bound.
+      _direct = true;
+      _redirectW = w;
+      _redirectH = h;
+      ctx.bindFramebuffer(ctx.FRAMEBUFFER, null);
+      _boundFBOisRedirect = false;
+      _drawColorAttachment = null;
+      return;
+    }
+    const wasDirect = _direct;
+    _direct = false;
+    if (!wasDirect && _redirectFBO && _redirectW === w && _redirectH === h) return;
     // NEVER delete + re-create these on resize. The cart allocates GL names
     // through the same context, so a delete here lets the driver hand the
     // recycled name to the cart's next create -- or vice versa. Seen for real
@@ -286,7 +311,7 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
    *   surface size, needed to clear the bars around the rect.
    */
   function _blitRedirectToCanvas(dst) {
-    if (!_redirectFBO) return;
+    if (_direct || !_redirectFBO) return;
     const cw = ctx.drawingBufferWidth;
     const ch = ctx.drawingBufferHeight;
     // Presenting must be INVISIBLE to the cart. Everything this function
@@ -462,6 +487,37 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
         table[id] = null;
       }
     }
+  }
+
+  // Uniform data from linear memory, as a SMALL standalone typed array.
+  //
+  // Handing WebGL a fresh view onto the cart's whole memory
+  // (new Float32Array(memory.buffer, ptr, n)) is correct but slow in
+  // Chromium: a uniformMatrix4fv took ~0.7 us in the native binding that way,
+  // against ~0.1 us for the same call with a 16-float array (measured with a
+  // CPU profile, three.js vs a three.c cart drawing three cubes). Copying the
+  // few floats into a reused scratch array costs less than the view did.
+  // Large arrays (bone palettes and the like) keep the view: the copy would
+  // stop paying for itself.
+  const _scratchF = [], _scratchI = [];
+  let _memF32 = null, _memI32 = null;
+  function _uniformF32(ptr, n) {
+    const buf = getMemory().buffer;
+    if (n > 64 || (ptr & 3)) return new Float32Array(buf, ptr, n);
+    if (!_memF32 || _memF32.buffer !== buf) _memF32 = new Float32Array(buf);
+    const out = _scratchF[n] || (_scratchF[n] = new Float32Array(n));
+    const base = ptr >> 2;
+    for (let i = 0; i < n; i++) out[i] = _memF32[base + i];
+    return out;
+  }
+  function _uniformI32(ptr, n) {
+    const buf = getMemory().buffer;
+    if (n > 64 || (ptr & 3)) return new Int32Array(buf, ptr, n);
+    if (!_memI32 || _memI32.buffer !== buf) _memI32 = new Int32Array(buf);
+    const out = _scratchI[n] || (_scratchI[n] = new Int32Array(n));
+    const base = ptr >> 2;
+    for (let i = 0; i < n; i++) out[i] = _memI32[base + i];
+    return out;
   }
 
   // Get or create uniform location entry for current program
@@ -1139,18 +1195,18 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
     glUniform3f: (loc, v0, v1, v2) => { const l = _getUniformLoc(loc); if (l) ctx.uniform3f(l, v0, v1, v2); },
     glUniform4f: (loc, v0, v1, v2, v3) => { const l = _getUniformLoc(loc); if (l) ctx.uniform4f(l, v0, v1, v2, v3); },
 
-    glUniform1iv: (loc, count, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniform1iv(l, new Int32Array(getMemory().buffer, ptr, count)); },
-    glUniform2iv: (loc, count, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniform2iv(l, new Int32Array(getMemory().buffer, ptr, count * 2)); },
-    glUniform3iv: (loc, count, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniform3iv(l, new Int32Array(getMemory().buffer, ptr, count * 3)); },
-    glUniform4iv: (loc, count, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniform4iv(l, new Int32Array(getMemory().buffer, ptr, count * 4)); },
-    glUniform1fv: (loc, count, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniform1fv(l, new Float32Array(getMemory().buffer, ptr, count)); },
-    glUniform2fv: (loc, count, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniform2fv(l, new Float32Array(getMemory().buffer, ptr, count * 2)); },
-    glUniform3fv: (loc, count, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniform3fv(l, new Float32Array(getMemory().buffer, ptr, count * 3)); },
-    glUniform4fv: (loc, count, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniform4fv(l, new Float32Array(getMemory().buffer, ptr, count * 4)); },
+    glUniform1iv: (loc, count, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniform1iv(l, _uniformI32(ptr, count)); },
+    glUniform2iv: (loc, count, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniform2iv(l, _uniformI32(ptr, count * 2)); },
+    glUniform3iv: (loc, count, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniform3iv(l, _uniformI32(ptr, count * 3)); },
+    glUniform4iv: (loc, count, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniform4iv(l, _uniformI32(ptr, count * 4)); },
+    glUniform1fv: (loc, count, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniform1fv(l, _uniformF32(ptr, count)); },
+    glUniform2fv: (loc, count, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniform2fv(l, _uniformF32(ptr, count * 2)); },
+    glUniform3fv: (loc, count, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniform3fv(l, _uniformF32(ptr, count * 3)); },
+    glUniform4fv: (loc, count, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniform4fv(l, _uniformF32(ptr, count * 4)); },
 
-    glUniformMatrix2fv: (loc, count, transpose, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniformMatrix2fv(l, !!transpose, new Float32Array(getMemory().buffer, ptr, count * 4)); },
-    glUniformMatrix3fv: (loc, count, transpose, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniformMatrix3fv(l, !!transpose, new Float32Array(getMemory().buffer, ptr, count * 9)); },
-    glUniformMatrix4fv: (loc, count, transpose, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniformMatrix4fv(l, !!transpose, new Float32Array(getMemory().buffer, ptr, count * 16)); },
+    glUniformMatrix2fv: (loc, count, transpose, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniformMatrix2fv(l, !!transpose, _uniformF32(ptr, count * 4)); },
+    glUniformMatrix3fv: (loc, count, transpose, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniformMatrix3fv(l, !!transpose, _uniformF32(ptr, count * 9)); },
+    glUniformMatrix4fv: (loc, count, transpose, ptr) => { const l = _getUniformLoc(loc); if (l) ctx.uniformMatrix4fv(l, !!transpose, _uniformF32(ptr, count * 16)); },
 
     // ─── Vertex attribs ─────────────────────────────────────────────────
     glEnableVertexAttribArray: (index) => ctx.enableVertexAttribArray(index),
@@ -1218,7 +1274,7 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
     glGenFramebuffers: (n, ptr) => _genObjects(_framebuffers, () => ctx.createFramebuffer(), n, ptr),
     glDeleteFramebuffers: (n, ptr) => _deleteObjects(_framebuffers, (f) => ctx.deleteFramebuffer(f), n, ptr),
     glBindFramebuffer: (target, id) => {
-      if (id === 0 && _redirectFBO) {
+      if (id === 0 && _redirectFBO && !_direct) {
         ctx.bindFramebuffer(target, _redirectFBO);
         if (target !== 0x8CA8) {                    // not READ_FRAMEBUFFER
           _boundFBOisRedirect = true;
@@ -1859,6 +1915,8 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
     }
   };
   funcs._blitToCanvas = _blitRedirectToCanvas;
+  /** True while the cart draws straight into the default framebuffer. */
+  funcs._isDirectPresent = () => _direct;
   /**
    * Bind the redirect FBO as the READ source, run `fn`, then restore.
    *
@@ -1873,6 +1931,12 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL }) {
    * @returns {boolean} false if there is no redirect FBO (nothing to read).
    */
   funcs._withRedirectRead = (fn) => {
+    if (_direct) {
+      ctx.bindFramebuffer(ctx.READ_FRAMEBUFFER, null);
+      try { fn(_redirectW, _redirectH); }
+      finally { ctx.bindFramebuffer(ctx.FRAMEBUFFER, null); }
+      return true;
+    }
     if (!_redirectFBO) return false;
     ctx.bindFramebuffer(ctx.READ_FRAMEBUFFER, _redirectFBO);
     try { fn(_redirectW, _redirectH); }

@@ -331,6 +331,51 @@ check('no JSPI + files: assets load from the prefetch', [r.init_loaded, r.late_l
 check('no JSPI, no files: refused with the reason', /no WebAssembly JSPI/.test(noJspi.refused ?? ''), true);
 await page.evaluate(() => { window.__dirHost.destroy(); window.__dirHost = null; });
 
+// ─── 8. direct present: draw straight into a matching canvas, no blit ─────
+// gltri (256x192) paints a red top bar, a green left bar and a white
+// top-left square over dark blue, so a flip or a wrong viewport shows. The
+// same cart is run three ways: into a canvas that qualifies for direct
+// present, into one that does not (wrong size, so the redirect + blit path),
+// and into a qualifying canvas with { directPresent: false }. All three must
+// read back the same picture.
+const direct = await page.evaluate(async () => {
+  const { CartHostWeb } = await import('/web.js');
+  const run = async (w, h, opts) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const gl = canvas.getContext('webgl2', { antialias: false, depth: true, stencil: true, preserveDrawingBuffer: false });
+    const host = new CartHostWeb();
+    await host.load('/test/fixtures/gltri.wasc', { glBackend: gl, preferredWidth: 256, preferredHeight: 192, ...opts });
+    for (let i = 0; i < 3; i++) host.runFrame([]);
+    // read the cart-sized frame the way a page would: the default
+    // framebuffer, in the same task as the frame (scaled to the canvas)
+    const px = (x, y) => {
+      const out = new Uint8Array(4);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+      // cart coords are y-down over 256x192; map into the canvas
+      const cx = Math.floor((x + 0.5) * w / 256), cy = h - 1 - Math.floor((y + 0.5) * h / 192);
+      gl.readPixels(cx, cy, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, out);
+      return Array.from(out.slice(0, 3)).map((v) => (v > 128 ? 1 : 0)).join('');
+    };
+    const sample = { topBar: px(128, 2), leftBar: px(2, 96), corner: px(48, 48), middle: px(128, 96) };
+    const isDirect = host._glFuncs._isDirectPresent();
+    host.destroy();
+    return { isDirect, sample };
+  };
+  return {
+    match: await run(256, 192, {}),
+    mismatch: await run(320, 240, {}),
+    optOut: await run(256, 192, { directPresent: false }),
+  };
+});
+check('direct present: a matching canvas draws direct', direct.match.isDirect, true);
+check('direct present: a mismatched canvas keeps the redirect', direct.mismatch.isDirect, false);
+check('direct present: { directPresent: false } keeps the redirect', direct.optOut.isDirect, false);
+check('direct present: picture (red top, green left, white corner)', direct.match.sample,
+      { topBar: '100', leftBar: '010', corner: '111', middle: direct.optOut.sample.middle });
+check('direct present: same picture as the redirect path', direct.match.sample, direct.optOut.sample);
+check('direct present: same picture as a scaled redirect', direct.match.sample, direct.mismatch.sample);
+
 await browser.close();
 ws.kill();
 http.close();
