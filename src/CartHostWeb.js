@@ -35,15 +35,19 @@ import { createWebGLImports } from './webgl_imports.js';
  * letterbox), with depth and stencil (the redirect provides both) and without
  * MSAA (the redirect has none, so a multisampled surface would change the
  * cart's pixels). Pass { directPresent: false } to load() to always redirect.
+ * Pass { directPresent: 'msaa' } when the page made the context with
+ * antialias: true on purpose: a multisampled canvas then qualifies too, and the
+ * cart draws antialiased, the way a WebGL page asking for antialias does (the
+ * cart can see it: GL_SAMPLES of framebuffer 0).
  */
-function canPresentDirect(gl, w, h) {
+function canPresentDirect(gl, w, h, allowMsaa) {
   if (!gl || typeof gl.getContextAttributes !== 'function') return false;
   const c = gl.canvas;
   const browserCanvas = (typeof HTMLCanvasElement !== 'undefined' && c instanceof HTMLCanvasElement) ||
     (typeof OffscreenCanvas !== 'undefined' && c instanceof OffscreenCanvas);
   if (!browserCanvas) return false;
   const a = gl.getContextAttributes();
-  if (!a || !a.depth || !a.stencil || a.antialias) return false;
+  if (!a || !a.depth || !a.stencil || (a.antialias && !allowMsaa)) return false;
   return gl.drawingBufferWidth === w && gl.drawingBufferHeight === h;
 }
 import { inflateSync } from 'fflate';
@@ -691,7 +695,7 @@ export class CartHostWeb {
         getMemory: () => this.memory,
         ctx: options.glBackend,
         getMalloc: () => this.instance?.exports?.malloc || null,
-        directPresent: options.directPresent === false ? null : (w, h) => canPresentDirect(options.glBackend, w, h),
+        directPresent: options.directPresent === false ? null : (w, h) => canPresentDirect(options.glBackend, w, h, options.directPresent === 'msaa'),
       });
       this._glFuncs = glFuncs;
       imports.gl = glFuncs;
