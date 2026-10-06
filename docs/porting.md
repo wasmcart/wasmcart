@@ -5,6 +5,12 @@
 wasmcart's GL surface is ES 3.0. All carts should use GLES 2.0 or 3.0
 shaders. See [gl-surface.md](gl-surface.md) for the full spec.
 
+An engine with a WebGPU backend for Emscripten (Defold's WebGPU adapter,
+three.js WebGPURenderer) can target the optional WebGPU tier instead, or
+ship both in one cart; see [webgpu.md](webgpu.md). Both have been ported:
+Defold needed the host-owned device in place of its Asyncify adapter request,
+and three.js runs through wasmcart-jsgame's WebGPU runtime.
+
 ## Easiest Ports (zero GL translation needed)
 
 | Source | Examples | Notes |

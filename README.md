@@ -356,7 +356,9 @@ All v3 exports are optional - the host silently skips events if the cart doesn't
 
 ## GPU ABI
 
-There is **one GPU ABI: WebGL2 (OpenGL ES 3.0)**. All hosts present the same ES 3.0 GL surface. This is the ceiling - no host may expose ES 3.1+ or desktop GL features.
+There is **one universal GPU ABI: WebGL2 (OpenGL ES 3.0)**. All hosts present the same ES 3.0 GL surface. This is the ceiling for GL - no host may expose ES 3.1+ or desktop GL features.
+
+Carts that need more (compute shaders, storage buffers, a modern engine renderer) can use the optional **WebGPU tier** instead, or as well: see [WebGPU carts](#webgpu-carts).
 
 A cart that doesn't use the GPU at all can write pixels directly to a shared-memory framebuffer (ARGB8888). This is not a second GPU ABI - it's just pixels in a buffer, no GL involved.
 
@@ -376,6 +378,7 @@ A cart that doesn't use the GPU at all can write pixels directly to a shared-mem
 
 - **2D framebuffer** - ARGB8888 pixel buffer for software-rendered carts (no GL)
 - **WebGL2 GPU** - one GL ABI everywhere. Cart imports WebGL2 functions, host provides them (native GLES3 on Node.js, WebGL2 in browser). Emscripten's GL output works directly.
+- **WebGPU (optional tier)** - `webgpu.h` through Emscripten + Dawn's emdawnwebgpu port; Node (webgpu-node) and browser hosts. A cart importing both GPU APIs runs everywhere.
 - **Stereo audio** - Float32 or Int16 ring buffer, cart-declared sample rate
 - **Gamepad input** - 4 pads with buttons, analog sticks, triggers (always available)
 - **Pointer input** - unified mouse + touch via shared memory state + event callbacks (opt-in)
@@ -418,6 +421,41 @@ await cart.load('game.wasc', {
   saveData: existingSaveBuffer,  // restore previous save
 });
 ```
+
+### WebGPU Carts
+
+A cart that imports WebGPU functions runs on WebGPU (SPEC.md, "WebGPU";
+[docs/webgpu.md](docs/webgpu.md) for building one). The host owns the device;
+the cart renders into its `"#canvas"` surface, which is a texture the host
+owns, and the host reads it back or draws it into a window:
+
+```js
+await cart.load('wgpu_game.wasc');          // Node: through webgpu-node
+cart.usesWgpu;                              // true
+cart.runFrame(pads);                        // synchronous, as for GL
+const { width, height, data } = await cart.readGpuFrame();   // top-down RGBA
+
+// Present into your own window: a canvas context configured on the cart's device
+cart.presentWgpuTo(windowContext, { x, y, w, h });
+```
+
+Async results the cart asked for (buffer maps, error scopes) reach it when
+the host yields to its event loop between frames. Options:
+
+```js
+await cart.load('game.wasc', {
+  wgpu: false,                    // refuse WebGPU: a WebGPU-only cart fails to
+                                  // load with the reason; a dual cart runs on GL
+  gpu: navigatorGpuLike,          // your own WebGPU implementation (Node)
+  gpuGlobals: { GPUValidationError, ... },  // its error classes (Node)
+  adapterOptions: { featureLevel: 'core' }, // default is 'compatibility'
+  wgpuCanvas: myCanvas,           // browser: render straight into a visible canvas
+});
+```
+
+`webgpu-node` is an optional dependency. Without it (or without a GPU
+adapter) a WebGPU-only cart is refused at load with the reason, never run
+on stubs.
 
 ### GL Carts
 
