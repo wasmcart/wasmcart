@@ -8,7 +8,7 @@ changes, and GL stays the tier every host must run.
 
 - A cart that imports WebGPU functions (Emscripten + Dawn's emdawnwebgpu
   port, frozen at release v20261002.154047) runs on WebGPU in `CartHost`
-  (through webgpu-node, now an optional dependency) and `CartHostWeb`
+  (through webgpu-node, a new dependency alongside webgl-node) and `CartHostWeb`
   (through the browser's `navigator.gpu`). The host owns the device
   (`emscripten_webgpu_get_device()`), the cart renders into the `"#canvas"`
   surface, and the host reads frames back (`readGpuFrame()`) or draws them

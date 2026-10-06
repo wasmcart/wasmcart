@@ -453,9 +453,9 @@ await cart.load('game.wasc', {
 });
 ```
 
-`webgpu-node` is an optional dependency. Without it (or without a GPU
-adapter) a WebGPU-only cart is refused at load with the reason, never run
-on stubs.
+`webgpu-node` is a dependency, as `webgl-node` is for GL, and is loaded only
+when a WebGPU cart arrives. Without a GPU adapter a WebGPU-only cart is
+refused at load with the reason, never run on stubs.
 
 ### GL Carts
 

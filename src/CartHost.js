@@ -1273,7 +1273,8 @@ export class CartHost {
 
   // Can this host give a cart WebGPU? An embedder may pass its own `gpu` (a
   // navigator.gpu-shaped object), or turn it off with wgpu: false; otherwise
-  // webgpu-node, an optional dependency, provides it. The cart renders into a
+  // webgpu-node (a dependency, as webgl-node is for GL) provides it, loaded
+  // only when a WebGPU cart arrives. The cart renders into a
   // host-owned texture (createTextureCanvas) unless the embedder passes
   // `createCanvas`.
   async _wgpuAvailability(options) {

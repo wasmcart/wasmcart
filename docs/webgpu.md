@@ -81,7 +81,7 @@ dual GL/WebGPU cart.
 
 | Host | WebGPU from | State |
 | --- | --- | --- |
-| `CartHost` (Node) | webgpu-node (Dawn), an optional dependency | supported |
+| `CartHost` (Node) | webgpu-node (Dawn), a dependency like webgl-node | supported |
 | `CartHostWeb` (browser) | the browser's `navigator.gpu` | supported; browser support varies |
 | wasmcart-native | native-dawn's `dawn.node` in its embedded Node, when built with `WASMCART_WGPU_JS_DIR` and `NATIVE_DAWN_DIR` | Linux |
 | romdev | wasmcart's `CartHost` | frames and screenshots via async readback |
