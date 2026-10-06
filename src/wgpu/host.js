@@ -20,6 +20,17 @@
 
 import gluePromise from './glue-loader.js';
 
+/**
+ * The adapter request every host makes for a WebGPU cart. The tier's floor is
+ * WebGPU compatibility mode (GLES 3.1 / D3D11 class), so carts run on a
+ * compatibility device everywhere: Dawn enforces the restrictions even on a
+ * Vulkan adapter (measured), so a cart developed on a desktop GPU cannot
+ * quietly depend on core features a GLES-class host lacks. Defold's adapter,
+ * three.js WebGPURenderer and the test carts render identically at both
+ * levels. An embedder may override it with `adapterOptions`.
+ */
+export const WGPU_ADAPTER_OPTIONS = Object.freeze({ featureLevel: 'compatibility' });
+
 /** True for a function name the WebGPU glue provides. */
 export function isWgpuImportName(name) {
   return /^(wgpu|emwgpu)[A-Z]/.test(name) || name.startsWith('emscripten_webgpu_');
@@ -129,9 +140,15 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
     throw new Error(`WebGPU cart imports ${missing.length} function(s) this host's glue (emdawnwebgpu ${manifest.release}) does not provide: ${missing.join(', ')}. Build the cart against emdawnwebgpu ${manifest.release}.`);
   }
 
-  const adapter = givenAdapter || await gpu.requestAdapter(adapterOptions);
+  const adapterOpts = { ...WGPU_ADAPTER_OPTIONS, ...adapterOptions };
+  const adapter = givenAdapter || await gpu.requestAdapter(adapterOpts);
   if (!adapter) throw new Error('This host has no WebGPU adapter (check the GPU driver), so it cannot run a WebGPU cart');
+  // The host's device has the default features and limits: the tier's
+  // floor, which is what emscripten_webgpu_get_device() hands a cart. A cart
+  // that asks for more through wgpuAdapterRequestDevice gets a device made
+  // for exactly that request (see cartAdapter below), as in a browser.
   const device = await adapter.requestDevice();
+  const extraDevices = [];
   let lost = null;
   device.lost.then(info => { lost = info; if (info.reason !== 'destroyed') log(`wasmcart: WebGPU device lost: ${info.message}`); });
 
@@ -143,6 +160,9 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
   // Tracked here rather than read from getConfiguration(), which older
   // browsers lack.
   let configured = false;
+  // The device the cart configured its canvas with: the host's, or one it
+  // requested with more features or limits. Reads and draws use it.
+  let canvasDevice = null;
   const context = new Proxy(realContext, {
     get(target, prop) {
       if (prop === 'configure') {
@@ -153,6 +173,7 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
             alphaMode: cfg.alphaMode === 'premultiplied' ? 'premultiplied' : 'opaque',
           });
           configured = true;
+          canvasDevice = cfg.device;
         };
       }
       if (prop === 'unconfigure') return () => { configured = false; target.unconfigure(); };
@@ -169,11 +190,35 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
     set(target, prop, value) { target[prop] = value; return true; },
   });
 
-  // The cart's view of navigator.gpu and its adapter: the host's adapter, and
-  // the host's device whatever it asks for (the host owns the device).
+  // The cart's view of navigator.gpu and its adapter. A request the host's
+  // device already satisfies returns that device. One asking for features or
+  // limits beyond it gets a new device with exactly those (from a fresh
+  // adapter: a browser adapter makes one device only); a request the
+  // hardware cannot meet fails, as in a browser. The host owns and destroys
+  // both.
+  const satisfies = desc => {
+    for (const f of desc?.requiredFeatures || []) if (!device.features.has(f)) return false;
+    for (const [k, v] of Object.entries(desc?.requiredLimits || {})) {
+      if (v === undefined || v === null) continue;
+      const have = device.limits[k];
+      if (typeof have !== 'number') return false;
+      // "min..." limits are better when lower (alignments); the rest higher.
+      if (k.startsWith('min') ? have > v : have < v) return false;
+    }
+    return true;
+  };
   const cartAdapter = new Proxy(adapter, {
     get(target, prop) {
-      if (prop === 'requestDevice') return async () => device;
+      if (prop === 'requestDevice') {
+        return async desc => {
+          if (satisfies(desc)) return device;
+          const fresh = await gpu.requestAdapter(adapterOpts);
+          if (!fresh) throw new Error('no WebGPU adapter for the requested device');
+          const d = await fresh.requestDevice(desc);
+          extraDevices.push(d);
+          return d;
+        };
+      }
       const value = Reflect.get(target, prop, target);
       return typeof value === 'function' ? value.bind(target) : value;
     },
@@ -217,15 +262,15 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
     env[name] = (...args) => { refresh(); return fn(...args); };
   }
 
-  let readbackBuffer = null;
   let closed = false;
 
   // One full-screen-triangle pipeline per target format, for drawTo().
   const blitters = new Map();
-  function blitter(format) {
-    let b = blitters.get(format);
+  function blitter(dev, format) {
+    const key = format + (dev === device ? '' : ':extra');
+    let b = blitters.get(key);
     if (b) return b;
-    const module = device.createShaderModule({ code: `
+    const module = dev.createShaderModule({ code: `
       struct V { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       @vertex fn vs(@builtin(vertex_index) i: u32) -> V {
         let p = array<vec2f, 3>(vec2f(-1, -1), vec2f(3, -1), vec2f(-1, 3));
@@ -239,16 +284,17 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
       @fragment fn fs(v: V) -> @location(0) vec4f { return vec4f(textureSample(t, s, v.uv).rgb, 1); }
     ` });
     b = {
-      pipeline: device.createRenderPipeline({ layout: 'auto', vertex: { module, entryPoint: 'vs' }, fragment: { module, entryPoint: 'fs', targets: [{ format }] } }),
-      sampler: device.createSampler({ magFilter: 'nearest', minFilter: 'linear' }),
+      pipeline: dev.createRenderPipeline({ layout: 'auto', vertex: { module, entryPoint: 'vs' }, fragment: { module, entryPoint: 'fs', targets: [{ format }] } }),
+      sampler: dev.createSampler({ magFilter: 'nearest', minFilter: 'linear' }),
     };
-    blitters.set(format, b);
+    blitters.set(key, b);
     return b;
   }
 
   return {
     env,
-    device,
+    /** The device the cart renders with: present windows on THIS one. */
+    get device() { return canvasDevice || device; },
     context: realContext,
     canvas,
 
@@ -277,30 +323,21 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
 
     /** The last rendered frame as top-down RGBA, or null if the cart has not
      *  configured its canvas. Asynchronous: GPU readback always is. */
-    async readFrame() {
-      if (closed) return null;
-      if (!configured) return null;
+    //
+    // The copy is encoded and submitted synchronously, at the call: the frame
+    // read is the one current NOW, even if the caller runs more frames before
+    // awaiting. Each call has its own buffer, so reads may overlap.
+    readFrame() {
+      if (closed || !configured) return Promise.resolve(null);
       const texture = realContext.getCurrentTexture();
-      const w = texture.width, h = texture.height;
+      const w = texture.width, h = texture.height, format = texture.format;
       const bytesPerRow = Math.ceil(w * 4 / 256) * 256;
-      const size = bytesPerRow * h;
-      if (!readbackBuffer || readbackBuffer.size !== size) {
-        readbackBuffer?.destroy();
-        readbackBuffer = device.createBuffer({ size, usage: 0x0008 /* COPY_DST */ | 0x0001 /* MAP_READ */ });
-      }
-      const encoder = device.createCommandEncoder();
-      encoder.copyTextureToBuffer({ texture }, { buffer: readbackBuffer, bytesPerRow, rowsPerImage: h }, [w, h, 1]);
-      device.queue.submit([encoder.finish()]);
-      const buffer = readbackBuffer;
-      await buffer.mapAsync(0x0001 /* READ */);
-      const mapped = new Uint8Array(buffer.getMappedRange());
-      const out = new Uint8Array(w * h * 4);
-      for (let y = 0; y < h; y++) out.set(mapped.subarray(y * bytesPerRow, y * bytesPerRow + w * 4), y * w * 4);
-      buffer.unmap();
-      if (texture.format.startsWith('bgra')) {
-        for (let i = 0; i < out.length; i += 4) { const b = out[i]; out[i] = out[i + 2]; out[i + 2] = b; }
-      }
-      return { width: w, height: h, data: out, format: texture.format };
+      const dev = canvasDevice || device;
+      const buffer = dev.createBuffer({ size: bytesPerRow * h, usage: 0x0008 /* COPY_DST */ | 0x0001 /* MAP_READ */ });
+      const encoder = dev.createCommandEncoder();
+      encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow, rowsPerImage: h }, [w, h, 1]);
+      dev.queue.submit([encoder.finish()]);
+      return readMapped(buffer, w, h, bytesPerRow, format);
     },
 
     /** Draw the cart's current frame into `target` (another configured
@@ -311,12 +348,13 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
       if (closed || !configured) return false;
       const source = realContext.getCurrentTexture();
       const out = target.getCurrentTexture();
-      const blit = blitter(out.format);
-      const bind = device.createBindGroup({
+      const dev = canvasDevice || device;
+      const blit = blitter(dev, out.format);
+      const bind = dev.createBindGroup({
         layout: blit.pipeline.getBindGroupLayout(0),
         entries: [{ binding: 0, resource: blit.sampler }, { binding: 1, resource: source.createView() }],
       });
-      const encoder = device.createCommandEncoder();
+      const encoder = dev.createCommandEncoder();
       const pass = encoder.beginRenderPass({ colorAttachments: [{ view: out.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] });
       const r = dst || { x: 0, y: 0, w: out.width, h: out.height };
       const x = Math.max(0, Math.min(out.width, r.x)), y = Math.max(0, Math.min(out.height, r.y));
@@ -326,7 +364,7 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
       pass.setBindGroup(0, bind);
       pass.draw(3);
       pass.end();
-      device.queue.submit([encoder.finish()]);
+      dev.queue.submit([encoder.finish()]);
       return true;
     },
 
@@ -340,11 +378,27 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
     destroy() {
       if (closed) return device.lost.then(() => {});
       closed = true;
-      readbackBuffer?.destroy();
       try { realContext.unconfigure?.(); } catch {}
       try { realContext.destroy?.(); } catch {}
+      for (const d of extraDevices) d.destroy();
       device.destroy();
       return device.lost.then(() => {});
     },
   };
+
+  async function readMapped(buffer, w, h, bytesPerRow, format) {
+    try {
+      await buffer.mapAsync(0x0001 /* READ */);
+      const mapped = new Uint8Array(buffer.getMappedRange());
+      const out = new Uint8Array(w * h * 4);
+      for (let y = 0; y < h; y++) out.set(mapped.subarray(y * bytesPerRow, y * bytesPerRow + w * 4), y * w * 4);
+      buffer.unmap();
+      if (format.startsWith('bgra')) {
+        for (let i = 0; i < out.length; i += 4) { const b = out[i]; out[i] = out[i + 2]; out[i + 2] = b; }
+      }
+      return { width: w, height: h, data: out, format };
+    } finally {
+      buffer.destroy();
+    }
+  }
 }

@@ -29,7 +29,7 @@ import {
   GPU_API_WEBGPU,
 } from './abi.js';
 import { createWebGLImports } from './webgl_imports.js';
-import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap } from './wgpu/host.js';
+import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap, WGPU_ADAPTER_OPTIONS } from './wgpu/host.js';
 
 /**
  * Whether a cart of w x h can draw straight into this context's default
@@ -414,7 +414,7 @@ export class CartHostWeb {
     if (gpuSelect === 'wgpu') {
       const { gpu, adapter, createCanvas } = wgpuProvider;
       this._wgpu = await createWgpuSession({
-        moduleImports, gpu, adapter, createCanvas,
+        moduleImports, gpu, adapter, createCanvas, adapterOptions: options.adapterOptions,
         width: options.preferredWidth || 640,
         height: options.preferredHeight || 480,
         log: msg => console.warn(msg),
@@ -1115,7 +1115,7 @@ export class CartHostWeb {
     const gpu = options.gpu || globalThis.navigator?.gpu;
     if (!gpu) return { ok: false, reason: 'this browser has no WebGPU (navigator.gpu is missing)' };
     let adapter = null;
-    try { adapter = await gpu.requestAdapter(options.adapterOptions); } catch (e) {
+    try { adapter = await gpu.requestAdapter({ ...WGPU_ADAPTER_OPTIONS, ...options.adapterOptions }); } catch (e) {
       return { ok: false, reason: `requesting a WebGPU adapter failed (${e.message})` };
     }
     if (!adapter) return { ok: false, reason: 'the browser offers no WebGPU adapter (blocklisted GPU or driver)' };

@@ -38,7 +38,7 @@ import {
   clampTrigger,
 } from './abi.js';
 import { createWebGLImports, noteGlCurrent } from './webgl_imports.js';
-import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap } from './wgpu/host.js';
+import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap, WGPU_ADAPTER_OPTIONS } from './wgpu/host.js';
 import { listDirRelative, diffFileList } from './assetFiles.js';
 
 /* The manifest's asset root is stripped as a PATH PREFIX from packed entries,
@@ -530,7 +530,7 @@ export class CartHost {
       const m = this._manifest || {};
       const { gpu, adapter, createCanvas, globals } = this._wgpuProvider;
       this._wgpu = await createWgpuSession({
-        moduleImports, gpu, adapter, createCanvas, globals,
+        moduleImports, gpu, adapter, createCanvas, globals, adapterOptions: options.adapterOptions,
         width: m.width || options.preferredWidth || DEFAULT_GL_W,
         height: m.height || options.preferredHeight || DEFAULT_GL_H,
         log: msg => console.error(msg),
@@ -1292,7 +1292,7 @@ export class CartHost {
       globals ||= mod?.globals || globalThis;
     }
     let adapter = null;
-    try { adapter = await gpu.requestAdapter(options.adapterOptions); } catch (e) {
+    try { adapter = await gpu.requestAdapter({ ...WGPU_ADAPTER_OPTIONS, ...options.adapterOptions }); } catch (e) {
       return { ok: false, reason: `requesting a WebGPU adapter failed (${e.message})` };
     }
     if (!adapter) return { ok: false, reason: 'no WebGPU adapter is available (check the GPU driver)' };
