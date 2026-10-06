@@ -23,6 +23,8 @@ import {
   FLAG_DEBUG,
   FLAG_DETERMINISTIC,
   HOST_FLAG_DETERMINISTIC,
+  HOST_FLAG_GPU_WGPU,
+  GPU_API_WEBGPU,
   DEBUG_FIELD_SIZE,
   DEBUG_TYPE_WIDTH,
   DEBUG_TYPE_NAME,
@@ -36,6 +38,7 @@ import {
   clampTrigger,
 } from './abi.js';
 import { createWebGLImports, noteGlCurrent } from './webgl_imports.js';
+import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap } from './wgpu/host.js';
 import { listDirRelative, diffFileList } from './assetFiles.js';
 
 /* The manifest's asset root is stripped as a PATH PREFIX from packed entries,
@@ -312,6 +315,8 @@ export class CartHost {
 
     // GL state
     this.usesGL = false;       // true if cart imports from 'gl' module
+    this.usesWgpu = false;     // true if the cart runs on WebGPU (SPEC.md, WebGPU)
+    this._wgpu = null;         // the cart's WebGPU session (src/wgpu/host.js)
 
     // Asset index for .wasc carts
     this._assetIndex = null;   // Map<path, entry>
@@ -416,10 +421,28 @@ export class CartHost {
 
     // Detect GL usage: check gpu_api field first, fall back to import scanning for old carts
     const moduleImports = WebAssembly.Module.imports(module);
-    const importsGL = moduleImports.some(imp =>
+    const cartImportsGL = moduleImports.some(imp =>
       imp.module === 'gl' ||
       (imp.module === 'env' && imp.kind === 'function' && /^gl[A-Z]/.test(imp.name))
     );
+
+    // WebGPU (SPEC.md, "WebGPU"). A cart that imports WebGPU functions runs on
+    // WebGPU when this host can provide it. One that imports both `gl` and
+    // WebGPU runs on GL when it cannot, and host-info flags tell it which. One
+    // that imports only WebGPU cannot run without it: a load error saying why,
+    // never a stub.
+    const cartImportsWgpu = importsWgpu(moduleImports);
+    let gpuSelect = cartImportsGL ? 'gl' : null;
+    if (cartImportsWgpu) {
+      const wgpu = await this._wgpuAvailability(options);
+      if (wgpu.ok) gpuSelect = 'wgpu';
+      else if (!cartImportsGL) throw new Error(`this cart is a WebGPU cart, but this host cannot provide WebGPU: ${wgpu.reason}`);
+      this._wgpuProvider = wgpu.ok ? wgpu : null;
+    }
+    this._gpuSelect = gpuSelect;
+    this._cartImportsGL = cartImportsGL;
+    this._cartImportsWgpu = cartImportsWgpu;
+    const importsGL = gpuSelect === 'gl';
     // gpu_api will be read after wc_get_info - for now detect from imports
     this._importsGL = importsGL;
     this.usesGL = importsGL;
@@ -500,6 +523,22 @@ export class CartHost {
       this.usesGL = true;
     }
     // If glBackend IS provided, keep usesGL = true even with fbPtr (hybrid cart)
+
+    if (gpuSelect === 'wgpu') {
+      // The canvas starts at the best guess of the cart's size, as the GL
+      // context does; the cart's own wgpuSurfaceConfigure sets the real one.
+      const m = this._manifest || {};
+      const { gpu, adapter, createCanvas } = this._wgpuProvider;
+      this._wgpu = await createWgpuSession({
+        moduleImports, gpu, adapter, createCanvas,
+        width: m.width || options.preferredWidth || DEFAULT_GL_W,
+        height: m.height || options.preferredHeight || DEFAULT_GL_H,
+        log: msg => console.error(msg),
+      });
+      this.usesWgpu = true;
+      this.usesGL = false;
+      options = { ...options, flags: (options.flags || 0) | HOST_FLAG_GPU_WGPU };
+    }
 
     // Eagerly resolve WebSocket implementation for Node.js (must be sync at call time)
     if (this._manifest?.net?.domains || this._manifest?.net?.websocket) {
@@ -738,6 +777,11 @@ export class CartHost {
       }
     }
 
+    if (this._wgpu) {
+      Object.assign(imports.env, this._wgpu.env);
+      imports.wgpu = this._wgpu.env;
+    }
+
     for (const imp of moduleImports) {
       if (imp.module === 'env' && imp.kind === 'function') {
         if (!(imp.name in imports.env)) {
@@ -746,8 +790,29 @@ export class CartHost {
       }
     }
 
+    // A cart importing both GPU APIs gets the one this host selected. The
+    // other is bound to functions that throw, naming the call: a cart that
+    // ignores the host-info flag fails loudly instead of rendering nothing.
+    if (cartImportsWgpu && gpuSelect !== 'wgpu') {
+      for (const imp of moduleImports) {
+        if (imp.kind !== 'function' || !isWgpuImportName(imp.name)) continue;
+        if (imp.module !== 'env' && imp.module !== 'wgpu') continue;
+        (imports[imp.module] ||= {})[imp.name] = gpuImportTrap(imp.name, 'GL');
+      }
+    }
+
+    // A dual cart running on WebGPU: its GL imports throw if called.
+    if (gpuSelect === 'wgpu' && cartImportsGL) {
+      const traps = {};
+      for (const imp of moduleImports) {
+        if (imp.kind !== 'function') continue;
+        if (imp.module === 'gl') traps[imp.name] = gpuImportTrap(imp.name, 'WebGPU');
+        else if (imp.module === 'env' && /^(gl[A-Z]|emscripten_gl)/.test(imp.name)) imports.env[imp.name] = gpuImportTrap(imp.name, 'WebGPU');
+      }
+      if (Object.keys(traps).length) imports.gl = traps;
+    }
     // Stub GL imports for hybrid carts that import GL but don't use it
-    if (!this.usesGL) {
+    else if (!this.usesGL) {
       const glStubs = {};
       for (const imp of moduleImports) {
         if (imp.module === 'gl' && imp.kind === 'function') {
@@ -867,6 +932,8 @@ export class CartHost {
 
     this._updateViews();
 
+    if (this._wgpu) await this._wgpu.attach(this.instance, this.memory);
+
     // Read info struct BEFORE wc_init so we can load save data first
     if (typeof exports.wc_get_info !== 'function') {
       throw new Error('Cart must export wc_get_info');
@@ -879,6 +946,7 @@ export class CartHost {
     if (this.info.version < MIN_ABI_VERSION || this.info.version > ABI_VERSION) {
       throw new Error(`ABI version mismatch: cart=${this.info.version}, host supports ${MIN_ABI_VERSION}-${ABI_VERSION}`);
     }
+    this._checkGpuApi(this.info.gpuApi);
 
 
     // Load save data BEFORE wc_init so cart can read it during init
@@ -939,7 +1007,7 @@ export class CartHost {
 
     // Update GL detection from gpu_api field (authoritative) with import fallback for old carts
     if (this.info.gpuApi > 0) {
-      this.usesGL = true;
+      this.usesGL = gpuSelect !== 'wgpu';
     } else if (this.info.gpuApi === 0 && this._importsGL) {
       // Old cart that imports GL but doesn't set gpu_api - use import detection
       // (will be removed once all carts set gpu_api)
@@ -1166,6 +1234,67 @@ export class CartHost {
     return this._glFuncs._withRedirectRead(fn);
   }
 
+  /**
+   * The last frame a WebGPU cart rendered, as top-down RGBA:
+   * `{ width, height, data }`, or null before the cart configured its canvas.
+   * Asynchronous because GPU readback is. Call it between runFrame() calls.
+   */
+  async readGpuFrame() {
+    if (!this._wgpu) throw new Error('readGpuFrame: this cart is not running on WebGPU');
+    return this._wgpu.readFrame();
+  }
+
+  /**
+   * Draw the WebGPU cart's last frame into another canvas context (a window),
+   * scaled into `dst` (top-down pixels; the whole target if omitted). The
+   * caller presents the target. Returns false if there is nothing to draw.
+   * @param {GPUCanvasContext} target - configured with getGpuDevice()
+   */
+  presentWgpuTo(target, dst) {
+    if (!this._wgpu) return false;
+    return this._wgpu.drawTo(target, dst);
+  }
+
+  /** The GPUDevice a WebGPU cart runs on (null for other carts). */
+  getGpuDevice() {
+    return this._wgpu?.device || null;
+  }
+
+  // gpu_api is checked the moment the cart reports it: a value this host
+  // cannot honour is a load error, not something to guess at.
+  _checkGpuApi(gpuApi) {
+    if (gpuApi === GPU_API_WEBGPU && !this._cartImportsWgpu) {
+      throw new Error('cart declares gpu_api 2 (WebGPU) but imports no WebGPU functions');
+    }
+    if (gpuApi > GPU_API_WEBGPU) {
+      throw new Error(`cart declares gpu_api ${gpuApi}, which this host does not support (0 = 2D, 1 = GL, 2 = WebGPU)`);
+    }
+  }
+
+  // Can this host give a cart WebGPU? An embedder may pass its own `gpu` (a
+  // navigator.gpu-shaped object), or turn it off with wgpu: false; otherwise
+  // webgpu-node, an optional dependency, provides it. The cart renders into a
+  // host-owned texture (createTextureCanvas) unless the embedder passes
+  // `createCanvas`.
+  async _wgpuAvailability(options) {
+    if (options.wgpu === false) return { ok: false, reason: 'the embedder disabled it (wgpu: false)' };
+    let gpu = options.gpu || null;
+    const createCanvas = options.createCanvas || undefined;
+    if (!gpu) {
+      let mod;
+      try { mod = await import('webgpu-node'); } catch (e) {
+        return { ok: false, reason: `webgpu-node is not installed or failed to load (${e.message})` };
+      }
+      gpu = mod.createGPU();
+    }
+    let adapter = null;
+    try { adapter = await gpu.requestAdapter(options.adapterOptions); } catch (e) {
+      return { ok: false, reason: `requesting a WebGPU adapter failed (${e.message})` };
+    }
+    if (!adapter) return { ok: false, reason: 'no WebGPU adapter is available (check the GPU driver)' };
+    return { ok: true, gpu, adapter, createCanvas };
+  }
+
   getInfo() {
     return this.info ? { ...this.info } : null;
   }
@@ -1378,6 +1507,9 @@ export class CartHost {
     // cart loads through one shared context. See _releaseAll in
     // webgl_imports.js for the full story.
     try { this._glFuncs?._releaseAll?.(); } catch { /* teardown never throws */ }
+
+    try { this._wgpu?.destroy(); } catch { /* teardown never throws */ }
+    this._wgpu = null;
 
     // Release a GL context this host created itself (a caller-supplied
     // glBackend belongs to the caller and is left alone).
@@ -1750,6 +1882,10 @@ export class CartHost {
       }
       if (imp.module === 'gl') {
         // Allow GL imports - provided by createWebGLImports()
+        continue;
+      }
+      if (imp.module === 'wgpu' && isWgpuImportName(imp.name)) {
+        // WebGPU functions under their own module name (src/wgpu/host.js)
         continue;
       }
       if (imp.module !== 'env') {

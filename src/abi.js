@@ -1,4 +1,4 @@
-// wasmcart ABI v3 definitions (backward compatible with v1 and v2)
+// wasmcart ABI v4 definitions
 
 export const ABI_VERSION = 4;
 // v4 widened the pad's triggers from uint8 to int16, which MOVED `connected`
@@ -171,6 +171,9 @@ export const TRANSPORT_WS = TRANSPORT_RELIABLE | TRANSPORT_ORDERED;
 // Host-info flags (wc_host_info_t.flags, written by the host BEFORE wc_init,
 // read by the cart ONCE at init — never per frame).
 export const HOST_FLAG_DETERMINISTIC = 1 << 0; // this run is a deterministic replay
+// The host selected WebGPU for a cart that imports both `gl` and WebGPU
+// functions. Zero means GL, so a host that never heard of WebGPU has said GL.
+export const HOST_FLAG_GPU_WGPU = 1 << 1;
 
 // ── Deterministic replay (OPT-IN, default OFF) ───────────────────────────
 // A cart that sets FLAG_DETERMINISTIC declares it honors deterministic mode:
@@ -217,7 +220,7 @@ export const INFO_FIELDS_V3 = {
 // GPU API values for wc_info_t.gpu_api
 export const GPU_API_NONE    = 0;  // 2D framebuffer only
 export const GPU_API_WEBGL2  = 1;  // WebGL2 / GLES3
-export const GPU_API_WEBGPU  = 2;  // reserved
+export const GPU_API_WEBGPU  = 2;  // WebGPU (the cart imports WebGPU functions; see SPEC.md)
 export const GPU_API_VULKAN  = 3;  // reserved
 
 // Pointer struct layout (8 bytes per pointer)

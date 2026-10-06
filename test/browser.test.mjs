@@ -109,7 +109,10 @@ const ws = spawn('node', [join(HERE, 'wsserver.mjs'), '--port', String(WS_PORT)]
                  { stdio: 'ignore' });
 await new Promise((r) => setTimeout(r, 700));
 
-const browser = await chromium.launch({ headless: !process.argv.includes('--headed') });
+// --enable-unsafe-webgpu: headless Chromium on Linux keeps WebGPU behind it.
+// Headless, the adapter it then offers is SwiftShader (CPU), which is what the
+// WebGPU checks below run on.
+const browser = await chromium.launch({ headless: !process.argv.includes('--headed'), args: ['--enable-unsafe-webgpu'] });
 const page = await browser.newPage();
 page.on('console', (m) => { if (m.type() === 'error') console.log('  [page error]', m.text()); });
 page.on('pageerror', (e) => { console.log('  [page throw]', e.message); failures++; });
@@ -375,6 +378,73 @@ check('direct present: picture (red top, green left, white corner)', direct.matc
       { topBar: '100', leftBar: '010', corner: '111', middle: direct.optOut.sample.middle });
 check('direct present: same picture as the redirect path', direct.match.sample, direct.optOut.sample);
 check('direct present: same picture as a scaled redirect', direct.match.sample, direct.mismatch.sample);
+
+// ─── WebGPU (SPEC.md, "WebGPU") on the browser's own navigator.gpu ────────
+// Same fixtures and contract as test/wgpu.test.js on the Node host. Frames
+// are read in the SAME task as runFrame: a browser canvas hands out a fresh
+// texture once the page composites.
+const wgpu = await page.evaluate(async () => {
+  const { CartHostWeb } = await import('/web.js');
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const px = (f, x, y) => Array.from(f.data.slice((y * f.width + x) * 4, (y * f.width + x) * 4 + 4));
+  const out = { adapter: !!(navigator.gpu && await navigator.gpu.requestAdapter()) };
+
+  let host = new CartHostWeb();
+  await host.load('/test/fixtures/wgpucart.wasc');
+  const ex = host.instance.exports;
+  out.usesWgpu = host.usesWgpu;
+  out.flag = ex.wgpucart_host_flags() & 2;
+  for (let i = 0; i < 40 && ex.wgpucart_result() < 0; i++) { host.runFrame([]); await tick(); }
+  for (let i = 0; i < 4; i++) { host.runFrame([]); await tick(); }
+  out.result = ex.wgpucart_result();
+  out.mappedDuringRender = ex.wgpucart_mapped_during_render();
+  host.runFrame([]);
+  let f = await host.readGpuFrame();
+  out.size = [f.width, f.height];
+  out.triangle = px(f, 128, 110);
+  out.background = px(f, 2, 2);
+  host.destroy();
+
+  host = new CartHostWeb();
+  await host.load('/test/fixtures/dualgpu.wasc');
+  host.runFrame([]);
+  f = await host.readGpuFrame();
+  out.dualOnWgpu = { uses: host.instance.exports.dualgpu_uses_wgpu(), px: px(f, 64, 48) };
+  host.destroy();
+
+  host = new CartHostWeb();
+  await host.load('/test/fixtures/dualgpu.wasc', { wgpu: false });
+  host.runFrame([]);
+  out.dualOnGl = { uses: host.instance.exports.dualgpu_uses_wgpu(), usesGL: host.usesGL };
+  host.destroy();
+
+  host = new CartHostWeb();
+  await host.load('/test/fixtures/dualgpu_bad.wasc');
+  try { host.runFrame([]); out.badDual = 'ran'; } catch (e) { out.badDual = /called glClear, but this host selected WebGPU/.test(e.message); }
+  host.destroy();
+
+  const refusal = async (path, opts) => {
+    try { await new CartHostWeb().load(path, opts); return 'loaded'; } catch (e) { return e.message; }
+  };
+  out.noWgpu = /cannot provide WebGPU: the page disabled it/.test(await refusal('/test/fixtures/wgpucart.wasc', { wgpu: false }));
+  out.gpuApi2 = /imports no WebGPU functions/.test(await refusal('/test/fixtures/gpuapi2.wasc'));
+  out.gpuApi3 = /gpu_api 3, which this host does not support/.test(await refusal('/test/fixtures/gpuapi3.wasc'));
+  out.fake = /does not provide: wgpuDeviceDoesNotExistYet/.test(await refusal('/test/fixtures/wgpufake.wasc'));
+  return out;
+});
+check('webgpu: the browser offers an adapter', wgpu.adapter, true);
+check('webgpu: cart runs on WebGPU with the host flag set', [wgpu.usesWgpu, wgpu.flag], [true, 2]);
+check('webgpu: compute result arrives between frames', [wgpu.result, wgpu.mappedDuringRender], [42, 0]);
+check('webgpu: frame size', wgpu.size, [256, 192]);
+check('webgpu: triangle pixel', wgpu.triangle, [255, 128, 64, 255]);
+check('webgpu: background carries the compute result', wgpu.background, [42, 0, 255, 255]);
+check('webgpu: dual cart picks WebGPU', wgpu.dualOnWgpu, { uses: 1, px: [0, 255, 0, 255] });
+check('webgpu: dual cart falls back to GL', wgpu.dualOnGl, { uses: 0, usesGL: true });
+check('webgpu: dual cart calling the unselected API throws', wgpu.badDual, true);
+check('webgpu: WebGPU-only cart refused without WebGPU', wgpu.noWgpu, true);
+check('webgpu: gpu_api 2 without WebGPU imports refused', wgpu.gpuApi2, true);
+check('webgpu: gpu_api 3 refused', wgpu.gpuApi3, true);
+check('webgpu: unknown WebGPU function refused by name', wgpu.fake, true);
 
 await browser.close();
 ws.kill();

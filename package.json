@@ -60,5 +60,8 @@
   },
   "devDependencies": {
     "playwright": "^1.62.0"
+  },
+  "optionalDependencies": {
+    "webgpu-node": "^0.1.0"
   }
 }
