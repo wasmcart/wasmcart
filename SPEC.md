@@ -50,6 +50,7 @@ addition can see the standard that was applied, and hold a new proposal to it.
 | **Text input** (`wc_on_text`) | **Necessity.** Scancodes are key positions, not characters: `Shift+2` differs by layout and `é` has no scancode. | No. Deriving characters from scancodes means reimplementing every keyboard layout, and non-Latin input stays impossible. |
 | **Optional manifest** | **Bug.** Manifest fields double-gated capabilities the cart already declared, so a mismatch silently dropped input with nothing logged. | No. |
 | **Lifecycle** (`wc_on_suspend`, …) | **Mixed.** Suspension itself is host-owned and needs no cart cooperation. The callbacks are a **convenience** -- pausing audio, dropping a netplay connection, flushing a save before a backgrounded app is killed. The clock rebase they enable is a refinement over the clamp, not a replacement for it. | Partly. A cart cannot detect suspension, but it also does not have to: the host simply stops calling it. |
+| **WebGPU tier** (optional) | **Necessity.** GL ES 3.0 has no compute and no storage buffers, and the engines moving past GL (Defold's WebGPU adapter, three.js WebGPURenderer) target WebGPU. | No. The GPU is reached only through the host. Kept to the import set Emscripten's own port already emits, plus one host-info bit for dual carts. |
 | **Rumble** (`wc_pad_rumble`) | **Additive.** Nothing is broken without it. Included because it is table stakes on every console, and maps 1:1 onto SDL and the W3C haptics API with no per-platform divergence. | No -- but nothing breaks in its absence either. |
 
 Deliberately **not** added, as examples of what fails the bar: IME preedit state
@@ -258,11 +259,126 @@ blank — indistinguishable from a broken cart.
 
 ---
 
+## WebGPU
+
+An **optional** second GPU tier, for carts that need what GL ES 3.0 lacks:
+compute shaders, storage buffers, a modern engine's renderer. GL stays the
+universal tier: every conformant host must run a `gl` cart, while WebGPU is a
+capability a host may lack. Nothing below changes `wc_info_t`, `wc_pad_t` or
+any existing import, and no cart that does not import WebGPU is affected.
+
+### What a WebGPU cart is
+
+A cart that imports WebGPU functions: any function import, from module `env`
+or `wgpu`, named `wgpu*` or `emwgpu*` (followed by an upper-case letter) or
+`emscripten_webgpu_*`. As with GL, the import section is the ground truth and
+is readable before instantiation; `gpu_api = 2` declares it after
+`wc_get_info`.
+
+The import surface is **frozen**: it is the one produced by Dawn's
+`emdawnwebgpu` Emscripten port at release **v20261002.154047** (Dawn revision
+`b1236a9b`). A cart links that port (`--use-port=.../emdawnwebgpu.port.py`,
+standalone wasm) and writes plain `webgpu.h`; the host supplies the
+JavaScript half of the port, generated from the same release
+(`scripts/build-wgpu-glue.mjs`, pinned with its SHA-256 in
+`scripts/wgpu/emdawnwebgpu.json`). Later releases may only add functions.
+A cart importing a WebGPU function the host's glue lacks is refused at load,
+naming the functions. See [docs/webgpu.md](docs/webgpu.md) for building one.
+
+### The host owns the GPU
+
+- **Device.** The host creates the adapter and device. `emscripten_webgpu_get_device()`
+  returns that device synchronously, from `wc_init` on. It has the WebGPU
+  defaults' features and limits: the tier's floor (below).
+- **More features or limits.** A cart that needs them asks with
+  `wgpuInstanceRequestAdapter` / `wgpuAdapterRequestDevice` and its required
+  features and limits, and gets a device made for exactly that request, or a
+  failure if the hardware cannot meet it, as in a browser. A request the
+  host's device already satisfies returns that device. Optional features,
+  timestamp queries among them, are off unless requested.
+- **Presenting.** The cart renders into the surface it creates from
+  `WGPUEmscriptenSurfaceSourceCanvasHTMLSelector` with the selector
+  `"#canvas"`: it configures that surface once (its own size, any format the
+  surface reports) and takes `wgpuSurfaceGetCurrentTexture()` each frame.
+  The cart MUST NOT call `wgpuSurfacePresent`. Behind `"#canvas"` is a texture
+  the host owns, the WebGPU counterpart of the GL redirect FBO: after
+  `wc_render` returns the host presents it, scales it into a window, or reads
+  it back. As with a browser canvas, each frame's texture is fresh; a cart
+  must not depend on last frame's contents.
+- **Adapter choice** is the host's. A cart can read which adapter it got
+  (`wgpuAdapterGetInfo`, `wgpuDeviceGetAdapterInfo`).
+
+### Feature level: compatibility mode is the floor
+
+Hosts request a **compatibility-mode** adapter (`featureLevel:
+"compatibility"`, the GLES 3.1 / D3D11 class) by default, so a cart is held
+to the floor that reaches GLES-class devices even when it runs on a desktop
+GPU. Dawn enforces the restrictions on every backend, including one texture
+binding view dimension per texture, no cube-array views, no layer-subset
+bindings, identical blend state across colour attachments, no `sample_mask`,
+no storage buffers in the vertex stage, 4 colour attachments and 4096-texel
+textures. A cart that needs core WebGPU requests the
+`core-features-and-limits` feature, and runs only where that is available.
+
+### Asynchronous results
+
+WebGPU's asynchronous operations (buffer mapping, error scopes, work-done,
+async pipeline creation, compilation info) complete through callbacks, and
+**a host delivers them only between frames, on its event loop, never inside
+`wc_render` or `wc_init`**. Use `WGPUCallbackMode_AllowSpontaneous` or
+`AllowProcessEvents`. Nothing blocks: timed `wgpuInstanceWaitAny` is not
+supported (the `TimedWaitAny` instance feature is absent), and no Asyncify or
+JSPI is involved. A host that steps several frames without yielding (a test
+harness) delivers them when it next yields; a cart must not assume a result
+arrives on the next frame.
+
+Mapped ranges are copies in the cart's memory (wasm cannot alias GPU
+memory); `wgpuQueueWriteBuffer` and `wgpuQueueWriteTexture` are the fast
+upload path.
+
+### Threads
+
+WebGPU calls are made from the cart's main thread only: `wc_init`,
+`wc_render`, and the callbacks above. A threaded cart's workers (see
+Threads under Security Model) may do anything else, and a worker that never
+calls a WebGPU function is unaffected by the cart importing them.
+
+### Hosts without WebGPU, and carts with both APIs
+
+| Cart imports | Host without WebGPU | Host with WebGPU |
+| --- | --- | --- |
+| `gl` only | GL | GL |
+| WebGPU only | **load error, with the reason** | WebGPU |
+| `gl` and WebGPU | GL | WebGPU |
+
+- A host that cannot provide WebGPU (none built in, no adapter, disabled by
+  its embedder) MUST refuse a WebGPU-only cart at load with a message saying
+  so. It MUST NOT stub WebGPU imports: a stubbed GPU call returns 0 and the
+  cart renders nothing with no error anywhere.
+- A **dual cart** imports both, so one binary runs on every host. Before
+  `wc_init` the host writes `WC_HOST_FLAG_GPU_WGPU` (`0x02`) into
+  `wc_host_info_t.flags` if it selected WebGPU, and leaves it 0 for GL. The
+  cart reads the bit once in `wc_init` and uses only that API. The host binds
+  every import of the API it did NOT select to a function that throws, naming
+  the call: a cart that ignores the flag fails loudly. Selection is never a
+  per-frame decision; there is still no hybrid mode.
+- `gpu_api` values a cart does not back are refused at load: 2 with no
+  WebGPU imports, and anything above 2 (3, once reserved for Vulkan, is not a
+  tier).
+
+### Determinism
+
+WebGPU output is not bit-identical across backends and drivers. A WebGPU cart
+should not set `WC_FLAG_DETERMINISTIC` for frame hashes; named debug-state
+checkpoints still work.
+
+---
+
 ## wc_info_t
 
 ```c
 typedef struct {
-    uint32_t version;           // 3
+    uint32_t version;           // WC_ABI_VERSION (4)
     uint32_t width;
     uint32_t height;
     uint32_t fb_ptr;
@@ -280,8 +396,8 @@ typedef struct {
     uint32_t pointer_ptr;       // → wc_pointer_t[10] (80 bytes), 0 = not used
     uint32_t keys_ptr;          // → uint8_t[32] key state bitmask, 0 = not used
     uint32_t gpu_api;           // byte offset 64: 0 = 2D framebuffer,
-                                // 1 = WebGL2/GLES3, 2 = WebGPU (reserved),
-                                // 3 = Vulkan (reserved)
+                                // 1 = WebGL2/GLES3, 2 = WebGPU (see WebGPU);
+                                // any other value is refused at load
     // v3.1 addition
     uint32_t wheel_ptr;         // byte offset 68: → wc_wheel_t (8 bytes),
                                 // 0 = not used
@@ -307,6 +423,8 @@ read by the cart ONCE at init — never per frame):
 
 ```c
 #define WC_HOST_FLAG_DETERMINISTIC 0x01  // this run is a deterministic replay
+#define WC_HOST_FLAG_GPU_WGPU      0x02  // the host selected WebGPU for a cart
+                                         // importing both GPU APIs (see WebGPU)
 ```
 
 ---
@@ -1072,6 +1190,11 @@ Auditing a wasmcart host therefore means auditing one list, and that list is sho
   `wc_pad_has_rumble`, `wc_pad_rumble`, `wc_pad_rumble_stop`
 - **Assets (read-only, path-validated)** - `wc_asset_size`, `wc_load_asset`
 - **Network (opt-in, allowlisted)** - the `wc_peer_*` family
+- **GPU** - the `gl` module, and for WebGPU carts the frozen emdawnwebgpu
+  set (see WebGPU). Every WebGPU call is validated by the implementation the
+  host runs on (Dawn, or the browser's), the same validation a browser applies
+  to untrusted pages; GPU memory a cart allocates is one more resource a host
+  must bound itself.
 - **Toolchain shims** - a small set of emscripten/WASI symbols that compilers emit
   unconditionally
 

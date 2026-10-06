@@ -95,7 +95,20 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
   const info = host.getInfo();
 
   const zoom = opt.zoom || (info.height <= 400 ? 2 : 1);
-  if (!window) {
+  // A WebGPU cart (SPEC.md, "WebGPU") renders into a texture the host owns;
+  // the window gets a WebGPU surface on the cart's device, and each frame is
+  // drawn into it letterboxed, as the GL path does with its redirect FBO.
+  let wgpuWindow = null;
+  if (!window && host.usesWgpu) {
+    const { createWebGPUContext } = await import('webgpu-node');
+    window = sdl.video.createWindow({
+      title: 'wasmcart', width: opt.width || info.width * zoom, height: opt.height || info.height * zoom,
+      resizable: opt.resizable !== false, webgpu: true,
+    });
+    wgpuWindow = await createWebGPUContext(window.pixelWidth, window.pixelHeight, {
+      window, device: host.getGpuDevice(), presentMode: 'fifo',
+    });
+  } else if (!window) {
     window = sdl.video.createWindow({
       title: 'wasmcart', width: info.width * zoom, height: info.height * zoom,
       resizable: opt.resizable !== false,
@@ -412,6 +425,13 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
    * --no-resize pins the window to the cart's size (making this a no-op).
    */
   const present = async () => {
+    if (wgpuWindow) {
+      const pw = window.pixelWidth, ph = window.pixelHeight;
+      const f = opt.stretch ? { x: 0, y: 0, width: pw, height: ph } : fitRect(info.width, info.height, pw, ph);
+      host.presentWgpuTo(wgpuWindow.context, { x: f.x, y: f.y, w: f.width, h: f.height });
+      wgpuWindow.present();
+      return;
+    }
     if (swapBuffers) {
       // The cart rendered into a context sized to ITS resolution, and
       // wc_gl_blit's viewport is the context, so scaling to a resized window
@@ -465,6 +485,9 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
     closing = true;
     persistSave();
     try { audioDev?.close(); } catch { /* already gone */ }
+    // The surface before the window it presents to (the device is the cart's;
+    // host.destroy() releases it).
+    try { wgpuWindow?.destroy(); } catch { /* already gone */ }
     try { window?.destroy(); } catch { /* already gone */ }
     host.destroy();
     cleanupSource?.();
@@ -508,7 +531,7 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
    * wait. Left to spin it saturates the event queue and the cart ends up
    * running slower than if it had been paced, so that path keeps a timer.
    */
-  const paceWithVsync = !!swapBuffers;
+  const paceWithVsync = !!swapBuffers || !!wgpuWindow;  // both present with fifo (vsync)
   // Backstop. Vsync is what bounds the GL path, and it is not guaranteed: a
   // driver may ignore the swap interval, a compositor may hand an unredirected
   // window no sync at all. Free-running then produces audio far faster than the

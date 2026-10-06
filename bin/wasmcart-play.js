@@ -330,7 +330,24 @@ async function main() {
 
   // headless mode (--frames without --window)
   if (opt.frames > 0 && !opt.window) {
-    for (let i = 0; i < opt.frames; i++) step();
+    for (let i = 0; i < opt.frames; i++) {
+      step();
+      // A WebGPU cart's async results (maps, error scopes) arrive on the event
+      // loop between frames (SPEC.md, "WebGPU"), so let it run.
+      if (host.usesWgpu) await new Promise((resolve) => setImmediate(resolve));
+    }
+    if (host.usesWgpu) {
+      // Its frame lives in a GPU texture: read it back (top-down RGBA) into
+      // the XRGB word layout a 2D cart hands out, as the GL path does.
+      const g = await host.readGpuFrame();
+      if (g) {
+        const out = new Uint8Array(g.width * g.height * 4);
+        for (let p = 0; p < out.length; p += 4) {
+          out[p] = g.data[p + 2]; out[p + 1] = g.data[p + 1]; out[p + 2] = g.data[p]; out[p + 3] = 255;
+        }
+        frame = { ...frame, framebuffer: out, width: g.width, height: g.height };
+      }
+    }
     if (opt.shot) writeFileSync(opt.shot, encodePng(frame.framebuffer, frame.width, frame.height));
     if (opt.wav) writeFileSync(opt.wav, encodeWav(audioChunks, info.audioSampleRate || 48000));
     const dbg = host.info?.hasDebug ? ` debug=[${(host.readDebugState() || []).map((f) => f.name).join(',')}]` : '';

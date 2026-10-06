@@ -48,6 +48,42 @@ test('headless run writes a valid PNG with the cart resolution', async () => {
   }
 });
 
+test('headless --shot of a WebGPU cart is its rendered frame', async () => {
+  const shot = join(os.tmpdir(), `play-wgpu-${process.pid}.png`);
+  try {
+    const out = play([join(HERE, 'fixtures', 'wgpucart.wasc'), '--frames', '12', '--shot', shot]);
+    assert.match(out, /ran 12 frames\s+256x192/);
+    // Decode the PNG (filter types 0-4, 8-bit RGB or RGBA) to check pixels.
+    const { inflateSync } = await import('node:zlib');
+    const b = readFileSync(shot);
+    let o = 8, w = 0, h = 0, ct = 0;
+    const idat = [];
+    while (o < b.length) {
+      const len = b.readUInt32BE(o), type = b.toString('ascii', o + 4, o + 8), d = b.subarray(o + 8, o + 8 + len);
+      if (type === 'IHDR') { w = d.readUInt32BE(0); h = d.readUInt32BE(4); ct = d[9]; }
+      if (type === 'IDAT') idat.push(d);
+      o += 12 + len;
+    }
+    const raw = inflateSync(Buffer.concat(idat)), bpp = ct === 6 ? 4 : 3, stride = w * bpp, px = Buffer.alloc(h * stride);
+    for (let y = 0; y < h; y++) {
+      const f = raw[y * (stride + 1)];
+      for (let x = 0; x < stride; x++) {
+        const a = x >= bpp ? px[y * stride + x - bpp] : 0, up = y ? px[(y - 1) * stride + x] : 0;
+        const c = x >= bpp && y ? px[(y - 1) * stride + x - bpp] : 0;
+        let v = raw[y * (stride + 1) + 1 + x];
+        if (f === 1) v += a; else if (f === 2) v += up; else if (f === 3) v += (a + up) >> 1;
+        else if (f === 4) { const p = a + up - c, pa = Math.abs(p - a), pb = Math.abs(p - up), pc = Math.abs(p - c); v += pa <= pb && pa <= pc ? a : pb <= pc ? up : c; }
+        px[y * stride + x] = v & 255;
+      }
+    }
+    const at = (x, y) => [...px.subarray(y * stride + x * bpp, y * stride + x * bpp + 3)];
+    assert.deepEqual(at(128, 110), [255, 128, 64], 'triangle');
+    assert.deepEqual(at(2, 2), [42, 0, 255], 'background carries the compute result');
+  } finally {
+    await rm(shot, { force: true });
+  }
+});
+
 test('same --seed → byte-identical PNG; different seed differs (detrng)', async () => {
   const a = join(os.tmpdir(), `play-det-a-${process.pid}.png`);
   const b = join(os.tmpdir(), `play-det-b-${process.pid}.png`);

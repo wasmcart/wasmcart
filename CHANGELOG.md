@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+**WebGPU**, an optional second GPU tier (SPEC.md, "WebGPU";
+docs/webgpu.md). Additive: no struct, flag or import an existing cart uses
+changes, and GL stays the tier every host must run.
+
+- A cart that imports WebGPU functions (Emscripten + Dawn's emdawnwebgpu
+  port, frozen at release v20261002.154047) runs on WebGPU in `CartHost`
+  (through webgpu-node, now an optional dependency) and `CartHostWeb`
+  (through the browser's `navigator.gpu`). The host owns the device
+  (`emscripten_webgpu_get_device()`), the cart renders into the `"#canvas"`
+  surface, and the host reads frames back (`readGpuFrame()`) or draws them
+  into a window (`presentWgpuTo()`).
+- Carts run at WebGPU's compatibility feature level unless they request core.
+- A cart importing both `gl` and WebGPU gets WebGPU where the host has it and
+  GL where it does not, told by `WC_HOST_FLAG_GPU_WGPU` (0x02) in host-info
+  flags; the API the host did not select throws if called.
+- Refused at load, with the reason: a WebGPU-only cart on a host without
+  WebGPU, `gpu_api` 2 with no WebGPU imports, any `gpu_api` above 2 (every
+  value above 0 used to mean GL), and a WebGPU function the host's glue does
+  not provide.
+
 A cart can run on the web from an unpacked **cart directory**, starting
 before its assets are downloaded.
 
@@ -23,6 +43,37 @@ before its assets are downloaded.
   synchronously; without `files` the load fails and says why.
 - The node host loads a cart directory with no `manifest.json`, as the spec
   already allowed for a .wasc.
+
+## 0.31.0
+
+**ABI v4.** Every analog axis is int16 (triggers were uint8) and
+`wc_pad_t.buttons` is a u32 carrying SDL2's full button set, which moved
+`connected` from byte 12 to 14 and made `wc_pad_t` 20 bytes. Carts built
+against v1-v3 are refused at load with a version error rather than read with
+the wrong offsets; rebuild against the v4 headers.
+
+- setjmp/longjmp works in the browser host.
+
+## 0.30.0
+
+The mouse and a reconnecting controller reach carts.
+
+- The windowed player delivers the mouse to carts that set `WC_FLAG_POINTER`.
+- A controller is opened when SDL reports it, so one plugged in (or back in)
+  after start works.
+- A test fails when the Node and browser hosts' public methods drift apart.
+
+## 0.29.0
+
+- The windowed player paces video on vsync, not on the audio queue, and
+  bounds its loop when vsync is missing.
+- `--stats` reports the measured frame rate and audio.
+
+## 0.28.0
+
+- The windowed player letterboxes 2D frames in drawable pixels, not window
+  points (HiDPI windows showed the picture in a corner).
+- webgl-node dependency updated.
 
 ## 0.27.0
 

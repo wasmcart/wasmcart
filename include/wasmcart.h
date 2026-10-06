@@ -98,8 +98,15 @@ typedef struct {
     uint32_t preferred_height;  // host's preferred/native height (0 = no preference)
     uint32_t _reserved0;        // (was host_fps — unused, carts use wc_time.delta_ms instead)
     uint32_t audio_sample_rate; // host audio rate (e.g. 48000)
-    uint32_t flags;             // reserved for future use
+    uint32_t flags;             // WC_HOST_FLAG_* (wc_cart.h has DETERMINISTIC); read once at wc_init
 } wc_host_info_t;
+
+// Host-info flag: the host selected WebGPU for a cart that imports BOTH the
+// `gl` module and WebGPU functions (SPEC.md, "WebGPU"). 0 means GL. A cart
+// importing only one API never needs to read it.
+#ifndef WC_HOST_FLAG_GPU_WGPU
+#define WC_HOST_FLAG_GPU_WGPU (1u << 1)
+#endif
 
 // Pointer struct (8 bytes — unified mouse/touch, ABI v3)
 typedef struct {
@@ -276,7 +283,8 @@ typedef struct {
     uint32_t audio_sample_rate; // ring buffer sample rate (0 = host decides, typically 48000)
     uint32_t pointer_ptr;      // → wc_pointer_t[10], 0 = not used (ABI v3)
     uint32_t keys_ptr;         // → uint8_t[32] key state bitmask, 0 = not used (ABI v3)
-    uint32_t gpu_api;          // 0=2D framebuffer, 1=WebGL2/GLES3, 2=WebGPU, 3=Vulkan
+    uint32_t gpu_api;          // 0=2D framebuffer, 1=WebGL2/GLES3, 2=WebGPU (SPEC.md);
+                               // anything else is refused at load
     uint32_t wheel_ptr;        // → wc_wheel_t, 0 = not used (ABI v3.1)
 } wc_info_t;
 

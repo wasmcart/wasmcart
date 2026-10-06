@@ -193,8 +193,9 @@ Every cart declares its rendering mode via `wc_info_t.gpu_api`:
 |-------|------|-------------|
 | 0 | **2D Framebuffer** | Cart writes ARGB8888 pixels to the framebuffer. Host reads and displays them. *(legacy - prefer gpu_api=1)* |
 | 1 | **WebGL2 / GLES3** | Cart renders via GL function imports. The GPU output is the primary display. **Recommended for all carts.** |
-| 2 | **WebGPU** | *(reserved for future use)* |
-| 3 | **Vulkan** | *(reserved for future use)* |
+| 2 | **WebGPU** | Cart renders through `webgpu.h` (Emscripten + Dawn's emdawnwebgpu port). Optional per host; see [docs/webgpu.md](docs/webgpu.md). |
+
+Any other value is refused at load.
 
 **Rendering mode is declared once** in `wc_get_info()` and does not change during the cart's lifetime.
 
@@ -246,7 +247,7 @@ Still supported for simplicity. The cart writes ARGB8888 pixels to a framebuffer
 
 **Compositing** (e.g., 2D HUD over 3D scene) is the cart's responsibility within its chosen GPU API. There is no hybrid mode - a cart that uses GL for 3D and wants a 2D overlay renders both through GL.
 
-**Hosts should reject carts with unsupported gpu_api values** gracefully (e.g., "This host does not support WebGPU carts").
+**Hosts reject carts they cannot run** with the reason: an unknown `gpu_api`, or a WebGPU-only cart on a host without WebGPU. A cart that imports both GL and WebGPU runs everywhere: the host tells it which one it got (SPEC.md, "WebGPU").
 
 ### Resolution Negotiation
 
