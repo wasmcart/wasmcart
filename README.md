@@ -378,7 +378,7 @@ A cart that doesn't use the GPU at all can write pixels directly to a shared-mem
 
 - **2D framebuffer** - ARGB8888 pixel buffer for software-rendered carts (no GL)
 - **WebGL2 GPU** - one GL ABI everywhere. Cart imports WebGL2 functions, host provides them (native GLES3 on Node.js, WebGL2 in browser). Emscripten's GL output works directly.
-- **WebGPU (optional tier)** - `webgpu.h` through Emscripten + Dawn's emdawnwebgpu port; Node (webgpu-node) and browser hosts. A cart importing both GPU APIs runs everywhere.
+- **WebGPU (optional tier)** - `webgpu.h` through Dawn's emdawnwebgpu port, built with Emscripten or with wasi-sdk (threads included, through [`wgpu-wasi/`](wgpu-wasi/README.md)); Node (webgpu-node), browser and wasmcart-native (Linux) hosts. libretro and Android hosts refuse WebGPU-only carts for now. A cart importing both GPU APIs runs everywhere.
 - **Stereo audio** - Float32 or Int16 ring buffer, cart-declared sample rate
 - **Gamepad input** - 4 pads with buttons, analog sticks, triggers (always available)
 - **Pointer input** - unified mouse + touch via shared memory state + event callbacks (opt-in)
@@ -649,6 +649,10 @@ ${WASI_SDK}/bin/clang --target=wasm32-wasip1-threads -pthread \
 The host detects a threaded cart from its wasm imports (shared memory) and wires
 up the worker pool itself - no manifest field, and no change to the three-export
 contract.
+
+A threaded cart can also be a WebGPU cart: see [`wgpu-wasi/`](wgpu-wasi/README.md).
+WebGPU, GL and the other `wc_*` imports are main-thread only, and on the web
+the main thread must poll its workers rather than block on them.
 
 ### `setjmp` / `longjmp` ([wasi-sdk](https://github.com/WebAssembly/wasi-sdk))
 
