@@ -26,6 +26,10 @@ var Module = moduleArg;
 // wasmcart: the host supplies these per cart (see scripts/build-wgpu-glue.mjs).
 var navigator = Module['wcNavigator'];
 var document = Module['wcDocument'];
+var GPUInternalError = Module['wcGlobals']['GPUInternalError'];
+var GPUOutOfMemoryError = Module['wcGlobals']['GPUOutOfMemoryError'];
+var GPUSupportedLimits = Module['wcGlobals']['GPUSupportedLimits'];
+var GPUValidationError = Module['wcGlobals']['GPUValidationError'];
 
 // Set up the promise that indicates the Module is initialized
 var readyPromiseResolve, readyPromiseReject;
@@ -4166,10 +4170,10 @@ run();
 
 // end include: postamble.js
 
-// include: /tmp/wgpu-glue-5Omcoy/post.js
+// include: /tmp/wgpu-glue-kYJAmS/post.js
 Module['WebGPU'] = WebGPU;
 Module['wcUpdateMemoryViews'] = updateMemoryViews;
-// end include: /tmp/wgpu-glue-5Omcoy/post.js
+// end include: /tmp/wgpu-glue-kYJAmS/post.js
 
 // include: postamble_modularize.js
 // In MODULARIZE mode we wrap the generated code in a factory function

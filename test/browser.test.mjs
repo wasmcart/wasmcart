@@ -398,6 +398,8 @@ const wgpu = await page.evaluate(async () => {
   for (let i = 0; i < 4; i++) { host.runFrame([]); await tick(); }
   out.result = ex.wgpucart_result();
   out.mappedDuringRender = ex.wgpucart_mapped_during_render();
+  for (let i = 0; i < 20 && ex.wgpucart_scope_error() < 0; i++) { host.runFrame([]); await tick(); }
+  out.scopeError = ex.wgpucart_scope_error();
   host.runFrame([]);
   let f = await host.readGpuFrame();
   out.size = [f.width, f.height];
@@ -435,6 +437,7 @@ const wgpu = await page.evaluate(async () => {
 check('webgpu: the browser offers an adapter', wgpu.adapter, true);
 check('webgpu: cart runs on WebGPU with the host flag set', [wgpu.usesWgpu, wgpu.flag], [true, 2]);
 check('webgpu: compute result arrives between frames', [wgpu.result, wgpu.mappedDuringRender], [42, 0]);
+check('webgpu: an error scope catches a validation error', wgpu.scopeError, 2);
 check('webgpu: frame size', wgpu.size, [256, 192]);
 check('webgpu: triangle pixel', wgpu.triangle, [255, 128, 64, 255]);
 check('webgpu: background carries the compute result', wgpu.background, [42, 0, 255, 255]);

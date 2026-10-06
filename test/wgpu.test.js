@@ -50,6 +50,8 @@ test('a WebGPU cart renders on the host device, gets async results between frame
     for (let i = 0; i < 20 && ex.wgpucart_result() < 0; i++) { host.runFrame(); await tick(); }
     assert.equal(ex.wgpucart_result(), 42, 'the compute shader result arrived through mapAsync');
     assert.equal(ex.wgpucart_mapped_during_render(), 0, 'no callback ran inside wc_render');
+    for (let i = 0; i < 10 && ex.wgpucart_scope_error() < 0; i++) { host.runFrame(); await tick(); }
+    assert.equal(ex.wgpucart_scope_error(), 2, 'an error scope caught the validation error (WGPUErrorType_Validation)');
     for (let i = 0; i < 4; i++) { host.runFrame(); await tick(); }
     assert.ok(host.memory.buffer.byteLength > before, 'the cart grew its memory (32 MB malloc on frame 3)');
 

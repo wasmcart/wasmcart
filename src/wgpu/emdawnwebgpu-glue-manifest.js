@@ -134,5 +134,11 @@ export default {
     "wgpuTextureGetTextureBindingViewDimension",
     "wgpuTextureGetUsage",
     "wgpuTextureGetWidth"
+  ],
+  "globals": [
+    "GPUInternalError",
+    "GPUOutOfMemoryError",
+    "GPUSupportedLimits",
+    "GPUValidationError"
   ]
 };

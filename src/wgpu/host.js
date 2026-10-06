@@ -105,10 +105,17 @@ const HOST_USAGE = 0x01 /* COPY_SRC */ | 0x04 /* TEXTURE_BINDING */;
  * @param {number} o.width      - initial canvas size (the cart's resolution)
  * @param {number} o.height
  * @param {GPURequestAdapterOptions} [o.adapterOptions]
+ * @param {object} [o.globals] - where the WebGPU classes live (GPUValidationError, ...):
+ *   globalThis in a browser, webgpu-node's `globals` in Node
  * @param {(msg:string)=>void} [o.log]
  */
-export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdapter, createCanvas = createTextureCanvas, width, height, adapterOptions, log = () => {} }) {
+export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdapter, createCanvas = createTextureCanvas, width, height, adapterOptions, globals = globalThis, log = () => {} }) {
   const { factory, manifest } = await gluePromise();
+  // The WebGPU classes the glue names as globals (GPUValidationError, ...):
+  // window's in a browser, the implementation's own (webgpu-node `globals`)
+  // in Node. Missing ones are a host bug, so say which.
+  const missingClasses = manifest.globals.filter(c => typeof globals[c] !== 'function');
+  if (missingClasses.length) throw new Error(`this host's WebGPU implementation does not provide ${missingClasses.join(', ')}; pass its classes as \`globals\``);
 
   // Every WebGPU function the cart imports must exist in this glue. A missing
   // one is a load error naming it, never a stub: a stubbed GPU call returns 0
@@ -187,6 +194,7 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
   const Module = {
     wcNavigator: { gpu: cartGpu, userAgent: 'wasmcart' },
     wcDocument: cartDocument,
+    wcGlobals: globals,
     preinitializedWebGPUDevice: device,
     print: log,
     printErr: log,
@@ -324,13 +332,19 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
 
     get lost() { return lost; },
 
+    /** Release the device. Returns a promise that settles once Dawn has
+     *  delivered device.lost, by which point every callback the cart still
+     *  had pending (a mapAsync, an error scope) has been answered; an
+     *  embedder tearing Node down must let it settle first, or Dawn's Node
+     *  binding aborts on a promise destroyed unresolved. */
     destroy() {
-      if (closed) return;
+      if (closed) return device.lost.then(() => {});
       closed = true;
       readbackBuffer?.destroy();
       try { realContext.unconfigure?.(); } catch {}
       try { realContext.destroy?.(); } catch {}
       device.destroy();
+      return device.lost.then(() => {});
     },
   };
 }

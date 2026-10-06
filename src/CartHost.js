@@ -528,9 +528,9 @@ export class CartHost {
       // The canvas starts at the best guess of the cart's size, as the GL
       // context does; the cart's own wgpuSurfaceConfigure sets the real one.
       const m = this._manifest || {};
-      const { gpu, adapter, createCanvas } = this._wgpuProvider;
+      const { gpu, adapter, createCanvas, globals } = this._wgpuProvider;
       this._wgpu = await createWgpuSession({
-        moduleImports, gpu, adapter, createCanvas,
+        moduleImports, gpu, adapter, createCanvas, globals,
         width: m.width || options.preferredWidth || DEFAULT_GL_W,
         height: m.height || options.preferredHeight || DEFAULT_GL_H,
         log: msg => console.error(msg),
@@ -1279,20 +1279,24 @@ export class CartHost {
   async _wgpuAvailability(options) {
     if (options.wgpu === false) return { ok: false, reason: 'the embedder disabled it (wgpu: false)' };
     let gpu = options.gpu || null;
+    let globals = options.gpuGlobals || null;
     const createCanvas = options.createCanvas || undefined;
-    if (!gpu) {
+    if (!gpu || !globals) {
       let mod;
       try { mod = await import('webgpu-node'); } catch (e) {
-        return { ok: false, reason: `webgpu-node is not installed or failed to load (${e.message})` };
+        if (!gpu) return { ok: false, reason: `webgpu-node is not installed or failed to load (${e.message})` };
       }
-      gpu = mod.createGPU();
+      gpu ||= mod.createGPU();
+      // The WebGPU classes (GPUValidationError, ...) the glue checks errors
+      // against; Node has none on globalThis.
+      globals ||= mod?.globals || globalThis;
     }
     let adapter = null;
     try { adapter = await gpu.requestAdapter(options.adapterOptions); } catch (e) {
       return { ok: false, reason: `requesting a WebGPU adapter failed (${e.message})` };
     }
     if (!adapter) return { ok: false, reason: 'no WebGPU adapter is available (check the GPU driver)' };
-    return { ok: true, gpu, adapter, createCanvas };
+    return { ok: true, gpu, adapter, createCanvas, globals };
   }
 
   getInfo() {

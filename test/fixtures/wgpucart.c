@@ -65,6 +65,23 @@ __attribute__((export_name("wgpucart_result"))) int wgpucart_result(void) { retu
 __attribute__((export_name("wgpucart_mapped_during_render"))) int wgpucart_mapped_during_render(void) { return mapped_during_render; }
 __attribute__((export_name("wgpucart_host_flags"))) uint32_t wgpucart_host_flags(void) { return host_info.flags; }
 
+/* An error scope around a deliberately invalid buffer (MapRead|MapWrite is
+   not a legal usage), popped on frame 2: the glue must classify the error
+   with the WebGPU error classes, which a Node host has to supply. */
+static volatile int scope_error = -1;   /* WGPUErrorType once popped */
+__attribute__((export_name("wgpucart_scope_error"))) int wgpucart_scope_error(void) { return scope_error; }
+static void on_pop(WGPUPopErrorScopeStatus status, WGPUErrorType type, WGPUStringView msg, void *a, void *b) {
+    scope_error = status == WGPUPopErrorScopeStatus_Success ? (int)type : -2;
+}
+static void provoke_validation_error(void) {
+    wgpuDevicePushErrorScope(device, WGPUErrorFilter_Validation);
+    WGPUBufferDescriptor bad = { .usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_MapWrite, .size = 4 };
+    WGPUBuffer b = wgpuDeviceCreateBuffer(device, &bad);
+    WGPUPopErrorScopeCallbackInfo info = { .mode = WGPUCallbackMode_AllowSpontaneous, .callback = on_pop };
+    wgpuDevicePopErrorScope(device, info);
+    wgpuBufferRelease(b);
+}
+
 static void on_map(WGPUMapAsyncStatus status, WGPUStringView msg, void *a, void *b) {
     if (in_render) mapped_during_render = 1;
     if (status != WGPUMapAsyncStatus_Success) { result = -2; return; }
@@ -148,6 +165,7 @@ void wc_render(void) {
     /* Grow the cart's memory under the glue's feet: the views it holds must
        be refreshed or the following WebGPU calls read a detached buffer. */
     if (frame == 3 && !big) { big = malloc(32 << 20); if (big) memset(big, 1, 32 << 20); }
+    if (frame == 2) provoke_validation_error();
 
     WGPUSurfaceTexture st = {0};
     wgpuSurfaceGetCurrentTexture(surface, &st);
