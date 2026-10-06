@@ -22,6 +22,7 @@
     "src/",
     "bin/",
     "include/",
+    "wgpu-wasi/",
     "docs/",
     "SPEC.md",
     "README.md",

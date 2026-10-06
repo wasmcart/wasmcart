@@ -285,6 +285,11 @@ JavaScript half of the port, generated from the same release
 A cart importing a WebGPU function the host's glue lacks is refused at load,
 naming the functions. See [docs/webgpu.md](docs/webgpu.md) for building one.
 
+The definition is the import set, not the compiler: a wasi-sdk cart that
+compiles the same port's C++ half (with the small support in `wgpu-wasi/`,
+which also exports the functions the glue calls back into, listed in
+`wgpu-wasi/exports.txt`) is the same kind of cart and runs on the same hosts.
+
 ### The host owns the GPU
 
 - **Device.** The host creates the adapter and device. `emscripten_webgpu_get_device()`
@@ -341,7 +346,9 @@ upload path.
 WebGPU calls are made from the cart's main thread only: `wc_init`,
 `wc_render`, and the callbacks above. A threaded cart's workers (see
 Threads under Security Model) may do anything else, and a worker that never
-calls a WebGPU function is unaffected by the cart importing them.
+calls a WebGPU function is unaffected by the cart importing them. (On the web
+host the main thread may never block on a worker, WebGPU or not: a browser
+traps `Atomics.wait` there.)
 
 ### Hosts without WebGPU, and carts with both APIs
 

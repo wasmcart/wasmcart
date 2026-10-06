@@ -684,7 +684,7 @@ async function createWasm() {
       while (heapOrArray[endPtr] && !(endPtr >= endIdx)) ++endPtr;
   
       if (endPtr - idx > 16 && heapOrArray.buffer && UTF8Decoder) {
-        return UTF8Decoder.decode(heapOrArray.subarray(idx, endPtr));
+        return UTF8Decoder.decode(heapOrArray.buffer instanceof ArrayBuffer ? heapOrArray.subarray(idx, endPtr) : heapOrArray.slice(idx, endPtr));
       }
       var str = '';
       // If building with TextDecoder, we have already computed the string length
@@ -4170,10 +4170,10 @@ run();
 
 // end include: postamble.js
 
-// include: /tmp/wgpu-glue-kYJAmS/post.js
+// include: <build>/post.js
 Module['WebGPU'] = WebGPU;
 Module['wcUpdateMemoryViews'] = updateMemoryViews;
-// end include: /tmp/wgpu-glue-kYJAmS/post.js
+// end include: <build>/post.js
 
 // include: postamble_modularize.js
 // In MODULARIZE mode we wrap the generated code in a factory function

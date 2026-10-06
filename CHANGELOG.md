@@ -14,6 +14,9 @@ changes, and GL stays the tier every host must run.
   surface, and the host reads frames back (`readGpuFrame()`) or draws them
   into a window (`presentWgpuTo()`).
 - Carts run at WebGPU's compatibility feature level unless they request core.
+- wasi-sdk carts (threads included) target the same tier through `wgpu-wasi/`:
+  compile emdawnwebgpu's C++ half into the cart with a CMake function, and it
+  imports exactly what an Emscripten cart does. No host change.
 - A cart importing both `gl` and WebGPU gets WebGPU where the host has it and
   GL where it does not, told by `WC_HOST_FLAG_GPU_WGPU` (0x02) in host-info
   flags; the API the host did not select throws if called.

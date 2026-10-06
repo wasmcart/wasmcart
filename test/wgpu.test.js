@@ -8,6 +8,7 @@
 //   gpuapi2.wasc      declares gpu_api 2 with no WebGPU imports
 //   gpuapi3.wasc      declares the reserved gpu_api 3
 //   wgpufake.wasc     imports a WebGPU function no glue provides
+//   wasicart.wasc     wgpucart built with wasi-sdk (threads) via wgpu-wasi/
 //
 // Pixels are read the way a host must: readGpuFrame() for WebGPU, the GL
 // redirect FBO for GL.
@@ -60,6 +61,36 @@ test('a WebGPU cart renders on the host device, gets async results between frame
     assert.equal(frame.height, 192);
     assert.deepEqual(pixel(frame, 128, 110), [255, 128, 64, 255], 'triangle');
     assert.deepEqual(pixel(frame, 2, 2), [42, 0, 255, 255], 'background carries the compute result');
+  } finally {
+    host.destroy();
+  }
+});
+
+test('a wasi-sdk cart (wasip1-threads, workers that never call WebGPU) runs on WebGPU', async () => {
+  // wasicart.wasc: wgpucart.c built with wasi-sdk through wgpu-wasi/, plus two
+  // pthread workers doing CPU work. The error-scope message travels on the
+  // cart's stack, so it also checks wgpu-wasi's stack helpers.
+  const host = new CartHost();
+  await host.load(fixture('wasicart.wasc'));
+  try {
+    assert.equal(host.usesWgpu, true);
+    assert.equal(host.isThreaded, true);
+    const ex = host.instance.exports;
+    // Workers start as Node worker threads, which takes real time: pace the
+    // frames (the cart polls its workers' done flags; it never blocks).
+    for (let i = 0; i < 200 && !(ex.wgpucart_result() >= 0 && ex.wgpucart_scope_error() >= 0 && ex.wasicart_workers_ok()); i++) {
+      host.runFrame();
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(ex.wgpucart_result(), 42, 'compute result through mapAsync');
+    assert.equal(ex.wgpucart_mapped_during_render(), 0);
+    assert.equal(ex.wgpucart_scope_error(), 2, 'validation error caught by the scope');
+    assert.equal(ex.wasicart_scope_msg_ok(), 1, 'error message intact (passed on the cart stack)');
+    assert.equal(ex.wasicart_workers_ok(), 1, 'both workers finished their sums');
+    host.runFrame();
+    const frame = await host.readGpuFrame();
+    assert.deepEqual(pixel(frame, 128, 110), [255, 128, 64, 255]);
+    assert.deepEqual(pixel(frame, 2, 2), [42, 0, 255, 255]);
   } finally {
     host.destroy();
   }

@@ -425,6 +425,20 @@ const wgpu = await page.evaluate(async () => {
   try { host.runFrame([]); out.badDual = 'ran'; } catch (e) { out.badDual = /called glClear, but this host selected WebGPU/.test(e.message); }
   host.destroy();
 
+  // wasi-sdk producer: threads (Web Workers on shared memory) that never call
+  // WebGPU, WebGPU on the main thread, and the error message on the cart stack.
+  host = new CartHostWeb();
+  await host.load('/test/fixtures/wasicart.wasc');
+  {
+    const w = host.instance.exports;
+    for (let i = 0; i < 80 && !(w.wgpucart_result() >= 0 && w.wgpucart_scope_error() >= 0 && w.wasicart_workers_ok()); i++) { host.runFrame([]); await tick(); }
+    host.runFrame([]);
+    const wf = await host.readGpuFrame();
+    out.wasi = { wgpu: host.usesWgpu, threaded: host.isThreaded, result: w.wgpucart_result(), scope: w.wgpucart_scope_error(),
+                 msg: w.wasicart_scope_msg_ok(), workers: w.wasicart_workers_ok(), px: px(wf, 128, 110) };
+  }
+  host.destroy();
+
   const refusal = async (path, opts) => {
     try { await new CartHostWeb().load(path, opts); return 'loaded'; } catch (e) { return e.message; }
   };
@@ -448,6 +462,8 @@ check('webgpu: WebGPU-only cart refused without WebGPU', wgpu.noWgpu, true);
 check('webgpu: gpu_api 2 without WebGPU imports refused', wgpu.gpuApi2, true);
 check('webgpu: gpu_api 3 refused', wgpu.gpuApi3, true);
 check('webgpu: unknown WebGPU function refused by name', wgpu.fake, true);
+check('webgpu: a wasi-sdk threaded cart runs (workers never call WebGPU)', wgpu.wasi,
+      { wgpu: true, threaded: true, result: 42, scope: 2, msg: 1, workers: 1, px: [255, 128, 64, 255] });
 
 await browser.close();
 ws.kill();

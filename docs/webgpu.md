@@ -31,6 +31,11 @@ npx wasmcart-pack --wasm cart.wasm --name mycart -o mycart.wasc
 bindings (`-sUSE_WEBGPU`) are a different, incompatible import set and are
 refused.
 
+**wasi-sdk** works too, threads included: compile the same package's
+`webgpu.cpp` into the cart with the support in [`wgpu-wasi/`](../wgpu-wasi/README.md)
+(a CMake function does it). The cart then imports exactly what an Emscripten
+cart does, and runs on the same hosts.
+
 ## The cart, in outline
 
 ```c
@@ -75,6 +80,8 @@ dual GL/WebGPU cart.
   leaves it NaN, and implementations reject NaN even when the depth load op is
   `Load`.
 - **Main thread only.** Workers of a threaded cart must not call WebGPU.
+  On the web host the main thread also must never block (no `pthread_join` or
+  contended lock in `wc_render`): poll workers instead.
 - **WGSL only.** Browsers accept nothing else, so neither does the tier.
 
 ## Hosts
