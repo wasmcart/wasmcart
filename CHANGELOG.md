@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.32.0
 
 **WebGPU**, an optional second GPU tier (SPEC.md, "WebGPU";
 docs/webgpu.md). Additive: no struct, flag or import an existing cart uses
