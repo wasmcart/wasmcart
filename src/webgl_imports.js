@@ -81,6 +81,7 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL, direct
   ctx.getExtension('WEBGL_compressed_texture_s3tc_srgb');
   ctx.getExtension('EXT_texture_compression_bptc');
   ctx.getExtension('EXT_texture_compression_rgtc');
+  ctx.getExtension('EXT_disjoint_timer_query_webgl2'); // GL_TIME_ELAPSED_EXT / GL_GPU_DISJOINT_EXT queries
 
   // Build extension list with "GL_" prefix (native GLES convention).
   // Also include custom extensions for compatibility with engine feature detection.
