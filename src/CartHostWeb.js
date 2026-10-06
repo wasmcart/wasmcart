@@ -29,7 +29,7 @@ import {
   GPU_API_WEBGPU,
 } from './abi.js';
 import { createWebGLImports } from './webgl_imports.js';
-import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap, WGPU_ADAPTER_OPTIONS } from './wgpu/host.js';
+import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap, wgpuAdapterOptions } from './wgpu/host.js';
 
 /**
  * Whether a cart of w x h can draw straight into this context's default
@@ -1095,6 +1095,15 @@ export class CartHostWeb {
     return this._wgpu?.device || null;
   }
 
+  /**
+   * Which GPU a WebGPU cart runs on ({vendor, architecture, device,
+   * description, featureLevel, powerPreference}), null for other carts. Pick
+   * the GPU with adapterOptions.powerPreference or WASMCART_WGPU_POWER.
+   */
+  getGpuAdapterInfo() {
+    return this._wgpu ? { ...this._wgpu.adapterInfo } : null;
+  }
+
   _checkGpuApi(gpuApi) {
     if (gpuApi === GPU_API_WEBGPU && !this._cartImportsWgpu) {
       throw new Error('cart declares gpu_api 2 (WebGPU) but imports no WebGPU functions');
@@ -1115,7 +1124,7 @@ export class CartHostWeb {
     const gpu = options.gpu || globalThis.navigator?.gpu;
     if (!gpu) return { ok: false, reason: 'this browser has no WebGPU (navigator.gpu is missing)' };
     let adapter = null;
-    try { adapter = await gpu.requestAdapter({ ...WGPU_ADAPTER_OPTIONS, ...options.adapterOptions }); } catch (e) {
+    try { adapter = await gpu.requestAdapter(wgpuAdapterOptions(options.adapterOptions)); } catch (e) {
       return { ok: false, reason: `requesting a WebGPU adapter failed (${e.message})` };
     }
     if (!adapter) return { ok: false, reason: 'the browser offers no WebGPU adapter (blocklisted GPU or driver)' };

@@ -166,3 +166,31 @@ test('gpu_api values a cart does not back are refused at load', async () => {
 test('a WebGPU function the glue lacks is a load error naming it, never a stub', async () => {
   await assert.rejects(new CartHost().load(fixture('wgpufake.wasc')), /does not provide: wgpuDeviceDoesNotExistYet/);
 });
+
+test('the embedder or WASMCART_WGPU_POWER picks the GPU, and the host says which it got', async () => {
+  // On a two-GPU machine powerPreference is what separates them (low-power =
+  // the integrated GPU); a caller that must not touch one asserts on this.
+  const host = new CartHost();
+  await host.load(fixture('wgpucart.wasc'), { adapterOptions: { powerPreference: 'low-power' } });
+  try {
+    const a = host.getGpuAdapterInfo();
+    assert.equal(a.powerPreference, 'low-power');
+    assert.equal(a.featureLevel, 'compatibility');
+    assert.ok(a.vendor || a.device || a.description, 'the adapter names itself');
+  } finally {
+    host.destroy();
+  }
+  assert.equal(new CartHost().getGpuAdapterInfo(), null, 'no WebGPU cart, no adapter');
+
+  process.env.WASMCART_WGPU_POWER = 'high-performance';
+  const viaEnv = new CartHost();
+  try {
+    await viaEnv.load(fixture('wgpucart.wasc'));
+    assert.equal(viaEnv.getGpuAdapterInfo().powerPreference, 'high-performance');
+    viaEnv.destroy();
+    process.env.WASMCART_WGPU_POWER = 'fastest';
+    await assert.rejects(new CartHost().load(fixture('wgpucart.wasc')), /WASMCART_WGPU_POWER=fastest: expected low-power or high-performance/);
+  } finally {
+    delete process.env.WASMCART_WGPU_POWER;
+  }
+});

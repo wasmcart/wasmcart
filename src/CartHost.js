@@ -38,7 +38,7 @@ import {
   clampTrigger,
 } from './abi.js';
 import { createWebGLImports, noteGlCurrent } from './webgl_imports.js';
-import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap, WGPU_ADAPTER_OPTIONS } from './wgpu/host.js';
+import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap, wgpuAdapterOptions } from './wgpu/host.js';
 import { listDirRelative, diffFileList } from './assetFiles.js';
 
 /* The manifest's asset root is stripped as a PATH PREFIX from packed entries,
@@ -1260,6 +1260,15 @@ export class CartHost {
     return this._wgpu?.device || null;
   }
 
+  /**
+   * Which GPU a WebGPU cart runs on ({vendor, architecture, device,
+   * description, featureLevel, powerPreference}), null for other carts. Pick
+   * the GPU with adapterOptions.powerPreference or WASMCART_WGPU_POWER.
+   */
+  getGpuAdapterInfo() {
+    return this._wgpu ? { ...this._wgpu.adapterInfo } : null;
+  }
+
   // gpu_api is checked the moment the cart reports it: a value this host
   // cannot honour is a load error, not something to guess at.
   _checkGpuApi(gpuApi) {
@@ -1293,7 +1302,7 @@ export class CartHost {
       globals ||= mod?.globals || globalThis;
     }
     let adapter = null;
-    try { adapter = await gpu.requestAdapter({ ...WGPU_ADAPTER_OPTIONS, ...options.adapterOptions }); } catch (e) {
+    try { adapter = await gpu.requestAdapter(wgpuAdapterOptions(options.adapterOptions)); } catch (e) {
       return { ok: false, reason: `requesting a WebGPU adapter failed (${e.message})` };
     }
     if (!adapter) return { ok: false, reason: 'no WebGPU adapter is available (check the GPU driver)' };

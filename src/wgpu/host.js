@@ -31,6 +31,38 @@ import gluePromise from './glue-loader.js';
  */
 export const WGPU_ADAPTER_OPTIONS = Object.freeze({ featureLevel: 'compatibility' });
 
+const POWER_PREFERENCES = ['low-power', 'high-performance'];
+
+/**
+ * The adapter request for one cart: WGPU_ADAPTER_OPTIONS, then the
+ * WASMCART_WGPU_POWER environment variable where there is one (Node hosts:
+ * 'low-power' or 'high-performance', which picks the GPU on a machine with
+ * two), then the embedder's `adapterOptions`. Host configuration only: a
+ * cart cannot see or change it.
+ * @param {object} [extra] - the embedder's adapterOptions
+ */
+export function wgpuAdapterOptions(extra) {
+  const env = typeof process !== 'undefined' ? process.env?.WASMCART_WGPU_POWER : undefined;
+  if (env && !POWER_PREFERENCES.includes(env)) {
+    throw new Error(`WASMCART_WGPU_POWER=${env}: expected ${POWER_PREFERENCES.join(' or ')}`);
+  }
+  return { ...WGPU_ADAPTER_OPTIONS, ...(env ? { powerPreference: env } : {}), ...extra };
+}
+
+/**
+ * Which GPU an adapter is, for callers that must assert it (two-GPU
+ * machines): GPUAdapterInfo's strings, plus the options it was requested with.
+ */
+export function describeAdapter(adapter, options) {
+  const i = adapter?.info || {};
+  return {
+    vendor: i.vendor || '', architecture: i.architecture || '',
+    device: i.device || '', description: i.description || '',
+    featureLevel: adapter?.featureLevel || options?.featureLevel || '',
+    powerPreference: options?.powerPreference || null,
+  };
+}
+
 /** True for a function name the WebGPU glue provides. */
 export function isWgpuImportName(name) {
   return /^(wgpu|emwgpu)[A-Z]/.test(name) || name.startsWith('emscripten_webgpu_');
@@ -140,7 +172,7 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
     throw new Error(`WebGPU cart imports ${missing.length} function(s) this host's glue (emdawnwebgpu ${manifest.release}) does not provide: ${missing.join(', ')}. Build the cart against emdawnwebgpu ${manifest.release}.`);
   }
 
-  const adapterOpts = { ...WGPU_ADAPTER_OPTIONS, ...adapterOptions };
+  const adapterOpts = wgpuAdapterOptions(adapterOptions);
   const adapter = givenAdapter || await gpu.requestAdapter(adapterOpts);
   if (!adapter) throw new Error('This host has no WebGPU adapter (check the GPU driver), so it cannot run a WebGPU cart');
   // The host's device has the default features and limits: the tier's
@@ -293,6 +325,8 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
 
   return {
     env,
+    /** Which GPU the cart runs on (describeAdapter). */
+    adapterInfo: describeAdapter(adapter, adapterOpts),
     /** The device the cart renders with: present windows on THIS one. */
     get device() { return canvasDevice || device; },
     context: realContext,

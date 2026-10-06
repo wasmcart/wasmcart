@@ -97,6 +97,13 @@ dual GL/WebGPU cart.
 A host reads frames with `readGpuFrame()` (async, top-down RGBA) and draws them
 into a window with `presentWgpuTo(context, rect)` on `getGpuDevice()`.
 
+Which GPU: on a machine with two, `powerPreference` picks one (`'low-power'`
+is the integrated GPU). Embedders pass it in `adapterOptions`; the Node hosts
+(`CartHost`, wasmcart-native, romdev) also take `WASMCART_WGPU_POWER`
+(`low-power` or `high-performance`) as the default. `getGpuAdapterInfo()`
+reports the GPU a cart got, for callers that must assert it. This is host
+configuration: the cart never sees it.
+
 ## Regenerating the host glue
 
 ```sh

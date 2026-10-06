@@ -449,6 +449,9 @@ await cart.load('game.wasc', {
   gpu: navigatorGpuLike,          // your own WebGPU implementation (Node)
   gpuGlobals: { GPUValidationError, ... },  // its error classes (Node)
   adapterOptions: { featureLevel: 'core' }, // default is 'compatibility'
+  // adapterOptions: { powerPreference: 'low-power' } picks the GPU on a
+  // two-GPU machine; WASMCART_WGPU_POWER=low-power|high-performance sets the
+  // default for every load. cart.getGpuAdapterInfo() says which GPU it got.
   wgpuCanvas: myCanvas,           // browser: render straight into a visible canvas
 });
 ```
