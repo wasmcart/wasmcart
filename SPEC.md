@@ -370,7 +370,9 @@ calls a WebGPU function is unaffected by the cart importing them.
 
 WebGPU output is not bit-identical across backends and drivers. A WebGPU cart
 should not set `WC_FLAG_DETERMINISTIC` for frame hashes; named debug-state
-checkpoints still work.
+checkpoints still work, as long as GPU results never feed game state:
+anything a cart reads back from the GPU (a compute result, a mapped buffer)
+is not cross-backend deterministic either.
 
 ---
 
