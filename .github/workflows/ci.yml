@@ -27,8 +27,8 @@ jobs:
       matrix:
         node: [22, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
       # GL is a hard requirement of the ABI, not an optional extra: a host that
@@ -41,7 +41,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libegl1 libgles2 libgl1-mesa-dri libglvnd0
+            libegl1 libgles2 libgl1-mesa-dri libglvnd0 mesa-vulkan-drivers
       - run: npm ci
       # Fail loudly here rather than as four confusing GL test failures: if the
       # runner cannot make a context, that is an environment problem, not a
@@ -56,6 +56,20 @@ jobs:
             if (!gl) { console.error('no WebGL2 context on this runner'); process.exit(1); }
             console.log('GL OK:', gl.getParameter(gl.VERSION));
           }).catch((e) => { console.error('GL import failed:', e.message); process.exit(1); });
+          "
+      # WebGPU is optional for a host but not for this repo: the WebGPU tests
+      # are how the tier is proven. webgpu-node (Dawn) needs a Vulkan driver;
+      # mesa-vulkan-drivers above brings lavapipe, a software one.
+      - name: Verify a WebGPU adapter is obtainable
+        run: |
+          node -e "
+          import('webgpu-node').then(async (m) => {
+            const gpu = m.createGPU();
+            const a = await gpu.requestAdapter({ featureLevel: 'compatibility' });
+            if (!a) { console.error('no WebGPU adapter on this runner'); process.exit(1); }
+            console.log('WebGPU OK:', a.info?.description || a.info?.vendor || 'adapter');
+            process.exit(0);
+          }).catch((e) => { console.error('webgpu-node import failed:', e.message); process.exit(1); });
           "
       - run: npm test
 
@@ -78,8 +92,8 @@ jobs:
     name: npm pack (files field)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - run: npm ci
