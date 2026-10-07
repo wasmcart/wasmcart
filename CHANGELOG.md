@@ -20,6 +20,9 @@ changes, and GL stays the tier every host must run.
 - wasi-sdk carts (threads included) target the same tier through `wgpu-wasi/`:
   compile emdawnwebgpu's C++ half into the cart with a CMake function, and it
   imports exactly what an Emscripten cart does. No host change.
+  `wasmcart_wgpu_wasi_library()` compiles that support once for a build of many
+  carts, and `wgpu-wasi/imports.txt` lists every import the kit allows, for
+  auditing carts linked with `--allow-undefined`.
 - A cart importing both `gl` and WebGPU gets WebGPU where the host has it and
   GL where it does not, told by `WC_HOST_FLAG_GPU_WGPU` (0x02) in host-info
   flags; the API the host did not select throws if called.

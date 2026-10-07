@@ -11,7 +11,8 @@ Emscripten link would otherwise supply:
 | `include/emscripten/emscripten.h` | Stand-in for the one Emscripten function the port uses (`emscripten_has_asyncify`, a host import). |
 | `emwgpu_wasi.c` | `memalign` (declared but not defined by wasi-libc) and Emscripten's three stack helpers, which the host's glue calls back into. |
 | `exports.txt` | The functions the cart must export for the glue. Generated with the glue (`scripts/build-wgpu-glue.mjs`), so it cannot drift. |
-| `wasmcart-wgpu-wasi.cmake` | `wasmcart_wgpu_wasi(target EMDAWNWEBGPU_PKG <pkg>)`: adds all of the above to a CMake target. |
+| `imports.txt` | Every function the kit lets a cart import from `env` (the glue's, plus `emscripten_has_asyncify`). Generated the same way. See "Auditing imports". |
+| `wasmcart-wgpu-wasi.cmake` | `wasmcart_wgpu_wasi(target EMDAWNWEBGPU_PKG <pkg>)` adds all of the above to one CMake target; `wasmcart_wgpu_wasi_library(name EMDAWNWEBGPU_PKG <pkg>)` compiles it once for many carts. |
 
 The emdawnwebgpu package must be the release the hosts pin
 (`scripts/wgpu/emdawnwebgpu.json`): its `webgpu/src/webgpu.cpp` and
@@ -31,7 +32,29 @@ wasmcart_wgpu_wasi(mycart EMDAWNWEBGPU_PKG <path>/emdawnwebgpu_pkg)
 configured with wasi-sdk's toolchain file (`wasi-sdk.cmake`, or
 `wasi-sdk-pthread.cmake` for `wasm32-wasip1-threads`). Threaded carts also link
 with `-Wl,--import-memory -Wl,--shared-memory -Wl,--max-memory=...`, as any
-threaded wasmcart cart does.
+threaded wasmcart cart does. Tested with wasi-sdk 33. wasi-sdk 34's
+`wasi-sdk-pthread.cmake` still targets `wasm32-wasi-threads`, whose sysroot 34
+no longer ships, so its compiler cannot find `stdlib.h`; use 33's, or set the
+target to `wasm32-wasip1-threads`.
+
+### Many carts
+
+`wasmcart_wgpu_wasi` compiles `webgpu.cpp` (about 77 KB of C++) into each
+target. For a build with many carts, compile it once:
+
+```cmake
+wasmcart_wgpu_wasi_library(wcwgpu EMDAWNWEBGPU_PKG <path>/emdawnwebgpu_pkg)
+foreach(cart cart_a cart_b)
+  add_executable(${cart} ${cart}.c)
+  set_target_properties(${cart} PROPERTIES SUFFIX ".wasm")
+  target_link_options(${cart} PRIVATE -mexec-model=reactor
+    -Wl,--export=wc_get_info -Wl,--export=wc_init -Wl,--export=wc_render)
+  target_link_libraries(${cart} PRIVATE wcwgpu)
+endforeach()
+```
+
+The library is an OBJECT library that carries the include paths, the exports
+and `-Wl,--allow-undefined`, so a cart linking it needs nothing else.
 
 ## Without CMake
 
@@ -50,6 +73,33 @@ $CXX -O2 -s -mexec-model=reactor -Wl,--allow-undefined \
 
 (Link with `clang++`: the port is C++ and needs libc++. Add the threaded
 memory flags above for a `wasm32-wasip1-threads` cart.)
+
+## Auditing imports
+
+The WebGPU functions are imports the host provides, so carts link with
+`-Wl,--allow-undefined`. That also turns any symbol that went missing (a
+dropped source file, a typo) into a silent `env` import, which fails only at
+load. Check a built cart: every `env` function import should be in
+`imports.txt` or be a wasmcart host function (`wc_*`).
+
+```js
+const allowed = new Set(fs.readFileSync('wgpu-wasi/imports.txt', 'utf8').trim().split('\n'));
+const stray = WebAssembly.Module.imports(new WebAssembly.Module(fs.readFileSync('cart.wasm')))
+  .filter(i => i.module === 'env' && i.kind === 'function' && !allowed.has(i.name) && !i.name.startsWith('wc_'));
+```
+
+## Dual carts (GL and WebGPU in one cart)
+
+A cart can import both `gl` and WebGPU and run on whichever the host has
+(SPEC.md, "WebGPU"):
+
+1. Set `gpu_api = 2` in `wc_get_info`.
+2. In `wc_init`, read `WC_HOST_FLAG_GPU_WGPU` from host-info `flags`: set
+   means the host selected WebGPU, clear means GL.
+3. From then on call only the selected API. The other one's imports are bound
+   to functions that throw, naming the call.
+
+`test/fixtures/dualgpu.c` is a complete small example.
 
 ## Threads
 
