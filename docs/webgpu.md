@@ -104,6 +104,13 @@ is the integrated GPU). Embedders pass it in `adapterOptions`; the Node hosts
 reports the GPU a cart got, for callers that must assert it. This is host
 configuration: the cart never sees it.
 
+In Chromium on Linux, WebGPU without `--enable-features=Vulkan` (plus
+`--enable-unsafe-webgpu` where WebGPU is not on by default) silently runs on
+SwiftShader, a software adapter: check `getGpuAdapterInfo()` before trusting
+a timing. Inside the cart, `wgpuAdapterGetInfo` carries what the WebGPU API
+exposes, which is the vendor, architecture and description strings, not PCI vendor or device ids
+(those read 0) or an adapter type (Unknown).
+
 ## Regenerating the host glue
 
 ```sh
