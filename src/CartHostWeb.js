@@ -53,7 +53,7 @@ function canPresentDirect(gl, w, h, allowMsaa) {
   if (!a || !a.depth || !a.stencil || (a.antialias && !allowMsaa)) return false;
   return gl.drawingBufferWidth === w && gl.drawingBufferHeight === h;
 }
-import { inflateSync } from 'fflate';
+import { inflateSync, inflate } from 'fflate';
 
 /* The manifest's asset root is stripped as a PATH PREFIX from packed entries,
  * so it needs its trailing slash: "app" turns "app/main.lua" into "/main.lua"
@@ -151,6 +151,28 @@ function readZipEntryFromBuffer(buf, entry) {
   } else {
     throw new Error(`Unsupported ZIP compression method: ${entry.compressionMethod}`);
   }
+}
+
+/* The cart's wasm is the one big entry inflated before the cart can start.
+ * Inflating it synchronously froze the page for 1-2 s on a throttled phone
+ * (no paint, no progress); fflate's asynchronous inflate runs in a worker.
+ * Falls back to the synchronous path where workers are unavailable. */
+function readZipEntryAsync(buf, entry) {
+  if (entry.compressionMethod !== 8 || typeof Worker === 'undefined') return Promise.resolve(readZipEntryFromBuffer(buf, entry));
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const nameLen = view.getUint16(entry.localHeaderOffset + 26, true);
+  const extraLen = view.getUint16(entry.localHeaderOffset + 28, true);
+  const dataOffset = entry.localHeaderOffset + 30 + nameLen + extraLen;
+  // a copy: the worker takes ownership of what it is given, and the archive
+  // buffer stays in use for lazy asset reads
+  const compressed = buf.slice(dataOffset, dataOffset + entry.compressedSize);
+  return new Promise((resolve) => {
+    try {
+      inflate(compressed, { size: entry.uncompressedSize }, (err, data) => resolve(err ? readZipEntryFromBuffer(buf, entry) : data));
+    } catch {
+      resolve(readZipEntryFromBuffer(buf, entry));
+    }
+  });
 }
 
 // Max single asset size (256MB)
@@ -349,7 +371,7 @@ export class CartHostWeb {
     // Detect ZIP vs bare WASM
     if (u8.length >= 4 && u8[0] === 0x50 && u8[1] === 0x4b &&
         u8[2] === 0x03 && u8[3] === 0x04) {
-      wasmBytes = this._loadFromWascBuffer(u8);
+      wasmBytes = await this._loadFromWascBuffer(u8);
     } else if (u8.length >= 4 && u8[0] === 0x00 && u8[1] === 0x61 &&
                u8[2] === 0x73 && u8[3] === 0x6d) {
       // Bare .wasm (magic: \0asm)
@@ -1200,7 +1222,7 @@ export class CartHostWeb {
 
   // --- .wasc loading ---
 
-  _loadFromWascBuffer(buf) {
+  async _loadFromWascBuffer(buf) {
     const index = parseZipFromBuffer(buf);
 
     if (index.size > MAX_ARCHIVE_ENTRIES) {
@@ -1223,7 +1245,7 @@ export class CartHostWeb {
     const wasmName = manifest.entry || 'cart.wasm';
     const wasmEntry = index.get(wasmName);
     if (!wasmEntry) throw new Error(`.wasc archive missing ${wasmName}`);
-    const wasmBytes = readZipEntryFromBuffer(buf, wasmEntry);
+    const wasmBytes = await readZipEntryAsync(buf, wasmEntry);
 
     // Build asset index
     const assetsPrefix = assetPrefixOf(manifest);
