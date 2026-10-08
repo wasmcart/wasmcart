@@ -94,6 +94,18 @@ dual GL/WebGPU cart.
 | romdev | wasmcart's `CartHost` | frames and screenshots via async readback |
 | wasmcart-android, wasmcart-libretro | not yet | refuse WebGPU-only carts; dual carts run on GL |
 
+**A frame loop must yield to the event loop, not just await.** A texture or
+buffer a cart releases is freed only after V8 collects its JS wrapper AND a
+later event-loop turn runs the native finalizer; V8 cannot see GPU memory. A
+loop of `await host.runFrame()` never leaves the microtask queue, so VRAM grew
+about 0.9 MiB per frame without bound (measured on a real cart). Give the loop
+a macrotask turn (`await new Promise(r => setImmediate(r))`) at least every
+16 frames or so; hosts that already yield (wasmcart-native, `wasmcart-play`)
+plateau. romdev yields every 16 frames of a burst. The glue does not call
+`destroy()` on release, because a cart may release a texture right after
+creating its view, or a buffer after creating its bind group, and keep using the
+view or bind group; destroying the object would break them.
+
 A host reads frames with `readGpuFrame()` (async, top-down RGBA) and draws them
 into a window with `presentWgpuTo(context, rect)` on `getGpuDevice()`.
 
