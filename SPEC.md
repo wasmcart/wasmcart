@@ -386,8 +386,15 @@ which also exports the functions the glue calls back into, listed in
 ### The host owns the GPU
 
 - **Device.** The host creates the adapter and device. `emscripten_webgpu_get_device()`
-  returns that device synchronously, from `wc_init` on. It has the WebGPU
-  defaults' features and limits: the tier's floor (below).
+  returns that device synchronously, from `wc_init` on. It is made with no
+  required features and the default limits of its adapter's feature level:
+  the compatibility-mode defaults where the implementation offers
+  compatibility mode, which is the tier's floor (below). (An implementation
+  without it, such as Firefox, gives a core device, whose defaults are
+  higher; a cart must not depend on that.) The device has no uncaptured-error
+  or device-lost callback the cart can see: see
+  [docs/webgpu.md](docs/webgpu.md), "Errors and device loss", for what each
+  host does today.
 - **More features or limits.** A cart that needs them asks with
   `wgpuInstanceRequestAdapter` / `wgpuAdapterRequestDevice` and its required
   features and limits, and gets a device made for exactly that request, or a

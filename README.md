@@ -380,7 +380,7 @@ A cart that doesn't use the GPU at all can write pixels directly to a shared-mem
 
 - **2D framebuffer** - ARGB8888 pixel buffer for software-rendered carts (no GL)
 - **WebGL2 GPU** - one GL ABI everywhere. Cart imports WebGL2 functions, host provides them (native GLES3 on Node.js, WebGL2 in browser). Emscripten's GL output works directly.
-- **WebGPU (optional tier)** - `webgpu.h` through Dawn's emdawnwebgpu port, built with Emscripten or with wasi-sdk (threads included, through [`wgpu-wasi/`](wgpu-wasi/README.md)); Node (webgpu-node), browser and wasmcart-native (Linux) hosts. libretro and Android hosts refuse WebGPU-only carts for now. A cart importing both GPU APIs runs everywhere.
+- **WebGPU (optional tier)** - `webgpu.h` through Dawn's emdawnwebgpu port, built with Emscripten or with wasi-sdk (threads included, through [`wgpu-wasi/`](wgpu-wasi/README.md)); Node (webgpu-node), browser (Chrome / Chromium; Firefox on Linux only with `dom.webgpu.enabled`; Safari untested) and wasmcart-native (Linux) hosts. libretro and Android hosts refuse WebGPU-only carts for now. A cart importing both GPU APIs runs everywhere.
 - **Stereo audio** - Float32 or Int16 ring buffer, cart-declared sample rate
 - **Gamepad input** - 4 pads with buttons, analog sticks, triggers (always available)
 - **Pointer input** - unified mouse + touch via shared memory state + event callbacks (opt-in)
@@ -427,7 +427,8 @@ await cart.load('game.wasc', {
 ### WebGPU Carts
 
 A cart that imports WebGPU functions runs on WebGPU (SPEC.md, "WebGPU";
-[docs/webgpu.md](docs/webgpu.md) for building one). The host owns the device;
+[docs/webgpu.md](docs/webgpu.md) for building one, starting from
+[examples/webgpu-hello](examples/webgpu-hello/)). The host owns the device;
 the cart renders into its `"#canvas"` surface, which is a texture the host
 owns, and the host reads it back or draws it into a window:
 
@@ -435,21 +436,24 @@ owns, and the host reads it back or draws it into a window:
 await cart.load('wgpu_game.wasc');          // Node: through webgpu-node
 cart.usesWgpu;                              // true
 cart.runFrame(pads);                        // synchronous, as for GL
+await new Promise((r) => setImmediate(r));  // then yield a task: see below
 const { width, height, data } = await cart.readGpuFrame();   // top-down RGBA
 
 // Present into your own window: a canvas context configured on the cart's device
-cart.presentWgpuTo(windowContext, { x, y, w, h });
+cart.presentWgpuTo(windowContext, { x: 0, y: 0, w: width, h: height });
 ```
 
-Async results the cart asked for (buffer maps, error scopes) reach it when
-the host yields to its event loop between frames. Options:
+**Yield an event-loop turn between frames** (a `setImmediate` or
+`setTimeout`, or the next animation frame; a bare `await` is not enough):
+that is when async results the cart asked for (buffer maps, error scopes)
+reach it, and when GPU objects it released are freed. Options:
 
 ```js
 await cart.load('game.wasc', {
   wgpu: false,                    // refuse WebGPU: a WebGPU-only cart fails to
                                   // load with the reason; a dual cart runs on GL
   gpu: navigatorGpuLike,          // your own WebGPU implementation (Node)
-  gpuGlobals: { GPUValidationError, ... },  // its error classes (Node)
+  gpuGlobals: webgpuGlobals,      // its classes: GPUValidationError, GPUOutOfMemoryError, ... (Node)
   adapterOptions: { featureLevel: 'core' }, // default is 'compatibility'
   // adapterOptions: { powerPreference: 'low-power' } picks the GPU on a
   // two-GPU machine; WASMCART_WGPU_POWER=low-power|high-performance sets the
@@ -460,7 +464,10 @@ await cart.load('game.wasc', {
 
 `webgpu-node` is a dependency, as `webgl-node` is for GL, and is loaded only
 when a WebGPU cart arrives. Without a GPU adapter a WebGPU-only cart is
-refused at load with the reason, never run on stubs.
+refused at load with the reason, never run on stubs. In the browser, WebGPU
+is what the browser offers: Chrome and Chromium run WebGPU carts; Firefox on
+Linux does only with `dom.webgpu.enabled` set; Safari is untested (see the
+host table in [docs/webgpu.md](docs/webgpu.md#hosts)).
 
 ### GL Carts
 
