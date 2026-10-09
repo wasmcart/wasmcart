@@ -142,9 +142,6 @@ export default {
     "GPUValidationError"
   ],
   "cartExports": [
-    "_emscripten_stack_alloc",
-    "_emscripten_stack_restore",
-    "emscripten_stack_get_current",
     "emwgpuCreateAdapter",
     "emwgpuCreateBindGroup",
     "emwgpuCreateBindGroupLayout",
@@ -177,9 +174,8 @@ export default {
     "emwgpuOnRequestDeviceCompleted",
     "emwgpuOnUncapturedError",
     "emwgpuOnWorkDoneCompleted",
-    "free",
-    "malloc",
-    "memalign",
+    "wc_alloc",
+    "wc_free",
     "wgpuDeviceAddRef"
   ]
 };

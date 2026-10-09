@@ -1,47 +1,12 @@
-/* What an Emscripten link gives a WebGPU cart and wasi-sdk does not. The
- * host's WebGPU glue (generated from emdawnwebgpu) calls back into the cart
- * for these, so a wasi-sdk cart compiles this file in (wasmcart-wgpu-wasi.cmake
- * does it) and exports the names in exports.txt.
+/* What a wasi-sdk WebGPU cart needs beyond the port's C++ half. The host's
+ * WebGPU glue places adapter info, feature lists, mapped buffer ranges and
+ * callback strings in the cart's memory, allocating them with the cart's
+ * wc_alloc/wc_free exports (SPEC.md, "Cart memory the host writes"). This
+ * file makes sure every cart built with the kit has them: wasmcart.h's weak
+ * pair over aligned_alloc/free, which a cart's own definitions override.
+ * (webgpu.cpp releases some of those blocks with free(), so a replacement
+ * must stay free()-compatible.)
  *
- * - memalign: the glue places mapped buffer ranges in the cart's memory with
- *   it. wasi-libc declares it in <malloc.h> but does not define it.
- * - Emscripten's three stack helpers: the glue passes strings and small
- *   structs on the cart's stack. They only move __stack_pointer, which under
- *   wasi-threads is per thread, as it should be. */
-#include <stdlib.h>
-
-__attribute__((export_name("memalign")))
-void *memalign(size_t alignment, size_t size) {
-    void *p = NULL;
-    if (alignment < sizeof(void *)) alignment = sizeof(void *);
-    return posix_memalign(&p, alignment, size) == 0 ? p : NULL;
-}
-
-__asm__(".globaltype __stack_pointer, i32\n");
-
-__attribute__((export_name("emscripten_stack_get_current")))
-void *emscripten_stack_get_current(void) {
-    void *sp;
-    __asm__ volatile("global.get __stack_pointer\n\tlocal.set %0" : "=r"(sp));
-    return sp;
-}
-
-__attribute__((export_name("_emscripten_stack_restore")))
-void _emscripten_stack_restore(void *sp) {
-    __asm__ volatile("local.get %0\n\tglobal.set __stack_pointer" : : "r"(sp));
-}
-
-__attribute__((export_name("_emscripten_stack_alloc")))
-void *_emscripten_stack_alloc(size_t size) {
-    void *sp;
-    __asm__ volatile(
-        "global.get __stack_pointer\n\t"
-        "local.get %1\n\t"
-        "i32.sub\n\t"
-        "i32.const -16\n\t"
-        "i32.and\n\t"
-        "local.tee %0\n\t"
-        "global.set __stack_pointer"
-        : "=r"(sp) : "r"(size));
-    return sp;
-}
+ * Emscripten's stack helpers and memalign, which the glue used to call back
+ * into, are no longer needed. */
+#include "../include/wasmcart.h"

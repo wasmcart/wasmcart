@@ -580,9 +580,9 @@ async function createWasm() {
   
   
   
-  var stackSave = () => _emscripten_stack_get_current();
+  var stackSave = () => Module['wcScopeOpen']();
   
-  var stackRestore = (val) => __emscripten_stack_restore(val);
+  var stackRestore = (val) => Module['wcScopeClose'](val);
   
   var lengthBytesUTF8 = (str) => {
       var len = 0;
@@ -654,7 +654,7 @@ async function createWasm() {
       return stringToUTF8Array(str, HEAPU8, outPtr, maxBytesToWrite);
     };
   
-  var stackAlloc = (sz) => __emscripten_stack_alloc(sz);
+  var stackAlloc = (sz) => Module['wcScopeAlloc'](sz);
   var stringToUTF8OnStack = (str) => {
       var size = lengthBytesUTF8(str) + 1;
       var ret = stackAlloc(size);
@@ -1582,6 +1582,7 @@ async function createWasm() {
       if (e instanceof ExitStatus || e == 'unwind') {
         return EXITSTATUS;
       }
+      if (Module['wcAsyncError']?.(e)) return;
       quit_(1, e);
     };
   
@@ -4103,12 +4104,9 @@ var _emwgpuOnRequestAdapterCompleted = wasmExports['emwgpuOnRequestAdapterComple
 var _emwgpuOnRequestDeviceCompleted = wasmExports['emwgpuOnRequestDeviceCompleted']
 var _emwgpuOnWorkDoneCompleted = wasmExports['emwgpuOnWorkDoneCompleted']
 var _emwgpuOnUncapturedError = wasmExports['emwgpuOnUncapturedError']
-var _free = wasmExports['free']
-var _malloc = wasmExports['malloc']
-var _memalign = wasmExports['memalign']
-var __emscripten_stack_restore = wasmExports['_emscripten_stack_restore']
-var __emscripten_stack_alloc = wasmExports['_emscripten_stack_alloc']
-var _emscripten_stack_get_current = wasmExports['emscripten_stack_get_current']
+var _free = (ptr) => Module['wcFree'](ptr);
+var _malloc = (size) => Module['wcAlloc'](size, 16);
+var _memalign = (align, size) => Module['wcAlloc'](size, align);
 
 
 // include: postamble.js

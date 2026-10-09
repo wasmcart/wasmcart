@@ -11,10 +11,13 @@
 //
 // How: link a C file that takes the address of every function in webgpu.h,
 // so every JS function the port has is pulled in, then keep Emscripten's
-// generated JS and drop its wasm. Two edits make it hostable:
+// generated JS and drop its wasm. Three edits make it hostable:
 //   - `navigator` and `document` become per-instance values the host passes
 //     in, so two carts in one process can hold different devices and canvases;
-//   - the WebGPU object table and the memory-view refresh are exported.
+//   - the WebGPU object table and the memory-view refresh are exported;
+//   - every allocation in cart memory (malloc, memalign, Emscripten's stack
+//     helpers) goes through the cart's wc_alloc/wc_free instead
+//     (wgpu/glue-alloc.mjs; SPEC.md "Cart memory the host writes").
 //
 // Needs emcc (the repo-local emsdk works). Not run by npm install or tests:
 // the output is committed, and is the frozen snapshot.
@@ -26,6 +29,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { routeGlueAllocation, ALLOCATOR_EXPORTS } from './wgpu/glue-alloc.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const pin = JSON.parse(fs.readFileSync(path.join(root, 'scripts/wgpu/emdawnwebgpu.json'), 'utf8'))
@@ -96,6 +100,10 @@ try {
   js = js.replace(anchor, anchor + "// wasmcart: the host supplies these per cart (see scripts/build-wgpu-glue.mjs).\nvar navigator = Module['wcNavigator'];\nvar document = Module['wcDocument'];\n"
     + classes.map(c => `var ${c} = Module['wcGlobals']['${c}'];\n`).join(''))
 
+  // Allocation in the cart goes through wc_alloc/wc_free, not the cart's
+  // malloc or stack.
+  js = routeGlueAllocation(js)
+
   // The functions a cart may import from this glue, read from the glue's own
   // import list so the host can name anything a cart wants that it lacks.
   const wasm = new WebAssembly.Module(fs.readFileSync(path.join(work, 'glue.wasm')))
@@ -106,7 +114,8 @@ try {
   // by itself; a wasi-sdk cart must export them (wgpu-wasi/exports.txt, one
   // name per line, for -Wl,--export=).
   const cartExports = [...new Set([...js.matchAll(/wasmExports\['([A-Za-z_0-9]+)'\]/g)].map(m => m[1]))]
-    .filter(n => !['__wasm_call_ctors', 'wc_keep', 'memory', '__indirect_function_table'].includes(n)).sort()
+    .filter(n => !['__wasm_call_ctors', 'wc_keep', 'memory', '__indirect_function_table'].includes(n))
+    .concat(ALLOCATOR_EXPORTS).sort()
   fs.writeFileSync(path.join(root, 'wgpu-wasi/exports.txt'), cartExports.join('\n') + '\n')
   // And every function the kit lets a cart import (the glue's, plus the one
   // emscripten.h stand-in), so a cart linked with --allow-undefined can audit

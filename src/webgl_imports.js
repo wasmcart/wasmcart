@@ -11,6 +11,8 @@
 // Backend: WebGL2RenderingContext (from webgl-node or browser)
 
 const decoder = new TextDecoder();
+import { createCartAllocator } from './cartMemory.js';
+
 const encoder = new TextEncoder();
 
 // TextDecoder.decode refuses a view of a SharedArrayBuffer (a threaded
@@ -45,9 +47,15 @@ export function noteGlCurrent(c) { _currentGlCtx = c || null; }
  * @param {object} options
  * @param {function} options.getMemory - returns the WASM memory object
  * @param {WebGL2RenderingContext} options.ctx - WebGL2 rendering context
+ * @param {object} [options.allocator] - the cart's allocator (createCartAllocator in cartMemory.js),
+ *   for glGetString/glGetStringi/glMapBufferRange
+ * @param {() => object} [options.getExports] - or the cart's exports, to make one from
  * @returns {object} import object with GL functions
  */
-export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL, directPresent }) {
+export function createWebGLImports({ getMemory, ctx, allocator, getExports, nativeGL, directPresent }) {
+  // Cart memory for GL strings and mappings: the host's allocator, or one
+  // made here from the cart's exports (src/cartMemory.js).
+  if (!allocator && getExports) allocator = createCartAllocator({ getExports, getMemory });
   // WRAP makeCurrent SO EVERY CLAIM IS RECORDED, whoever makes it.
   //
   // native-gles dispatches every GL call against ONE process-global current
@@ -607,59 +615,34 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL, direct
   // ─── String pool for glGetString / glGetStringi ─────────────────────
   let _glStringCache = null;
   let _glStringiCache = null;
-  let _glStringPool = null;
 
-  function _writeStringToWasm(str) {
+  /* glGetString/glGetStringi strings and glMapBufferRange mappings live in
+   * memory the CART allocates (its wc_alloc export, src/cartMemory.js), called
+   * synchronously from inside the GL call, so they belong to the cart's heap
+   * like any other allocation. A cart without an allocator gets a clear error
+   * naming the call; the host never writes into memory it was not given (it
+   * used to write at the top of memory, the cart's live heap). */
+  function _cartAlloc(size, align, what) {
+    if (!allocator) throw new Error(`wasmcart: ${what} needs cart memory, but createWebGLImports was given neither \`allocator\` nor \`getExports\``);
+    return allocator.alloc(size, align, what);
+  }
+
+  // GL strings are static (GLES 3.0 6.1.6): allocated once per distinct
+  // string, cached below, never freed.
+  function _writeStringToWasm(str, what) {
     const encoded = encoder.encode(str);
-    const size = encoded.length + 1; // +1 for null terminator
-
-    // Use the cart's malloc if available (safe - properly tracked by heap)
-    const malloc = getMalloc && getMalloc();
-    if (malloc) {
-      const ptr = malloc(size);
-      if (ptr) {
-        const mem = u8();
-        mem.set(encoded, ptr);
-        mem[ptr + encoded.length] = 0;
-        return ptr;
-      }
-    }
-
-    // Fallback: static pool at end of memory (only safe before heap grows there)
-    if (!_glStringPool) _glStringPool = { offset: 0, base: 0 };
-    if (!_glStringPool.base) {
-      _glStringPool.base = getMemory().buffer.byteLength - 16384;
-      _glStringPool.offset = 0;
-    }
-    const ptr = _glStringPool.base + _glStringPool.offset;
-    const mem = u8();
-    if (ptr + size < mem.length) {
-      mem.set(encoded, ptr);
-      mem[ptr + encoded.length] = 0;
-      _glStringPool.offset += size;
-      _glStringPool.offset = (_glStringPool.offset + 3) & ~3;
-      return ptr;
-    }
-    return 0;
+    const ptr = _cartAlloc(encoded.length + 1, 1, what);
+    const mem = u8(); // after the allocation: it may have grown memory
+    mem.set(encoded, ptr);
+    mem[ptr + encoded.length] = 0;
+    return ptr;
   }
 
   // ─── Buffer mapping emulation ──────────────────────────────────────────
+  // A mapping is a cart allocation made at map and released at unmap (after
+  // its bytes are copied to the buffer).
   const _mappedBuffers = new Map();
-  const MAP_SCRATCH_SIZE = 1024 * 1024;
-  let _mapScratchBase = 0;
-  let _mapScratchUsed = 0;
-
-  function _getMapScratch(length) {
-    const mem = getMemory();
-    if (_mapScratchBase === 0) {
-      _mapScratchBase = mem.buffer.byteLength - 16384 - MAP_SCRATCH_SIZE;
-    }
-    if (_mapScratchUsed + length > MAP_SCRATCH_SIZE) return 0;
-    const ptr = _mapScratchBase + _mapScratchUsed;
-    _mapScratchUsed += length;
-    _mapScratchUsed = ((_mapScratchUsed + 7) & ~7);
-    return ptr;
-  }
+  const MAP_ALIGN = 16;
 
   let _shaderFailLogged = false;
   const _shaderTypes = new Map(); // shader id → GL_VERTEX_SHADER or GL_FRAGMENT_SHADER
@@ -802,7 +785,7 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL, direct
         default: str = null;
       }
       if (!str) { _glStringCache[name] = 0; return 0; }
-      const ptr = _writeStringToWasm(str);
+      const ptr = _writeStringToWasm(str, 'glGetString');
       _glStringCache[name] = ptr;
       return ptr;
     },
@@ -1387,7 +1370,7 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL, direct
         str = null;
       }
       if (!str) { _glStringiCache[key] = 0; return 0; }
-      const ptr = _writeStringToWasm(str);
+      const ptr = _writeStringToWasm(str, 'glGetStringi');
       _glStringiCache[key] = ptr;
       return ptr;
     },
@@ -1433,8 +1416,7 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL, direct
 
     // ─── Buffer mapping (emulated) ──────────────────────────────────────
     glMapBufferRange: (target, offset, length, access) => {
-      const wasmPtr = _getMapScratch(length);
-      if (wasmPtr === 0) return 0;
+      const wasmPtr = _cartAlloc(length, MAP_ALIGN, 'glMapBufferRange');
       _mappedBuffers.set(target, { offset, length, access, wasmPtr });
       return wasmPtr;
     },
@@ -1446,7 +1428,7 @@ export function createWebGLImports({ getMemory, ctx, getMalloc, nativeGL, direct
         ctx.bufferSubData(target, mapping.offset, u8().subarray(mapping.wasmPtr, mapping.wasmPtr + mapping.length));
       }
       _mappedBuffers.delete(target);
-      _mapScratchUsed = 0;
+      allocator.free(mapping.wasmPtr, mapping.length);
       return 1;
     },
 

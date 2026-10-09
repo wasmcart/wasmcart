@@ -19,6 +19,7 @@
 // host's event loop, never during a wc_render call.
 
 import gluePromise from './glue-loader.js';
+import { createCartAllocator } from '../cartMemory.js';
 
 /**
  * The adapter request every host makes for a WebGPU cart. The tier's floor is
@@ -288,10 +289,56 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
   const refresh = () => {
     if (memory && Module.HEAPU8 && Module.HEAPU8.buffer !== memory.buffer) Module.wcUpdateMemoryViews();
   };
+
+  // Every allocation the glue makes in cart memory goes through the cart's
+  // wc_alloc/wc_free (scripts/wgpu/glue-alloc.mjs; SPEC.md "Cart memory the
+  // host writes"). The allocator is set at attach.
+  let allocator = null;
+  // The cart's glue call in progress, so an allocation error names it; none
+  // means an async result or callback (an error message, a device loss).
+  let inCall = null;
+  // An allocation failure can happen inside an async callback (the glue's or
+  // the cart's), where a throw reaches no caller: it is kept and thrown from
+  // the host's next frame (takeFatal), so the cart stops with the reason.
+  let fatal = null;
+  const what = () => (inCall ? `WebGPU ${inCall}` : 'a WebGPU callback (an async result, error message or device loss)');
+  const cartAlloc = (size, align) => {
+    try {
+      const p = allocator.alloc(size, align, what());
+      refresh();
+      return p;
+    } catch (e) {
+      fatal ??= e;
+      throw e;
+    }
+  };
+  // Emscripten's stack helpers, as heap allocations freed at the matching
+  // restore: a scope per stackSave, released by stackRestore.
+  const scopes = [];
+  Module.wcAlloc = cartAlloc;
+  // the glue's handleException: a cart-memory error from a callback is kept
+  // for the next frame (true = handled); anything else the glue handles
+  Module.wcAsyncError = e => (e?.name === 'CartMemoryError' ? ((fatal ??= e), true) : false);
+  Module.wcFree = ptr => { allocator.free(ptr); };
+  Module.wcScopeOpen = () => { scopes.push([]); return scopes.length; };
+  Module.wcScopeAlloc = size => {
+    const p = cartAlloc(size, 16);
+    if (scopes.length) scopes[scopes.length - 1].push(p);
+    return p;
+  };
+  Module.wcScopeClose = mark => {
+    while (scopes.length >= mark && scopes.length) for (const p of scopes.pop()) allocator.free(p);
+  };
+
   const env = {};
   for (const { name } of wanted) {
     const fn = info.env[name];
-    env[name] = (...args) => { refresh(); return fn(...args); };
+    env[name] = (...args) => {
+      refresh();
+      const outer = inCall;
+      inCall = name;
+      try { return fn(...args); } finally { inCall = outer; }
+    };
   }
 
   let closed = false;
@@ -333,9 +380,12 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
     canvas,
 
     /** Give the instantiated cart to the glue. memory: the cart's memory
-     *  (exported, or the shared one a threaded cart imports). */
-    async attach(instance, cartMemory) {
+     *  (exported, or the shared one a threaded cart imports). cartAllocator:
+     *  the host's allocator for this cart (src/cartMemory.js), shared with
+     *  its other paths; made from the cart's exports if not given. */
+    async attach(instance, cartMemory, cartAllocator) {
       memory = cartMemory;
+      allocator = cartAllocator || createCartAllocator({ getExports: () => instance.exports, getMemory: () => memory });
       const exports = { memory: cartMemory, __wasm_call_ctors: () => {} };
       for (const [name, value] of Object.entries(instance.exports)) {
         if (name === 'memory' || name === '_initialize') continue;
@@ -403,6 +453,10 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
     },
 
     get lost() { return lost; },
+
+    /** An allocation error from an async WebGPU callback (the cart has no
+     *  allocator, or it failed), once; the host throws it from its next frame. */
+    takeFatal() { const e = fatal; fatal = null; return e; },
 
     /** Release the device. Returns a promise that settles once Dawn has
      *  delivered device.lost, by which point every callback the cart still

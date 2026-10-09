@@ -3,6 +3,60 @@
 
 #include <stdint.h>
 
+/* wc_alloc / wc_free - the allocator a host writes into your cart through.
+ *
+ * Some host calls hand your cart bytes at an address the host has to pick:
+ * glGetString / glGetStringi / glMapBufferRange return pointers, the WebGPU
+ * glue passes adapter info, mapped ranges and error messages, and text and
+ * network payloads arrive as (ptr, len). The host owns none of your memory,
+ * so it asks your cart to allocate, through two optional exports:
+ *
+ *     void *wc_alloc(size_t size, size_t align);   // NULL on failure
+ *     void  wc_free(void *ptr);
+ *
+ * A C/C++ cart that includes wasmcart.h defines and exports both (over aligned_alloc/free), for Emscripten
+ * and wasi-sdk alike. You never call them yourself.
+ *
+ * - They are WEAK: define your own wc_alloc/wc_free (exported under those
+ *   names) and yours win.
+ * - Define WASMCART_NO_ALLOC before including wasmcart.h to leave them out
+ *   (a cart with no libc, or one that exports its own).
+ * - They are only emitted when <stdlib.h> exists, so a -nostdlib cart with no
+ *   sysroot still compiles; such a cart exports its own if it needs them.
+ * - They must be thread-safe in a threaded cart: aligned_alloc is.
+ * - In a WebGPU cart, the cart's own webgpu.cpp releases some of these blocks
+ *   with free(), so wc_alloc must return memory free() accepts. This one does.
+ *
+ * See SPEC.md, "Cart memory the host writes". */
+#if defined(__wasm__) && !defined(WASMCART_NO_ALLOC) && defined(__has_include)
+#if __has_include(<stdlib.h>)
+#include <stdlib.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+__attribute__((weak, used, export_name("wc_alloc")))
+void *wc_alloc(size_t size, size_t align) {
+    if (align < sizeof(void *)) align = sizeof(void *);
+    /* aligned_alloc wants a size that is a multiple of the alignment */
+    size = size ? (size + align - 1) & ~(align - 1) : align;
+    return aligned_alloc(align, size);
+}
+
+__attribute__((weak, used, export_name("wc_free")))
+void wc_free(void *ptr) {
+    free(ptr);
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __has_include(<stdlib.h>) */
+#endif /* __wasm__ && !WASMCART_NO_ALLOC */
+
+
 // ABI version
 #define WC_ABI_VERSION 4
 

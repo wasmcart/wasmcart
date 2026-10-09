@@ -29,6 +29,7 @@ import {
   GPU_API_WEBGPU,
 } from './abi.js';
 import { createWebGLImports } from './webgl_imports.js';
+import { createCartAllocator } from './cartMemory.js';
 import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap, wgpuAdapterOptions } from './wgpu/host.js';
 
 /**
@@ -384,6 +385,9 @@ export class CartHostWeb {
   }
 
   async _loadWasm(wasmBytes, options, glCtx) {
+    // Memory the host writes into the cart comes from the cart's allocator
+    // (wc_alloc/wc_free; SPEC.md "Cart memory the host writes").
+    this._alloc = createCartAllocator({ getExports: () => this.instance?.exports, getMemory: () => this.memory });
     // Compile and validate
     this._drawProgress(glCtx, 0.1);
     const module = await WebAssembly.compile(wasmBytes);
@@ -769,7 +773,7 @@ export class CartHostWeb {
       const glFuncs = createWebGLImports({
         getMemory: () => this.memory,
         ctx: options.glBackend,
-        getMalloc: () => this.instance?.exports?.malloc || null,
+        allocator: this._alloc,
         directPresent: options.directPresent === false ? null : (w, h) => canPresentDirect(options.glBackend, w, h, options.directPresent === 'msaa'),
       });
       this._glFuncs = glFuncs;
@@ -823,7 +827,7 @@ export class CartHostWeb {
 
     this._updateViews();
 
-    if (this._wgpu) await this._wgpu.attach(this.instance, this.memory);
+    if (this._wgpu) await this._wgpu.attach(this.instance, this.memory, this._alloc);
 
     // Read info
     this._infoPtr = exports.wc_get_info();
@@ -1026,6 +1030,10 @@ export class CartHostWeb {
       this._asyncify.rewinding = true;
       this._asyncify.suspended = false;
     }
+    // A WebGPU callback that could not get cart memory (no wc_alloc, or it
+    // failed) stops the cart here, with the allocator's error.
+    const wgpuFatal = this._wgpu?.takeFatal();
+    if (wgpuFatal) throw wgpuFatal;
     this._wgpu?.beginFrame();
     yield ['wc_render', []];
     if (this._asyncify.unwound) {
@@ -1638,29 +1646,17 @@ export class CartHostWeb {
 
   // --- Networking (ABI v3) ---
 
-  /* Copy `data` into cart memory, make the cart call `name(...lead, ptr, len)`
+  /* Copy `data` into a cart allocation, make the cart call `name(...lead, ptr, len)`
    * (a generator step, see _frame), then free the copy. The free happens after
    * the call completes even when a lazy cart suspended inside it. */
   *_withTempWasmData(data, name, ...lead) {
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
     const len = bytes.length;
-    const malloc = this.instance.exports.malloc;
-    const free = this.instance.exports.free;
-
-    if (malloc && free) {
-      const ptr = malloc(len);
-      if (ptr === 0) return;
-      this._updateViews();
-      this._u8.set(bytes, ptr);
-      try { yield [name, [...lead, ptr, len]]; } finally { free(ptr); }
-    } else {
-      const memSize = this.memory.buffer.byteLength;
-      const scratchStart = memSize - 65536;
-      if (len > 65536 || len === 0) return;
-      this._updateViews();
-      this._u8.set(bytes, scratchStart);
-      yield [name, [...lead, scratchStart, len]];
-    }
+    // a cart allocation (wc_alloc, src/cartMemory.js); a cart without an
+    // allocator gets a CartMemoryError naming the callback
+    const ptr = this._alloc.allocBytes(bytes, name);
+    this._updateViews();
+    try { yield [name, [...lead, ptr, len]]; } finally { this._alloc.free(ptr, len); }
   }
 
   /**
