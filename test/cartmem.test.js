@@ -6,7 +6,7 @@
 // Fixtures (test/fixtures/alloccart.c, built by alloc/build.sh):
 //   alloc_header.wasc  wasmcart.h's own wc_alloc/wc_free, plus malloc/free exported
 //   alloc_count.wasc   a counting wc_alloc/wc_free that can return bad pointers
-//   alloc_malloc.wasc  malloc/free only (the deprecated fallback)
+//   alloc_malloc.wasc  malloc/free only: no allocator as far as the host is concerned
 //   alloc_none.wasc    no allocator
 //
 // Text and network payloads: carthost.test.js and peer.test.js (textcart and
@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CartHost } from '../index.js';
-import { createCartAllocator, CartMemoryError, DEPRECATED_MALLOC_MESSAGE } from '../src/cartMemory.js';
+import { createCartAllocator, CartMemoryError } from '../src/cartMemory.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const fixture = name => path.join(HERE, 'fixtures', name);
@@ -48,13 +48,13 @@ async function load(name) {
 
 function fakeCart(exports, bytes = 65536) {
   const memory = new WebAssembly.Memory({ initial: bytes / 65536 });
-  return createCartAllocator({ getExports: () => exports, getMemory: () => memory, warn: () => {} });
+  return createCartAllocator({ getExports: () => exports, getMemory: () => memory });
 }
 
 test('allocator: wc_alloc is called with (size, align) and its pointer returned', () => {
   const calls = [];
   const a = fakeCart({ wc_alloc: (s, al) => { calls.push([s, al]); return 4096; }, wc_free: () => {} });
-  assert.equal(a.kind, 'wc_alloc');
+  assert.equal(a.available, true);
   assert.equal(a.alloc(10, 16, 'test'), 4096);
   assert.deepEqual(calls, [[10, 16]]);
 });
@@ -81,22 +81,19 @@ test('allocator: out-of-range, misaligned and null pointers are refused with the
 
 test('allocator: no allocator is an error naming the call and the fix', () => {
   const a = fakeCart({});
-  assert.equal(a.kind, null);
+  assert.equal(a.available, false);
   assert.throws(() => a.alloc(4, 1, 'glGetString'), e => e.code === 'missing'
     && /glGetString must write into the cart's memory/.test(e.message)
     && /wc_alloc\(size, align\) and wc_free\(ptr\)/.test(e.message)
     && /wasmcart\.h/.test(e.message) && /wasmcart-alloc crate/.test(e.message));
 });
 
-test('allocator: a malloc-only cart over-allocates to honour alignment above malloc\'s', () => {
-  // malloc that only guarantees 8: the host must still hand out 64-aligned
-  let next = 8;
-  const freed = [];
-  const a = fakeCart({ malloc: s => { const p = next; next += s + 8; return p; }, free: p => freed.push(p) });
-  const p = a.alloc(100, 64, 'test');
-  assert.equal(p % 64, 0);
-  a.free(p);
-  assert.deepEqual(freed, [8], 'free gets the pointer malloc returned, not the aligned one');
+test('allocator: malloc is never used; a malloc-only cart has no allocator', () => {
+  let mallocs = 0;
+  const a = fakeCart({ malloc: () => { mallocs++; return 64; }, free: () => {}, memalign: () => { mallocs++; return 64; } });
+  assert.equal(a.available, false);
+  assert.throws(() => a.alloc(4, 16, 'glMapBufferRange'), e => e.code === 'missing' && /does not export wc_alloc\/wc_free/.test(e.message));
+  assert.equal(mallocs, 0);
 });
 
 // --- the Node host ---
@@ -118,7 +115,7 @@ test('a cart with wasmcart.h\'s wc_alloc gets GL strings in its own heap, with n
     host.destroy();
     w.restore();
   }
-  assert.deepEqual(w.seen.filter(m => m.includes('deprecated')), [], 'wc_alloc wins: no deprecation warning although malloc is exported too');
+  assert.deepEqual(w.seen, [], 'no warnings');
 });
 
 test('GL strings and buffer mappings go through wc_alloc, and mappings are freed at unmap', async () => {
@@ -176,7 +173,7 @@ test('a cart with NO allocator that calls glGetString gets the clear error, and 
     const ex = host.instance.exports;
     const before = new Uint8Array(host.memory.buffer).slice();
     assert.throws(() => ex.t_gl_string(GL_VERSION), e => e instanceof CartMemoryError && e.code === 'missing'
-      && /glGetString must write into the cart's memory, but the cart exports no allocator/.test(e.message)
+      && /glGetString must write into the cart's memory, but the cart does not export wc_alloc\/wc_free/.test(e.message)
       && /wasmcart\.h/.test(e.message));
     assert.throws(() => ex.t_map(64, 1), e => e.code === 'missing' && /glMapBufferRange/.test(e.message));
     // the old fallback wrote the string into the top of memory
@@ -191,23 +188,23 @@ test('a cart with NO allocator that calls glGetString gets the clear error, and 
   }
 });
 
-test('a malloc-only cart works through the deprecated fallback, warning exactly once', async () => {
+test('a malloc-only cart gets the same clear error, and its malloc is never called', async () => {
   const w = captureWarnings();
   const host = await load('alloc_malloc.wasc');
   try {
     const ex = host.instance.exports;
     assert.equal(ex.wc_alloc, undefined);
     assert.equal(typeof ex.malloc, 'function');
-    assert.match(cString(host, ex.t_gl_string(GL_VERSION)), /OpenGL ES/);
-    ex.t_gl_stringi(GL_EXTENSIONS, 0);
-    assert.ok(ex.t_map(4096, 3) > 0);
-    assert.ok(ex.t_map(4096, 4) > 0);
-    host.runFrame();
+    for (let i = 0; i < 3; i++) host.runFrame(); // runs while it needs nothing
+    assert.throws(() => ex.t_gl_string(GL_VERSION), e => e.code === 'missing'
+      && /glGetString must write into the cart's memory, but the cart does not export wc_alloc\/wc_free \(its malloc, if any, is not used\)/.test(e.message));
+    assert.throws(() => ex.t_map(64, 1), e => e.code === 'missing' && /glMapBufferRange/.test(e.message));
+    assert.equal(new TextDecoder().decode(new Uint8Array(host.memory.buffer)).includes('OpenGL ES 3.0 wasmcart'), false, 'nothing written through malloc');
   } finally {
     host.destroy();
     w.restore();
   }
-  assert.deepEqual(w.seen.filter(m => m.includes('wc_alloc')), [DEPRECATED_MALLOC_MESSAGE], 'one deprecation warning for the cart');
+  assert.deepEqual(w.seen, [], 'no warning: an error, not a fallback');
 });
 
 test('a Rust cart gets wc_alloc/wc_free from the wasmcart-alloc crate, and text through them', async () => {

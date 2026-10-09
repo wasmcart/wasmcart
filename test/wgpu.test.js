@@ -9,8 +9,8 @@
 //   gpuapi3.wasc      declares the reserved gpu_api 3
 //   wgpufake.wasc     imports a WebGPU function no glue provides
 //   wasicart.wasc     wgpucart built with wasi-sdk (threads) via wgpu-wasi/
-//   wgpucart031.wasc  wgpucart as built before 0.32: no wc_alloc, the glue
-//                     falls back to its exported malloc/free (deprecated)
+//   wgpucart031.wasc  wgpucart built without wc_alloc (only Emscripten's
+//                     malloc/free/memalign): stops with the allocator error
 //
 // wgpucart and wasicart export a counting wc_alloc/wc_free
 // (fixtures/alloc_count.h): t_allocs(1) counts the adapter-info read,
@@ -212,24 +212,18 @@ test('the embedder or WASMCART_WGPU_POWER picks the GPU, and the host says which
   }
 });
 
-test('a WebGPU cart built before 0.32 (malloc, no wc_alloc) still runs, with one deprecation warning', async () => {
-  const seen = [];
-  const warn = console.warn;
-  console.warn = (...a) => { seen.push(a.join(' ')); };
+test('a WebGPU cart with malloc but no wc_alloc stops with the clear error, its malloc never used', async () => {
   const host = new CartHost();
   try {
-    await host.load(fixture('wgpucart031.wasc'));
-    const ex = host.instance.exports;
-    assert.equal(ex.wc_alloc, undefined);
-    for (let i = 0; i < 20 && ex.wgpucart_result() < 0; i++) { host.runFrame(); await tick(); }
-    assert.equal(ex.wgpucart_result(), 42, 'mapped range through the cart\'s memalign');
-    for (let i = 0; i < 10 && ex.wgpucart_scope_error() < 0; i++) { host.runFrame(); await tick(); }
-    assert.equal(ex.wgpucart_scope_error(), 2, 'error message through the cart\'s malloc');
+    // its compute result is read through a mapped range, which needs cart memory
+    await assert.rejects(async () => {
+      await host.load(fixture('wgpucart031.wasc'));
+      for (let i = 0; i < 20; i++) { host.runFrame(); await tick(); }
+    }, e => e.name === 'CartMemoryError' && e.code === 'missing'
+      && /WebGPU .* must write into the cart's memory, but the cart does not export wc_alloc\/wc_free/.test(e.message));
   } finally {
-    console.warn = warn;
     await host.destroy();
   }
-  assert.equal(seen.filter(m => /no wc_alloc\/wc_free.*deprecated/.test(m)).length, 1, 'exactly one deprecation warning');
 });
 
 test('a WebGPU glue allocation that gets a bad pointer stops the cart with the bounds error', async () => {

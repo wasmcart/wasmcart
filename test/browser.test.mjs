@@ -497,19 +497,19 @@ const cartmem = await page.evaluate(async () => {
 
     h = await load('alloc_malloc');
     ex = h.instance.exports;
-    out.malloc = /^OpenGL ES/.test(str(h, ex.t_gl_string(GL_VERSION))) && ex.t_map(64, 1) > 0 && ex.t_map(64, 2) > 0;
+    try { ex.t_gl_string(GL_VERSION); out.malloc = 'no error'; } catch (e) { out.malloc = e.code === 'missing' && /does not export wc_alloc\/wc_free/.test(e.message); }
     h.destroy();
   } finally {
     console.warn = warn;
   }
-  out.deprecations = warnings.filter((m) => /no wc_alloc\/wc_free.*deprecated/.test(m)).length;
+  out.warnings = warnings.length;
   return out;
 });
 check('cart memory: GL strings and mappings through wc_alloc, mapping freed at unmap', [cartmem.glString, cartmem.map], [true, true]);
 check('cart memory: a bad pointer from wc_alloc is refused', cartmem.bounds, true);
 check('cart memory: a cart with no allocator runs while it needs none', cartmem.noneRuns, true);
 check('cart memory: ...and gets the clear error when it calls glGetString', cartmem.noneError, true);
-check('cart memory: a malloc-only cart works, with one deprecation warning', [cartmem.malloc, cartmem.deprecations], [true, 1]);
+check('cart memory: a malloc-only cart gets the same clear error, no fallback, no warning', [cartmem.malloc, cartmem.warnings], [true, 0]);
 
 await browser.close();
 ws.kill();
