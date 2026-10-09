@@ -2038,7 +2038,7 @@ export class CartHost {
     const len = bytes.length;
     const ptr = this._alloc.allocBytes(bytes, what);
     this._updateViews();
-    try { callback(ptr, len); } finally { this._alloc.free(ptr, len); }
+    try { callback(ptr, len); } finally { this._alloc.free(ptr); }
   }
 
   /**

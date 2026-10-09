@@ -1428,7 +1428,7 @@ export function createWebGLImports({ getMemory, ctx, allocator, getExports, nati
         ctx.bufferSubData(target, mapping.offset, u8().subarray(mapping.wasmPtr, mapping.wasmPtr + mapping.length));
       }
       _mappedBuffers.delete(target);
-      allocator.free(mapping.wasmPtr, mapping.length);
+      allocator.free(mapping.wasmPtr);
       return 1;
     },
 

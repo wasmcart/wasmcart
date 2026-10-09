@@ -1656,7 +1656,7 @@ export class CartHostWeb {
     // allocator gets a CartMemoryError naming the callback
     const ptr = this._alloc.allocBytes(bytes, name);
     this._updateViews();
-    try { yield [name, [...lead, ptr, len]]; } finally { this._alloc.free(ptr, len); }
+    try { yield [name, [...lead, ptr, len]]; } finally { this._alloc.free(ptr); }
   }
 
   /**
