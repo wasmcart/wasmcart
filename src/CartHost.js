@@ -37,6 +37,7 @@ import {
   clamp01,
   clampTrigger,
 } from './abi.js';
+import { createJitImports, jitOptionsFromEnv } from './jit.js';
 import { createWebGLImports, noteGlCurrent } from './webgl_imports.js';
 import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap, wgpuAdapterOptions } from './wgpu/host.js';
 import { listDirRelative, diffFileList } from './assetFiles.js';
@@ -554,6 +555,27 @@ export class CartHost {
       }
     }
 
+    // Runtime code generation (SPEC.md, "Runtime code generation"; src/jit.js).
+    // Node compiles synchronously. options.jit === false or WASMCART_JIT=0 is
+    // the loud off switch: options.onJitNotice (default: stderr) hears it once.
+    this._jit?.dispose();
+    const jitOpts = {
+      ...jitOptionsFromEnv(),
+      ...(options.jit === false ? { disabled: true } : (options.jit || {})),
+    };
+    this._jitDisabled = !!jitOpts.disabled;
+    this.jitNotice = null;
+    this._jit = createJitImports({
+      getInstance: () => this.instance,
+      getMemory: (inst) => inst.exports.memory || this._sharedMemory,
+      mode: 'sync',
+      ...jitOpts,
+      onNotice: (msg) => {
+        this.jitNotice = msg;
+        (options.onJitNotice || ((m) => console.error(`\n*** ${m} ***\n`)))(msg);
+      },
+    });
+    this.jitStats = this._jit.stats;
     // Minimal host imports
     const imports = {
       env: {
@@ -606,6 +628,8 @@ export class CartHost {
           this._padRumble(padId, low, high, durationMs),
         wc_pad_rumble_stop: (padId) => this._padRumbleStop(padId),
         // --- WebSocket API (ABI v3) ---
+        // --- Runtime code generation ---
+        ...this._jit.imports,
         // --- Text input (ABI v3) ---
         // Characters, not scancodes: the OS has already applied the keyboard
         // layout, shift, dead keys and compose, so a cart receives "@" or "e-
@@ -1158,6 +1182,15 @@ export class CartHost {
    * return to wall-clock timing. Optional; standalone hosts never call this.
    * @param {number} [stepMs=1000/60] virtual ms per frame (default ~16.667 for 60fps)
    */
+  /**
+   * Unlink every runtime-generated function of the cart. A host that restores
+   * a save state or rewinds calls this after writing memory back: JIT slots
+   * are never carried across a restore (SPEC.md, "Runtime code generation").
+   */
+  jitUnlinkAll() {
+    this._jit?.unlinkAll();
+  }
+
   setFixedStep(stepMs = 1000 / 60) {
     this._fixedStepMs = stepMs > 0 ? stepMs : 0;
   }
@@ -1482,6 +1515,7 @@ export class CartHost {
         tid,
         startArg,
         assetConfig,
+        jitDisabled: this._jitDisabled,
       },
     });
 
@@ -1512,6 +1546,9 @@ export class CartHost {
    * Clean up resources (close file descriptor if open, terminate threads)
    */
   destroy() {
+    // A compile still in flight for this cart is dropped, never installed.
+    try { this._jit?.dispose(); } catch { /* teardown never throws */ }
+
     // Delete every GL object this cart created BEFORE any context teardown.
     // On an owned context this is redundant (destroying the context frees
     // everything) but harmless; on a BORROWED context it is the only cleanup

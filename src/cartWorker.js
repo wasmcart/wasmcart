@@ -10,10 +10,23 @@
  */
 
 import { workerData, parentPort } from 'worker_threads';
+import { createJitImports } from './jit.js';
 import { openSync, readSync, closeSync, statSync } from 'fs';
 import { inflateRawSync } from 'zlib';
 
-const { module: wasmModule, memory, tid, startArg, assetConfig } = workerData;
+const { module: wasmModule, memory, tid, startArg, assetConfig, jitDisabled } = workerData;
+
+// Runtime code generation: this thread's instance has its own table, so it
+// links into its own slots (SPEC.md, "Runtime code generation"). A worker may
+// compile synchronously. The off-switch notice is the main thread's to show.
+let instance = null;
+const jit = createJitImports({
+  getInstance: () => instance,
+  getMemory: () => memory,
+  mode: 'sync',
+  disabled: !!jitDisabled,
+  onNotice: () => {},
+});
 
 // --- Asset access (worker opens its own fd for the .wasc file) ---
 
@@ -84,6 +97,7 @@ function loadAsset(pathPtr, pathLen, destPtr, maxSize) {
 const imports = {
   env: {
     memory,
+    ...jit.imports,
     wc_log: (ptr, len) => {
       const bytes = new Uint8Array(memory.buffer).slice(ptr, ptr + len);
       const text = new TextDecoder().decode(bytes);
@@ -188,7 +202,7 @@ for (const imp of moduleImports) {
 // --- Instantiate and run ---
 
 async function run() {
-  const instance = await WebAssembly.instantiate(wasmModule, imports);
+  instance = await WebAssembly.instantiate(wasmModule, imports);
 
   // Call the thread entry point
   instance.exports.wasi_thread_start(tid, startArg);

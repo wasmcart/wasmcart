@@ -28,6 +28,7 @@ import {
   HOST_FLAG_GPU_WGPU,
   GPU_API_WEBGPU,
 } from './abi.js';
+import { createJitImports } from './jit.js';
 import { createWebGLImports } from './webgl_imports.js';
 import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap, wgpuAdapterOptions } from './wgpu/host.js';
 
@@ -500,6 +501,28 @@ export class CartHostWeb {
       glCtx = made;
     }
 
+    // Runtime code generation (SPEC.md, "Runtime code generation"; src/jit.js).
+    // The main thread may not compile a module over 4 KB synchronously, so
+    // larger ones go async and land between frames. options.jit === false is
+    // the loud off switch: options.onJitNotice hears it once; by default the
+    // notice goes to the console AND onto the page over the canvas.
+    this._jit?.dispose();
+    const jitOpts = options.jit === false ? { disabled: true } : (options.jit || {});
+    this._jitDisabled = !!jitOpts.disabled;
+    this.jitNotice = null;
+    this._jit = createJitImports({
+      getInstance: () => this.instance,
+      getMemory: (inst) => inst.exports.memory || this._sharedMemory,
+      mode: 'auto',
+      ...jitOpts,
+      onNotice: (msg) => {
+        this.jitNotice = msg;
+        if (options.onJitNotice) { options.onJitNotice(msg); return; }
+        console.error(msg);
+        this._showJitNotice(msg);
+      },
+    });
+    this.jitStats = this._jit.stats;
     // Build imports
     const imports = {
       env: {
@@ -557,6 +580,8 @@ export class CartHostWeb {
           this._padRumble(padId, low, high, durationMs),
         wc_pad_rumble_stop: (padId) => this._padRumbleStop(padId),
         // --- WebSocket API (ABI v3) ---
+        // --- Runtime code generation ---
+        ...this._jit.imports,
         // --- Text input (ABI v3) ---
         // Characters, not scancodes. See CartHost for the full rationale.
         wc_text_input_begin: () => { this._textActive = true; },
@@ -1158,7 +1183,33 @@ export class CartHostWeb {
     return this.info ? { ...this.info } : null;
   }
 
+  /** Unlink every runtime-generated function (after a state restore). See CartHost. */
+  jitUnlinkAll() {
+    this._jit?.unlinkAll();
+  }
+
+  // The off switch must be visible where the user is looking: a banner fixed
+  // across the top of the page (no-op without a DOM).
+  _showJitNotice(msg) {
+    try {
+      const doc = globalThis.document;
+      if (!doc || !doc.body) return;
+      const el = doc.createElement('div');
+      el.textContent = msg;
+      el.setAttribute('role', 'alert');
+      el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#b00020;' +
+        'color:#fff;font:bold 13px/1.4 sans-serif;padding:6px 10px;';
+      doc.body.appendChild(el);
+      this._jitBanner = el;
+    } catch { /* a notice never breaks the cart */ }
+  }
+
   destroy() {
+    // A compile still in flight for this cart is dropped, never installed.
+    try { this._jit?.dispose(); } catch { /* teardown never throws */ }
+    try { this._jitBanner?.remove(); } catch { /* teardown never throws */ }
+    this._jitBanner = null;
+
     try { this._wgpu?.destroy(); } catch { /* teardown never throws */ }
     this._wgpu = null;
 
@@ -1537,6 +1588,7 @@ export class CartHostWeb {
       tid,
       startArg,
       assetConfig,
+      jitDisabled: this._jitDisabled,
     });
 
     this._workers.set(tid, worker);

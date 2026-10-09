@@ -379,6 +379,38 @@ check('direct present: picture (red top, green left, white corner)', direct.matc
 check('direct present: same picture as the redirect path', direct.match.sample, direct.optOut.sample);
 check('direct present: same picture as a scaled redirect', direct.match.sample, direct.mismatch.sample);
 
+// ─── Runtime code generation (SPEC.md) in a real browser ─────────────────
+// fixtures/jitcart.c links a generated module, calls it, unlinks, re-links.
+// Small modules compile synchronously; syncLimit 0 forces the main-thread
+// async path a large module takes (Chromium refuses sync compiles > 4 KB).
+const jit = await page.evaluate(async () => {
+  const { CartHostWeb } = await import('/web.js');
+  const bytes = new Uint8Array(await (await fetch('/test/fixtures/jitcart.wasc')).arrayBuffer());
+  const out = {};
+  for (const [name, opts] of [['sync', {}], ['async', { jit: { syncLimit: 0 } }]]) {
+    const host = new CartHostWeb();
+    await host.load(bytes, opts);
+    for (let i = 0; i < 40 && host.jitStats.unlinked === 0; i++) {
+      await host.runFrame([]);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    for (let i = 0; i < 40 && host.jitStats.modules === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    out[name] = { modules: host.jitStats.modules, unlinked: host.jitStats.unlinked, failures: host.jitStats.failures };
+    host.destroy();
+  }
+  const off = new CartHostWeb();
+  await off.load(bytes, { jit: false });
+  await off.runFrame([]);
+  const banner = document.querySelector('[role=alert]');
+  out.off = { refused: off.jitStats.refused, banner: !!banner && /RUNTIME CODE GENERATION IS OFF/.test(banner.textContent) };
+  off.destroy();
+  out.off.bannerGone = !document.querySelector('[role=alert]');
+  return out;
+});
+check('jit: sync link, call, unlink, re-link', jit.sync, { modules: 1, unlinked: 1, failures: 0 });
+check('jit: async link on the main thread', jit.async, { modules: 1, unlinked: 1, failures: 0 });
+check('jit: off switch refuses and shows a banner', jit.off, { refused: 1, banner: true, bannerGone: true });
+
 // ─── WebGPU (SPEC.md, "WebGPU") on the browser's own navigator.gpu ────────
 // Same fixtures and contract as test/wgpu.test.js on the Node host. Frames
 // are read in the SAME task as runFrame: a browser canvas hands out a fresh
