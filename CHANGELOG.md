@@ -30,6 +30,16 @@ changes, and GL stays the tier every host must run.
   WebGPU, `gpu_api` 2 with no WebGPU imports, any `gpu_api` above 2 (every
   value above 0 used to mean GL), and a WebGPU function the host's glue does
   not provide.
+- `examples/webgpu-hello`, a minimal textured-triangle cart, and
+  docs/webgpu.md walking through it (every C block on that page is quoted from
+  it, and a test keeps it so). The page also covers the frame loop's yield,
+  GPU memory, resize, errors and device loss, limits, per-host status and
+  performance.
+- Tested on the Node host (a discrete AMD GPU, and lavapipe as in CI), in
+  Chromium, and in Firefox on Linux with `dom.webgpu.enabled` set (off by
+  default there). Safari is untested.
+- Embedders driving `runFrame()` themselves must yield a task between frames
+  (not only `await`): async results and the release of GPU objects depend on it.
 
 **Cart memory the host writes** (SPEC.md, "Cart memory the host writes").
 Every byte a host places in a cart at an address it picks (glGetString,
