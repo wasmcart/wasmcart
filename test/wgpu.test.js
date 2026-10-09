@@ -9,6 +9,12 @@
 //   gpuapi3.wasc      declares the reserved gpu_api 3
 //   wgpufake.wasc     imports a WebGPU function no glue provides
 //   wasicart.wasc     wgpucart built with wasi-sdk (threads) via wgpu-wasi/
+//   wgpucart031.wasc  wgpucart as built before 0.32: no wc_alloc, the glue
+//                     falls back to its exported malloc/free (deprecated)
+//
+// wgpucart and wasicart export a counting wc_alloc/wc_free
+// (fixtures/alloc_count.h): t_allocs(1) counts the adapter-info read,
+// t_allocs(2) the mapped-range read, t_allocs(0) everything else.
 //
 // Pixels are read the way a host must: readGpuFrame() for WebGPU, the GL
 // redirect FBO for GL.
@@ -26,6 +32,15 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 function pixel(frame, x, y) {
   const i = (y * frame.width + x) * 4;
   return [...frame.data.slice(i, i + 4)];
+}
+
+// The glue's allocations in the cart went through its wc_alloc/wc_free.
+function assertGlueAllocs(ex) {
+  assert.equal(ex.wgpucart_adapter_info_ok(), 1, 'wgpuDeviceGetAdapterInfo succeeded');
+  assert.ok(ex.t_allocs(1) >= 1, 'adapter info strings were allocated with wc_alloc');
+  assert.ok(ex.t_allocs(2) >= 1, 'the mapped range was allocated with wc_alloc');
+  assert.ok(ex.t_allocs(0) >= 1, 'the error-scope message was allocated with wc_alloc');
+  assert.ok(ex.t_frees() >= 2, 'the mapped range (at unmap) and the callback message were freed with wc_free');
 }
 
 function glPixel(host, x, y) {
@@ -53,6 +68,7 @@ test('a WebGPU cart renders on the host device, gets async results between frame
     assert.equal(ex.wgpucart_mapped_during_render(), 0, 'no callback ran inside wc_render');
     for (let i = 0; i < 10 && ex.wgpucart_scope_error() < 0; i++) { host.runFrame(); await tick(); }
     assert.equal(ex.wgpucart_scope_error(), 2, 'an error scope caught the validation error (WGPUErrorType_Validation)');
+    assertGlueAllocs(ex);
     for (let i = 0; i < 4; i++) { host.runFrame(); await tick(); }
     assert.ok(host.memory.buffer.byteLength > before, 'the cart grew its memory (32 MB malloc on frame 3)');
 
@@ -85,7 +101,8 @@ test('a wasi-sdk cart (wasip1-threads, workers that never call WebGPU) runs on W
     assert.equal(ex.wgpucart_result(), 42, 'compute result through mapAsync');
     assert.equal(ex.wgpucart_mapped_during_render(), 0);
     assert.equal(ex.wgpucart_scope_error(), 2, 'validation error caught by the scope');
-    assert.equal(ex.wasicart_scope_msg_ok(), 1, 'error message intact (passed on the cart stack)');
+    assert.equal(ex.wasicart_scope_msg_ok(), 1, 'error message intact (in a wc_alloc block for the callback)');
+    assertGlueAllocs(ex);
     assert.equal(ex.wasicart_workers_ok(), 1, 'both workers finished their sums');
     host.runFrame();
     const frame = await host.readGpuFrame();
@@ -192,5 +209,45 @@ test('the embedder or WASMCART_WGPU_POWER picks the GPU, and the host says which
     await assert.rejects(new CartHost().load(fixture('wgpucart.wasc')), /WASMCART_WGPU_POWER=fastest: expected low-power or high-performance/);
   } finally {
     delete process.env.WASMCART_WGPU_POWER;
+  }
+});
+
+test('a WebGPU cart built before 0.32 (malloc, no wc_alloc) still runs, with one deprecation warning', async () => {
+  const seen = [];
+  const warn = console.warn;
+  console.warn = (...a) => { seen.push(a.join(' ')); };
+  const host = new CartHost();
+  try {
+    await host.load(fixture('wgpucart031.wasc'));
+    const ex = host.instance.exports;
+    assert.equal(ex.wc_alloc, undefined);
+    for (let i = 0; i < 20 && ex.wgpucart_result() < 0; i++) { host.runFrame(); await tick(); }
+    assert.equal(ex.wgpucart_result(), 42, 'mapped range through the cart\'s memalign');
+    for (let i = 0; i < 10 && ex.wgpucart_scope_error() < 0; i++) { host.runFrame(); await tick(); }
+    assert.equal(ex.wgpucart_scope_error(), 2, 'error message through the cart\'s malloc');
+  } finally {
+    console.warn = warn;
+    await host.destroy();
+  }
+  assert.equal(seen.filter(m => /no wc_alloc\/wc_free.*deprecated/.test(m)).length, 1, 'exactly one deprecation warning');
+});
+
+test('a WebGPU glue allocation that gets a bad pointer stops the cart with the bounds error', async () => {
+  const host = new CartHost();
+  try {
+    await host.load(fixture('wgpucart.wasc'));
+    const ex = host.instance.exports;
+    ex.t_alloc_mode(1); // wc_alloc now returns 0xFFFFFFF0
+    let err = null;
+    for (let i = 0; i < 20 && !err; i++) {
+      try { host.runFrame(); } catch (e) { err = e; }
+      await tick();
+    }
+    assert.ok(err, 'the cart stopped');
+    assert.equal(err.name, 'CartMemoryError');
+    assert.match(err.message, /WebGPU .*wc_alloc\(\d+, 16\) returned 0xfffffff0, which is outside its \d+-byte memory/);
+    assert.notEqual(ex.wgpucart_result(), 42, 'the mapped range never reached the cart');
+  } finally {
+    await host.destroy();
   }
 });

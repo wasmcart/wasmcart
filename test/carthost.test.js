@@ -715,18 +715,18 @@ test('both hosts clamp delta the same way', async () => {
   }
 });
 
-// --- Host payload staging (scratch aliasing) ---
-// Carts without malloc/free need somewhere for the host to stage inbound
-// payloads. The old approach reused the top 64KB of EXISTING linear memory and
-// assumed nothing lived there. For a cart linked at the wasm-ld default of
-// 128KB that is false: its statics run straight through that window, so every
-// delivered message silently overwrote them. No trap, no error -- just corrupt
-// cart data surfacing later as something unrelated.
+// --- Host payload staging (SPEC.md, "Cart memory the host writes") ---
+// Text and network payloads are copied into memory the cart allocates with
+// its wc_alloc. The host used to stage them, for carts without an allocator,
+// at the top of linear memory, assuming nothing lived there. For a cart linked
+// at the wasm-ld default of 128KB that is false: its statics run straight
+// through that window, so every delivered message silently overwrote them.
+// Now a cart without an allocator gets a clear error and its memory is never
+// touched.
 
-test('delivering a payload never overwrites cart memory', async () => {
-  // smallmem pins its maximum, so the host cannot grow a scratch page and must
-  // fall back -- which is exactly the case the old code got wrong. guard[] is
-  // 0xAB from wc_init and overlaps the old scratch window by ~9KB.
+test('a payload for a cart with no allocator is a clear error, and never overwrites cart memory', async () => {
+  // smallmem has no allocator, and its guard[] (0xAB from wc_init) overlaps
+  // the window the old fallback wrote into.
   const host = new CartHost();
   await host.load(join(HERE, 'fixtures/smallmem.wasc'));
 
@@ -735,31 +735,23 @@ test('delivering a payload never overwrites cart memory', async () => {
 
   host.instance.exports.wc_begin();
   host.textInput('X'.repeat(2000));
-  host.runFrame([{ connected: true, buttons: 0 }]);
+  assert.throws(() => host.runFrame([{ connected: true, buttons: 0 }]),
+    (e) => e.name === 'CartMemoryError' && /wc_on_text must write into the cart's memory/.test(e.message));
 
   assert.equal(guardByte(), 0xAB,
     'cart memory was overwritten by payload staging (0x58 = the ASCII X we sent)');
+  assert.equal(new TextDecoder().decode(host._u8).includes('XXXXXXXX'), false, 'the payload was written nowhere');
   host.destroy();
 });
 
-test('a payload that cannot be staged safely is dropped, not forced through', async () => {
-  // Dropping a message is recoverable; corrupting the cart is not. The cart
-  // must still be running and coherent afterwards.
-  const host = new CartHost();
-  await host.load(join(HERE, 'fixtures/smallmem.wasc'));
-  host.instance.exports.wc_begin();
-  host.textInput('Y'.repeat(2000));
-  const f = host.runFrame([{ connected: true, buttons: 0 }]);
-  assert.ok(f.width > 0 && f.framebuffer.length === f.width * f.height * 4,
-    'the cart keeps running normally after a dropped payload');
-  host.destroy();
-});
-
-test('a growable cart gets its payload, staged beyond its own data', async () => {
-  // The control for the two above: proving the host REFUSES is worthless
-  // unless delivery still works where it is safe.
+test('a cart with wc_alloc gets its payload, in its own allocation', async () => {
+  // The control for the one above: refusing is worthless unless delivery
+  // works where the cart provides memory. textcart has only wc_alloc (from
+  // wasmcart.h), no malloc, so delivery went through it.
   const host = new CartHost();
   await host.load(join(HERE, 'fixtures/textcart.wasc'));
+  assert.equal(typeof host.instance.exports.wc_alloc, 'function');
+  assert.equal(host.instance.exports.malloc, undefined);
   host.instance.exports.wc_begin();
   host.textInput('hello');
   host.runFrame([{ connected: true, buttons: 0 }]);
@@ -768,11 +760,6 @@ test('a growable cart gets its payload, staged beyond its own data', async () =>
   for (const f of host.readDebugState()) p[f.name] = f.valuePtr;
   const len = new DataView(host._u8.buffer).getUint32(p.buf_len, true);
   assert.equal(len, 5, 'payload delivered');
-
-  if (host._scratchBase !== null) {
-    assert.ok(host._scratchBase >= host._cartDataEnd() - 65536,
-      'the staging region must sit at or beyond the cart data high-water mark');
-  }
   host.destroy();
 });
 

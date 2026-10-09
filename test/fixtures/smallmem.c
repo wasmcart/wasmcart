@@ -1,5 +1,7 @@
 /*
- * smallmem - scratch-aliasing regression fixture.
+ * smallmem - scratch-aliasing regression fixture. It has no allocator, so
+ * since 0.32 a delivered payload is a clear error (SPEC.md, "Cart memory the
+ * host writes"); the test checks guard[] is still never written.
  *
  * A cart linked at the wasm-ld default 128KB whose statics run PAST the 64KB
  * mark, with its memory maximum pinned so the host cannot grow a scratch page.

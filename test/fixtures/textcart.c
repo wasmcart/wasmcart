@@ -12,6 +12,9 @@
  *     -s EXPORTED_FUNCTIONS='["_wc_init","_wc_render","_wc_get_info","_wc_debug_state","_wc_on_text","_wc_begin","_wc_end"]' \
  *     -s ERROR_ON_UNDEFINED_SYMBOLS=0 -o textcart.wasm
  *   npx wasmcart-pack --wasm textcart.wasm --name textcart -o textcart.wasc
+ *
+ * Text arrives as (ptr, len) in memory from the cart's wc_alloc, which
+ * wasmcart.h defines and exports (SPEC.md, "Cart memory the host writes").
  */
 #include "wasmcart.h"
 #include "wc_cart.h"

@@ -4,23 +4,40 @@
  * four on_* callbacks. Records what it observed into debug-visible statics so
  * the host test can assert on cart-side behaviour, not just host internals.
  *
- * Rebuild (clang with a wasm32 target, from this directory):
- *   clang --target=wasm32 -O2 -nostdlib -I../../include \
+ * Rebuild (wasi-sdk's clang, no sysroot, from this directory):
+ *   $WASI_SDK/bin/clang --target=wasm32 --sysroot=/nonexistent -O2 -nostdlib -I../../include \
  *     -DWC_USE_NET_PEER -Wl,--no-entry -Wl,--export-dynamic \
- *     -Wl,--allow-undefined -Wl,--initial-memory=1048576 \
- *     -o peernet.wasm peernet.c
+ *     -Wl,--allow-undefined -o peernet.wasm peernet.c
  *
- * The --initial-memory is load-bearing: the host stages callback payloads in
- * the TOP 64KB of linear memory (_withTempWasmData). At the 128KB the linker
- * defaults to, that window starts at 65536 -- exactly where this cart's statics
- * begin -- so every delivered message overwrote wc_info_t and the host read back
- * garbage resolution. 1MB puts the statics well clear of it.
+ * The host delivers connect names and messages as (ptr, len) in memory it gets
+ * from the cart's wc_alloc (SPEC.md, "Cart memory the host writes"). With no
+ * libc, wasmcart.h cannot define wc_alloc over aligned_alloc, so this cart
+ * exports its own: the hand-rolled case.
  *   npx wasmcart-pack --wasm peernet.wasm --name peernet -o peernet.wasc
+ *   npx wasmcart-pack --wasm peernet.wasm --name peernet --ws 127.0.0.1 -o peernet_net.wasc
  */
 #include "wasmcart.h"
 
 #define WIDTH  32
 #define HEIGHT 32
+
+/* A no-libc wc_alloc/wc_free: a bump arena that empties whenever nothing in it
+ * is live. The host frees each payload as soon as the callback returns, so
+ * the arena never holds more than one message. */
+static unsigned char arena[65536];
+static unsigned arena_top, arena_live;
+__attribute__((export_name("wc_alloc")))
+void *wc_alloc(unsigned size, unsigned align) {
+    unsigned at = (arena_top + align - 1) & ~(align - 1);
+    if (at + size > sizeof arena) return 0;
+    arena_top = at + size;
+    arena_live++;
+    return arena + at;
+}
+__attribute__((export_name("wc_free")))
+void wc_free(void *p) {
+    if (p && --arena_live == 0) arena_top = 0;
+}
 
 static uint32_t framebuffer[WIDTH * HEIGHT];
 static wc_pad_t pads[4];

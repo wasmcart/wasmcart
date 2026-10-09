@@ -31,8 +31,13 @@
 #include <pthread.h>
 #include <string.h>
 #include <webgpu/webgpu.h>
+/* A counting wc_alloc/wc_free in place of wasmcart.h's (alloc_count.h), so a
+   test can see the glue allocate through them: phase 1 is the adapter info
+   read in wc_init, phase 2 the mapped range read in the map callback. */
+#define WASMCART_NO_ALLOC
 #include "wasmcart.h"
 #include "wc_cart.h"
+#include "alloc_count.h"
 
 #define W 256
 #define H 192
@@ -89,6 +94,9 @@ wc_info_t *wc_get_info(void) {
     return &info;
 }
 
+static int adapter_info_ok;
+__attribute__((export_name("wgpucart_adapter_info_ok"))) int wgpucart_adapter_info_ok(void) { return adapter_info_ok; }
+
 /* Exposed so a test can see when the map callback ran. */
 __attribute__((export_name("wgpucart_result"))) int wgpucart_result(void) { return result; }
 __attribute__((export_name("wgpucart_mapped_during_render"))) int wgpucart_mapped_during_render(void) { return mapped_during_render; }
@@ -125,7 +133,9 @@ static void provoke_validation_error(void) {
 static void on_map(WGPUMapAsyncStatus status, WGPUStringView msg, void *a, void *b) {
     if (in_render) mapped_during_render = 1;
     if (status != WGPUMapAsyncStatus_Success) { result = -2; return; }
+    t_phase(2);
     const uint32_t *v = (const uint32_t *)wgpuBufferGetConstMappedRange(readback, 0, 4);
+    t_phase(0);
     result = (int)v[0];
     wgpuBufferUnmap(readback);
 }
@@ -168,6 +178,16 @@ __attribute__((export_name("wc_init")))
 void wc_init(void) {
     device = emscripten_webgpu_get_device();
     queue = wgpuDeviceGetQueue(device);
+
+    /* adapter info: the glue writes its strings into a wc_alloc block, which
+       wgpuAdapterInfoFreeMembers releases with free() */
+    t_phase(1);
+    WGPUAdapterInfo ai = WGPU_ADAPTER_INFO_INIT;
+    if (wgpuDeviceGetAdapterInfo(device, &ai) == WGPUStatus_Success) {
+        adapter_info_ok = 1;
+        wgpuAdapterInfoFreeMembers(ai);
+    }
+    t_phase(0);
 
     WGPUInstance instance = wgpuCreateInstance(NULL);
     WGPUEmscriptenSurfaceSourceCanvasHTMLSelector canvas = {

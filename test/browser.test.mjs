@@ -400,6 +400,7 @@ const wgpu = await page.evaluate(async () => {
   out.mappedDuringRender = ex.wgpucart_mapped_during_render();
   for (let i = 0; i < 20 && ex.wgpucart_scope_error() < 0; i++) { host.runFrame([]); await tick(); }
   out.scopeError = ex.wgpucart_scope_error();
+  out.allocs = { info: ex.t_allocs(1) > 0, mapped: ex.t_allocs(2) > 0, msg: ex.t_allocs(0) > 0, freed: ex.t_frees() >= 2 };
   host.runFrame([]);
   let f = await host.readGpuFrame();
   out.size = [f.width, f.height];
@@ -452,6 +453,8 @@ check('webgpu: the browser offers an adapter', wgpu.adapter, true);
 check('webgpu: cart runs on WebGPU with the host flag set', [wgpu.usesWgpu, wgpu.flag], [true, 2]);
 check('webgpu: compute result arrives between frames', [wgpu.result, wgpu.mappedDuringRender], [42, 0]);
 check('webgpu: an error scope catches a validation error', wgpu.scopeError, 2);
+check('webgpu: adapter info, the mapped range and the callback message go through wc_alloc/wc_free', wgpu.allocs,
+      { info: true, mapped: true, msg: true, freed: true });
 check('webgpu: frame size', wgpu.size, [256, 192]);
 check('webgpu: triangle pixel', wgpu.triangle, [255, 128, 64, 255]);
 check('webgpu: background carries the compute result', wgpu.background, [42, 0, 255, 255]);
@@ -464,6 +467,49 @@ check('webgpu: gpu_api 3 refused', wgpu.gpuApi3, true);
 check('webgpu: unknown WebGPU function refused by name', wgpu.fake, true);
 check('webgpu: a wasi-sdk threaded cart runs (workers never call WebGPU)', wgpu.wasi,
       { wgpu: true, threaded: true, result: 42, scope: 2, msg: 1, workers: 1, px: [255, 128, 64, 255] });
+
+// ─── Cart memory the host writes (SPEC.md): wc_alloc in CartHostWeb ────────
+// Same fixtures as test/cartmem.test.js on the Node host.
+const cartmem = await page.evaluate(async () => {
+  const { CartHostWeb } = await import('/web.js');
+  const GL_VERSION = 0x1F02;
+  const load = async (name) => { const h = new CartHostWeb(); await h.load(`/test/fixtures/${name}.wasc`); return h; };
+  const str = (h, p) => { const u8 = new Uint8Array(h.memory.buffer); let e = p; while (u8[e]) e++; return new TextDecoder().decode(u8.slice(p, e)); };
+  const out = {};
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (...a) => warnings.push(a.join(' '));
+  try {
+    let h = await load('alloc_count');
+    let ex = h.instance.exports;
+    out.glString = /^OpenGL ES/.test(str(h, ex.t_gl_string(GL_VERSION))) && ex.t_allocs(1) === 1;
+    const frees = ex.t_frees();
+    out.map = ex.t_map(512, 9) % 16 === 0 && ex.t_allocs(2) === 1 && ex.t_frees() === frees + 1;
+    ex.t_alloc_mode(1);
+    try { ex.t_gl_stringi(0x1F03, 1); out.bounds = 'accepted'; } catch (e) { out.bounds = e.code === 'bounds' && /outside its \d+-byte memory/.test(e.message); }
+    h.destroy();
+
+    h = await load('alloc_none');
+    ex = h.instance.exports;
+    try { for (let i = 0; i < 3; i++) h.runFrame([]); out.noneRuns = true; } catch (e) { out.noneRuns = e.message; }
+    try { ex.t_gl_string(GL_VERSION); out.noneError = 'no error'; } catch (e) { out.noneError = e.code === 'missing' && /glGetString must write into the cart's memory/.test(e.message); }
+    h.destroy();
+
+    h = await load('alloc_malloc');
+    ex = h.instance.exports;
+    out.malloc = /^OpenGL ES/.test(str(h, ex.t_gl_string(GL_VERSION))) && ex.t_map(64, 1) > 0 && ex.t_map(64, 2) > 0;
+    h.destroy();
+  } finally {
+    console.warn = warn;
+  }
+  out.deprecations = warnings.filter((m) => /no wc_alloc\/wc_free.*deprecated/.test(m)).length;
+  return out;
+});
+check('cart memory: GL strings and mappings through wc_alloc, mapping freed at unmap', [cartmem.glString, cartmem.map], [true, true]);
+check('cart memory: a bad pointer from wc_alloc is refused', cartmem.bounds, true);
+check('cart memory: a cart with no allocator runs while it needs none', cartmem.noneRuns, true);
+check('cart memory: ...and gets the clear error when it calls glGetString', cartmem.noneError, true);
+check('cart memory: a malloc-only cart works, with one deprecation warning', [cartmem.malloc, cartmem.deprecations], [true, 1]);
 
 await browser.close();
 ws.kill();
