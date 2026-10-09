@@ -59,7 +59,8 @@ test('textures and samplers: nearest, linear, repeat, clamp, mirror, explicit mi
   await host.load(fixture('wgputex.wasc'));
   try {
     assert.equal(host.usesWgpu, true);
-    for (let i = 0; i < 40 && host.readDebugValue('tex.done').value === 0; i++) { host.runFrame(); await tick(); }
+    // a software adapter (lavapipe, CI) answers the map later: keep yielding
+    for (let i = 0; i < 400 && host.readDebugValue('tex.done').value === 0; i++) { host.runFrame(); await new Promise((r) => setTimeout(r, 5)); }
     assert.equal(host.readDebugValue('tex.done').value, 1, 'the cart\'s own readback arrived');
     assert.equal(host.readDebugValue('tex.errors').value, 0, 'no validation or out-of-memory errors');
     assert.equal(host.readDebugValue('tex.pass').value, 0x1ff,

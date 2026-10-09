@@ -555,10 +555,12 @@ const wgpu2 = await page.evaluate(async () => {
 
   host = new CartHostWeb();
   await host.load('/test/fixtures/wgpuedges.wasc');
-  for (let i = 0; i < 9; i++) { host.runFrame([]); await tick(); }
-  host.runFrame([]);
+  for (let i = 0; i < 8; i++) { host.runFrame([]); await tick(); }
+  host.runFrame([]); // frame 9, read in the task that drew it
   const g = await host.readGpuFrame();
   for (let i = 0; i < 5; i++) { host.runFrame([]); await tick(); }
+  // the uncaptured-error event may take more turns to arrive in a browser
+  for (let i = 0; i < 60 && !field(host, 'edge.uncaptured'); i++) { host.runFrame([]); await new Promise((r) => setTimeout(r, 10)); }
   host.runFrame([]);
   f = await host.readGpuFrame();
   out.edges = { adapter: field(host, 'edge.adapter'), device: field(host, 'edge.device'), separate: field(host, 'edge.separate'),
