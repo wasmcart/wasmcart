@@ -1,0 +1,18 @@
+[package]
+name = "wasmcart-alloc"
+version = "0.32.0"
+edition = "2021"
+license = "MIT"
+description = "Exports wc_alloc/wc_free, the allocator a wasmcart host writes into a cart through"
+repository = "https://github.com/monteslu/wasmcart"
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "textcart"
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "s"
+lto = true
