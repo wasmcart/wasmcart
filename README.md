@@ -389,6 +389,7 @@ A cart that doesn't use the GPU at all can write pixels directly to a shared-mem
 - **Asset loading** - `.wasc` carts load files at runtime via `wc_asset_size()` / `wc_load_asset()`
 - **WASI threads** - carts compiled with wasi-sdk `-pthread` can spawn background threads via pthreads
 - **WebAssembly exceptions** - standardized Wasm EH, including wasi-sdk's native `setjmp`/`longjmp`
+- **Runtime code generation** - a cart that compiles code as it runs (a Lua or JavaScript VM) links the wasm it generates with `wc_jit_link`; the host compiles it and installs it in the cart's own function table, with nothing beyond the cart's own exports. Every host provides it; `jit: false` / `WASMCART_JIT=0` turns it off, loudly. See SPEC.md, "Runtime code generation"
 
 ## Node.js API
 

@@ -53,6 +53,33 @@ before its assets are downloaded.
 - The node host loads a cart directory with no `manifest.json`, as the spec
   already allowed for a .wasc.
 
+**Runtime code generation** (SPEC.md, "Runtime code generation"). A cart that
+compiles code while it runs links the wasm it generates; the host's wasm engine
+is the JIT. Optional for carts, provided by every host.
+
+- New imports `wc_jit_link(bytes, len, *result)` (first slot, `-1` refused,
+  `-2` pending into `*result`, `-3` try later), `wc_jit_unlink(first_slot)`
+  and `wc_jit_config(key)` (keys 0-2 engine advice and the off switch, 3-6 the
+  limits). Declared in `wasmcart.h`.
+- A generated module imports only from namespace `cart`, resolved to the
+  cart's own exports, so it has exactly the cart's authority.
+- Per instance: slots, limits and compiles belong to the instance that asked
+  (a worker thread has its own); a late result for a destroyed or replaced
+  cart is dropped.
+- Spec minimum limits: 4 MiB per module, 256 MiB and 65536 functions linked
+  at once, 32 compiles in flight.
+- Slots do not survive a save-state restore or rewind (`jitUnlinkAll()`).
+- `jit: false` or `WASMCART_JIT=0` turns it off: carts get `-1`, and the user
+  gets one unmistakable notice (`onJitNotice`, stderr, the player's window
+  title, a banner in a page).
+- `createJitImports` is exported for hosts and harnesses that build their own
+  imports.
+
+Migrating to 0.32 (runtime code generation): nothing changes for existing
+carts. Embedders that build their own import object add
+`createJitImports(...).imports`; an embedder that restores save states calls
+`jitUnlinkAll()` after writing memory back.
+
 ## 0.31.0
 
 **ABI v4.** Every analog axis is int16 (triggers were uint8) and
