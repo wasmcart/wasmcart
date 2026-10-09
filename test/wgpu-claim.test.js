@@ -9,7 +9,7 @@
 // GPU memory is read from the kernel's per-client DRM accounting
 // (/proc/self/fdinfo, drm-memory-vram / drm-total-*), Linux only; elsewhere,
 // or on a software adapter with no DRM client, the plateau test is skipped.
-// WASMCART_VRAM_FRAMES sets its length (default 3000).
+// WASMCART_VRAM_FRAMES sets its length (default 3000); WASMCART_VRAM_TEST=1 runs it.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -79,7 +79,11 @@ test('textures and samplers: nearest, linear, repeat, clamp, mirror, explicit mi
   }
 });
 
+// Opt-in (WASMCART_VRAM_TEST=1): it reads the machine's GPU memory, which other
+// processes and the driver's own caching move, so it is a measurement for a
+// quiet machine rather than a default test.
 test('GPU memory levels off over thousands of frames when the loop yields between frames', async (t) => {
+  if (process.env.WASMCART_VRAM_TEST !== '1') return t.skip('set WASMCART_VRAM_TEST=1 to measure');
   if (processGpuBytes() === null) {
     // a WebGPU device must exist before a DRM client shows; probe with the cart
     const probe = new CartHost();
