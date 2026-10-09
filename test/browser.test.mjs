@@ -112,7 +112,10 @@ await new Promise((r) => setTimeout(r, 700));
 // --enable-unsafe-webgpu: headless Chromium on Linux keeps WebGPU behind it.
 // Headless, the adapter it then offers is SwiftShader (CPU), which is what the
 // WebGPU checks below run on.
-const browser = await chromium.launch({ headless: !process.argv.includes('--headed'), args: ['--enable-unsafe-webgpu'] });
+// WASMCART_BROWSER_ARGS adds Chromium flags: on Linux, WebGPU runs on
+// SwiftShader (software) unless '--enable-features=Vulkan' is among them.
+const browser = await chromium.launch({ headless: !process.argv.includes('--headed'),
+  args: ['--enable-unsafe-webgpu', ...(process.env.WASMCART_BROWSER_ARGS || '').split(' ').filter(Boolean)] });
 const page = await browser.newPage();
 page.on('console', (m) => { if (m.type() === 'error') console.log('  [page error]', m.text()); });
 page.on('pageerror', (e) => { console.log('  [page throw]', e.message); failures++; });
@@ -510,6 +513,80 @@ check('cart memory: a bad pointer from wc_alloc is refused', cartmem.bounds, tru
 check('cart memory: a cart with no allocator runs while it needs none', cartmem.noneRuns, true);
 check('cart memory: ...and gets the clear error when it calls glGetString', cartmem.noneError, true);
 check('cart memory: a malloc-only cart gets the same clear error, no fallback, no warning', [cartmem.malloc, cartmem.warnings], [true, 0]);
+
+// ─── WebGPU textures and samplers, the documented example, the tier's edges ──
+// (test/wgpu-claim.test.js and test/wgpu-example.test.js on the Node host)
+const wgpu2 = await page.evaluate(async () => {
+  const { CartHostWeb } = await import('/web.js');
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const px = (f, x, y) => Array.from(f.data.slice((y * f.width + x) * 4, (y * f.width + x) * 4 + 3));
+  // named debug fields (SPEC.md, "Debug state"), read from cart memory
+  const field = (host, name) => {
+    const ex = host.instance.exports;
+    const dv = new DataView((host.memory || ex.memory).buffer);
+    const str = (q) => { let s = ''; for (let b; (b = dv.getUint8(q)); q++) s += String.fromCharCode(b); return s; };
+    for (let p = ex.wc_debug_state(); ; p += 16) {
+      const n = dv.getUint32(p, true);
+      if (!n) return undefined;
+      if (str(n) !== name) continue;
+      const vp = dv.getUint32(p + 4, true), len = dv.getUint32(p + 12, true);
+      const vals = Array.from({ length: len }, (_, i) => dv.getUint32(vp + 4 * i, true));
+      return len === 1 ? vals[0] : vals;
+    }
+  };
+  const out = { adapter: (await navigator.gpu.requestAdapter())?.info?.description || '' };
+
+  let host = new CartHostWeb();
+  await host.load('/test/fixtures/wgputex.wasc');
+  for (let i = 0; i < 40 && !field(host, 'tex.done'); i++) { host.runFrame([]); await tick(); }
+  host.runFrame([]);
+  let f = await host.readGpuFrame();
+  out.tex = { done: field(host, 'tex.done'), pass: field(host, 'tex.pass'), errors: field(host, 'tex.errors'), size: [f.width, f.height],
+              cells: [0, 1, 2, 3, 4, 5, 6, 7, 8].map((c) => px(f, c * 32 + 16, 16)) };
+  host.destroy();
+
+  host = new CartHostWeb();
+  await host.load('/examples/webgpu-hello/webgpu-hello.wasc');
+  for (let i = 0; i < 10; i++) { host.runFrame([]); await tick(); }
+  host.runFrame([]);
+  f = await host.readGpuFrame();
+  out.hello = { size: [f.width, f.height], px: [[2, 2], [155, 60], [140, 160], [180, 160]].map(([x, y]) => px(f, x, y)) };
+  host.destroy();
+
+  host = new CartHostWeb();
+  await host.load('/test/fixtures/wgpuedges.wasc');
+  for (let i = 0; i < 9; i++) { host.runFrame([]); await tick(); }
+  host.runFrame([]);
+  const g = await host.readGpuFrame();
+  for (let i = 0; i < 5; i++) { host.runFrame([]); await tick(); }
+  host.runFrame([]);
+  f = await host.readGpuFrame();
+  out.edges = { adapter: field(host, 'edge.adapter'), device: field(host, 'edge.device'), separate: field(host, 'edge.separate'),
+                uncaptured: field(host, 'edge.uncaptured'), lost: field(host, 'edge.lost'), info: [host.getInfo().width, host.getInfo().height],
+                before: [g.width, g.height, ...px(g, 4, 4)], after: [f.width, f.height, ...px(f, 4, 4)] };
+  host.destroy();
+
+  host = new CartHostWeb();
+  await host.load('/test/fixtures/wgpuvram.wasc');
+  for (let i = 0; i < 600; i++) { host.runFrame([]); await tick(); }
+  out.vram = { frames: field(host, 'vram.frames'), errors: field(host, 'vram.errors') };
+  host.destroy();
+  return out;
+});
+console.log(`  (WebGPU adapter: ${wgpu2.adapter || 'unnamed'})`);
+check('webgpu textures: every sampler / mip / render-target case matches (the cart\'s own check)',
+      [wgpu2.tex.done, wgpu2.tex.pass, wgpu2.tex.errors, wgpu2.tex.size], [1, 0x1ff, 0, [288, 32]]);
+{
+  const want = [[255, 0, 0], [128, 0, 255], [128, 128, 0], [0, 255, 0], [255, 255, 0], [0, 0, 255], [20, 200, 40], [200, 20, 180], [51, 102, 204]];
+  const tol = [1, 1, 3, 1, 1, 1, 1, 1, 1];
+  const bad = wgpu2.tex.cells.map((c, i) => (c.every((v, k) => Math.abs(v - want[i][k]) <= tol[i]) ? null : `cell ${i}: ${c}`)).filter(Boolean);
+  check('webgpu textures: the host reads back the same cells', bad, []);
+}
+check('webgpu example: examples/webgpu-hello draws its textured triangle', wgpu2.hello,
+      { size: [320, 240], px: [[26, 26, 38], [255, 0, 0], [0, 0, 255], [255, 255, 255]] });
+check('webgpu edges: second device, uncaptured error to its callback, device loss, resize',
+      wgpu2.edges, { adapter: 1, device: 1, separate: 1, uncaptured: 1, lost: 2, info: [160, 120], before: [128, 96, 0, 255, 0], after: [160, 120, 0, 0, 255] });
+check('webgpu: 600 frames of create / use / release, no errors', wgpu2.vram, { frames: 600, errors: 0 });
 
 await browser.close();
 ws.kill();

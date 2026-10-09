@@ -1,4 +1,5 @@
-examples
+examples/*
+!examples/webgpu-hello/
 node_modules
 ports
 
