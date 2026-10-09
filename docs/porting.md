@@ -117,8 +117,8 @@ cart, and text and network payloads arrive in it. The host gets that memory
 from your cart's `wc_alloc`/`wc_free` exports, which `wasmcart.h` defines and
 exports: include it and there is nothing to do. If your port defines its own
 (or has no libc), export `wc_alloc(size, align)` and `wc_free(ptr)` yourself.
-Exporting only `malloc`, as ports did before 0.32, still works but is
-deprecated and prints a warning. See SPEC.md, "Cart memory the host writes".
+Exporting `malloc` is not enough: the host uses only `wc_alloc`/`wc_free`.
+See SPEC.md, "Cart memory the host writes".
 
 ## Shared Porting Libraries
 

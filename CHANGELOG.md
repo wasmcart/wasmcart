@@ -52,14 +52,13 @@ allocator, through two optional cart exports, `wc_alloc(size, align)` and
   Emscripten stack helpers; `wgpu-wasi/exports.txt` lists `wc_alloc`/`wc_free`
   instead, and `emwgpu_wasi.c` no longer defines `memalign` or the stack
   helpers.
-- Deprecated: a cart without `wc_alloc` that exports `malloc` (every
-  Emscripten cart and every cart linked with `-Wl,--export=malloc` before
-  0.32) still works through its malloc/free, with one warning per load. That
-  fallback will be removed.
+- Only `wc_alloc`/`wc_free` are used: a cart's exported `malloc` is not an
+  allocator to the host, so a cart linked with `-Wl,--export=malloc` (or an
+  Emscripten cart built against older headers) gets the error on those paths.
 
-**Migrating:** rebuild against 0.32's `wasmcart.h` and you are done. If you
-hand-roll your exports (no wasmcart.h, no libc, or your own allocator), export
-`wc_alloc` and `wc_free`. A vendored copy of `wasmcart.h` must be updated
+**Migrating:** rebuild against 0.32's `wasmcart.h` (or the wgpu-wasi CMake
+helper, or the `wasmcart-alloc` Rust crate), or export `wc_alloc` and
+`wc_free` yourself. A vendored copy of `wasmcart.h` must be updated
 (`scripts/sync-headers.sh`).
 
 A cart can run on the web from an unpacked **cart directory**, starting

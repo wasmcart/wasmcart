@@ -345,21 +345,10 @@ cart's entry points (the main thread). In a threaded cart they must still be
 thread-safe against the cart's own allocations on other threads;
 `aligned_alloc` and Rust's global allocator are.
 
-**Deprecated: malloc fallback.** A cart without `wc_alloc` that exports
-`malloc` (or `memalign`), as Emscripten builds and carts linked with
-`-Wl,--export=malloc` before 0.32 do, still works: the host allocates through
-`memalign` or `malloc` (over-allocating to honour alignment), frees with
-`free` if exported, and prints one warning per cart load:
-
-```
-wasmcart: this cart has no wc_alloc/wc_free, so the host is allocating in it
-through its exported malloc/free. That fallback is deprecated and will be
-removed: rebuild against wasmcart 0.32's wasmcart.h (or export wc_alloc and
-wc_free yourself).
-```
-
-This fallback exists for carts built before 0.32 and will be removed in a
-later release. A cart that exports both uses `wc_alloc`.
+**Only `wc_alloc`/`wc_free`.** A cart's `malloc`, `memalign` or `free`
+exports (Emscripten links export them) are never used: a cart that exports
+`malloc` but not `wc_alloc` is a cart without an allocator, and gets the
+same error at first use.
 
 ---
 

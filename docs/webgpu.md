@@ -32,7 +32,7 @@ the host's glue allocates in your cart with: adapter info, mapped ranges and
 callback messages (SPEC.md, "Cart memory the host writes"). Every WebGPU cart
 needs them, and the header handles it; no flag is needed. The link still
 exports `malloc`, `free` and the Emscripten stack helpers (the port asks for
-them); the host ignores those when `wc_alloc` is there.
+them); the host never uses them.
 
 `--use-port` goes on the compile AND the link. Emscripten's old built-in
 bindings (`-sUSE_WEBGPU`) are a different, incompatible import set and are
