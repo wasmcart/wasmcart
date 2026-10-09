@@ -110,6 +110,16 @@ Two things to watch:
   size and speed. Keep `ASYNCIFY_IMPORTS` to `wc_frame_yield` alone, and prefer
   yielding from as shallow a point in the loop as you can.
 
+## Memory the host writes into your cart
+
+`glGetString`, `glGetStringi` and `glMapBufferRange` return pointers into your
+cart, and text and network payloads arrive in it. The host gets that memory
+from your cart's `wc_alloc`/`wc_free` exports, which `wasmcart.h` defines and
+exports: include it and there is nothing to do. If your port defines its own
+(or has no libc), export `wc_alloc(size, align)` and `wc_free(ptr)` yourself.
+Exporting only `malloc`, as ports did before 0.32, still works but is
+deprecated and prints a warning. See SPEC.md, "Cart memory the host writes".
+
 ## Shared Porting Libraries
 
 The spec-owned headers ship in this package at `include/` (vendored copies in
@@ -117,7 +127,7 @@ The spec-owned headers ship in this package at `include/` (vendored copies in
 
 | Header | Purpose |
 |--------|---------|
-| `wasmcart.h` | The ABI: imports, exports, structs, flags |
+| `wasmcart.h` | The ABI: imports, exports, structs, flags; defines and exports `wc_alloc`/`wc_free` |
 | `wc_cart.h` | Buffer declarations, WC_FILL_INFO macro |
 | `wc_gl.h` | Shader compile/link, VAO/VBO helpers |
 | `wc_gl_blit.h` | Upload CPU pixels as GL texture (2D→GL) |

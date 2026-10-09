@@ -204,6 +204,8 @@ void wc_set_seed(uint32_t seed);         // host calls it whenever exported, BEF
                                          // _initialize and wc_init: fresh entropy on a
                                          // normal load, the pinned seed on a
                                          // deterministic run (see Deterministic replay)
+void* wc_alloc(size_t size, size_t align); // memory the host writes into; see
+void  wc_free(void* ptr);                  // "Cart memory the host writes"
 ```
 
 ---
@@ -256,6 +258,108 @@ that returns nothing AND no `glBackend` passed at all; the two are the same
 failure. Stubbing is prohibited because it is undetectable from the cart's
 side: every GL call succeeds, `load()` reports success, and the frame is
 blank — indistinguishable from a broken cart.
+
+## Cart memory the host writes
+
+**Why.** A few host calls must hand the cart bytes at an address the *host*
+picks, not one the cart passed in:
+
+- GL: `glGetString` and `glGetStringi` return a pointer to a string;
+  `glMapBufferRange` returns a pointer to the mapping.
+- WebGPU: the glue writes adapter info, feature lists and shader compilation
+  messages, mapped buffer ranges (`wgpuBufferGetMappedRange` /
+  `GetConstMappedRange`), and the strings passed to callbacks (error
+  messages, device-lost reasons).
+- Text input and peers: `wc_on_text`, `wc_peer_on_connect` and
+  `wc_peer_on_message` receive `(ptr, len)`.
+
+The host owns none of the cart's memory, so it asks the cart to allocate.
+
+**The contract.** Two optional exports:
+
+```c
+void* wc_alloc(size_t size, size_t align);  // 0 on failure; align is a power of two
+void  wc_free(void* ptr);                   // ptr from wc_alloc; 0 is ignored
+```
+
+They are optional: a cart needs them **only if it reaches one of the paths
+above**. A 2D cart, or a GL cart that never calls glGetString, glGetStringi
+or glMapBufferRange and takes no text or peer payloads, runs without them. In
+practice every WebGPU cart should have them: adapter info, mapping and any
+error message go through them, so the WebGPU toolchains below always provide
+them.
+
+**You don't write them.** `wasmcart.h` defines both
+over `aligned_alloc`/`free` and exports them, for Emscripten and wasi-sdk
+alike, with no linker flags. They are weak: a cart that defines its own wins.
+`WASMCART_NO_ALLOC` leaves them out; a cart with no libc gets none and exports
+its own if it needs them. wasi-sdk WebGPU carts get them from
+`wgpu-wasi/` (`wasmcart_wgpu_wasi()`), and Rust carts from the
+`wasmcart-alloc` crate (`rust/wasmcart-alloc`). A hand-rolled cart exports
+`wc_alloc` and `wc_free` under those names.
+
+**Alignment.** The host asks for what it needs: 1 for strings and payloads,
+16 for mappings and WebGPU structs. The returned pointer must honour it.
+
+**Lifetime and ownership.**
+
+| Block | Allocated | Freed |
+| --- | --- | --- |
+| glGetString / glGetStringi string | once per distinct string, on first call | never (GL strings are static) |
+| glMapBufferRange mapping | at map | by the host with `wc_free`, at `glUnmapBuffer` |
+| text / peer payload | before the callback | by the host with `wc_free`, when the callback returns (the pointer is valid only during the call: copy what you keep) |
+| WebGPU callback string | before the callback | by the host with `wc_free`, when the callback returns |
+| WebGPU mapped range | at `Get(Const)MappedRange` | by the host with `wc_free`, at `wgpuBufferUnmap` |
+| WebGPU adapter info, features, compilation info | when the cart asks | by the cart, through the matching `wgpu*FreeMembers`, which calls `free()` |
+
+That last row means: in a WebGPU cart, `wc_alloc` must return memory C's
+`free()` accepts. wasmcart.h's does.
+
+**Bounds checks.** The host checks every pointer the cart returns before
+writing through it: it must be non-zero, aligned as asked, and `ptr + size`
+must lie within the cart's memory (measured after the call, which may have
+grown it). Anything else is an error, never a write.
+
+**Errors.** A failure is an error the cart does not survive, naming the call
+that needed memory:
+
+- no allocator: `wasmcart: glGetString must write into the cart's memory, but
+  the cart exports no allocator. Export wc_alloc(size, align) and wc_free(ptr):
+  wasmcart.h defines them for C/C++ ...`
+- `wc_alloc` returned 0: `... returned 0 (out of memory)`
+- a bad pointer: `... returned 0x..., which is outside its N-byte memory` or
+  `... which is not 16-byte aligned`
+
+A synchronous call (glGetString, a mapping, a payload delivered before
+`wc_render`) throws at that call. An allocation inside an asynchronous WebGPU
+callback is reported from the host's next frame. A host never refuses to
+load a cart for lacking an allocator: the error comes at first use, because
+a cart may never reach such a path.
+
+There is no fallback that writes elsewhere. Earlier hosts wrote into the top
+of linear memory when a cart had no allocator; that is the cart's live heap
+(or its statics, in a small cart), and it corrupted carts silently.
+
+**Threads.** The host calls `wc_alloc`/`wc_free` from the thread running the
+cart's entry points (the main thread). In a threaded cart they must still be
+thread-safe against the cart's own allocations on other threads;
+`aligned_alloc` and Rust's global allocator are.
+
+**Deprecated: malloc fallback.** A cart without `wc_alloc` that exports
+`malloc` (or `memalign`), as Emscripten builds and carts linked with
+`-Wl,--export=malloc` before 0.32 do, still works: the host allocates through
+`memalign` or `malloc` (over-allocating to honour alignment), frees with
+`free` if exported, and prints one warning per cart load:
+
+```
+wasmcart: this cart has no wc_alloc/wc_free, so the host is allocating in it
+through its exported malloc/free. That fallback is deprecated and will be
+removed: rebuild against wasmcart 0.32's wasmcart.h (or export wc_alloc and
+wc_free yourself).
+```
+
+This fallback exists for carts built before 0.32 and will be removed in a
+later release. A cart that exports both uses `wc_alloc`.
 
 ---
 

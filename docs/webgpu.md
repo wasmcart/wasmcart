@@ -27,14 +27,21 @@ emcc cart.c -O2 -I<wasmcart>/include \
 npx wasmcart-pack --wasm cart.wasm --name mycart -o mycart.wasc
 ```
 
+Including `wasmcart.h` also defines and exports `wc_alloc`/`wc_free`, which
+the host's glue allocates in your cart with: adapter info, mapped ranges and
+callback messages (SPEC.md, "Cart memory the host writes"). Every WebGPU cart
+needs them, and the header handles it; no flag is needed. The link still
+exports `malloc`, `free` and the Emscripten stack helpers (the port asks for
+them); the host ignores those when `wc_alloc` is there.
+
 `--use-port` goes on the compile AND the link. Emscripten's old built-in
 bindings (`-sUSE_WEBGPU`) are a different, incompatible import set and are
 refused.
 
 **wasi-sdk** works too, threads included: compile the same package's
 `webgpu.cpp` into the cart with the support in [`wgpu-wasi/`](../wgpu-wasi/README.md)
-(a CMake function does it). The cart then imports exactly what an Emscripten
-cart does, and runs on the same hosts.
+(a CMake function does it, and exports `wc_alloc`/`wc_free` too). The cart then
+imports exactly what an Emscripten cart does, and runs on the same hosts.
 
 ## The cart, in outline
 
@@ -130,5 +137,9 @@ EMCC=<emsdk>/upstream/emscripten/emcc node scripts/build-wgpu-glue.mjs
 ```
 
 downloads the pinned package, checks its SHA-256, and rewrites
-`src/wgpu/emdawnwebgpu-glue.mjs` and its manifest. Moving the pin is an ABI
+`src/wgpu/emdawnwebgpu-glue.mjs` and its manifest. The script routes every
+allocation the generated glue makes in cart memory (its `malloc`, `memalign`
+and Emscripten stack helpers) through the cart's `wc_alloc`/`wc_free`
+(`scripts/wgpu/glue-alloc.mjs`), and fails if the generated code has changed
+shape so that an allocation would escape. Moving the pin is an ABI
 change: carts and hosts must move together.

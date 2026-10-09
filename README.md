@@ -372,7 +372,9 @@ A cart that doesn't use the GPU at all can write pixels directly to a shared-mem
 
 4. **GPU engines with getProcAddress callbacks** (Skia Ganesh, ANGLE, etc.) must override `glGetString(GL_EXTENSIONS)` in their callback to return empty - preventing the engine from probing for extension function pointers that don't exist as WASM imports. The engine then falls back to its core-GL path, which is all the cart can import anyway. See [`docs/gl-surface.md`](docs/gl-surface.md) for what the GL surface guarantees, and the porting guide in [wasmcart-sdl2](https://github.com/wasmcart/wasmcart-sdl2) for the full pattern.
 
-5. **Same `.wasc` runs everywhere.** If a cart works in the browser, it must work on Node.js, native, and RetroArch hosts. Staying within ES 3.0 core guarantees this.
+5. **The host writes GL strings and mappings into your cart's own heap.** `glGetString`, `glGetStringi` and `glMapBufferRange` return memory the host gets from your cart's `wc_alloc`/`wc_free` exports (text and network payloads and WebGPU use them too). You don't need to do anything if you use `wasmcart.h`, the wgpu-wasi CMake helper, or the `wasmcart-alloc` Rust crate (`rust/wasmcart-alloc`): they export both. A cart that never reaches those paths needs neither. See SPEC.md, "Cart memory the host writes".
+
+6. **Same `.wasc` runs everywhere.** If a cart works in the browser, it must work on Node.js, native, and RetroArch hosts. Staying within ES 3.0 core guarantees this.
 
 ## Features
 
@@ -627,7 +629,7 @@ The [`include/`](include/) directory ships reusable C headers:
 
 | Header | Purpose |
 |--------|---------|
-| `wasmcart.h` | **The ABI header** - `wc_info_t`/`wc_pad_t` structs, flags, GL + host imports. Include this first. |
+| `wasmcart.h` | **The ABI header** - `wc_info_t`/`wc_pad_t` structs, flags, GL + host imports, and the `wc_alloc`/`wc_free` exports the host writes through. Include this first. |
 | `wc_cart.h` | Cart boilerplate - buffer declarations + `WC_FILL_INFO`, plus the opt-in `WC_DEBUG_FIELDS` |
 | `wc_fb.h` | 2D drawing (fill_rect, blit, alpha blend) |
 | `wc_gl.h` / `wc_gl_blit.h` | Shader compile/link, VAO/VBO helpers, CPU→GPU blit |

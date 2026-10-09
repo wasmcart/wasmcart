@@ -31,6 +31,37 @@ changes, and GL stays the tier every host must run.
   value above 0 used to mean GL), and a WebGPU function the host's glue does
   not provide.
 
+**Cart memory the host writes** (SPEC.md, "Cart memory the host writes").
+Every byte a host places in a cart at an address it picks (glGetString,
+glGetStringi and glMapBufferRange results, WebGPU adapter info, mapped ranges
+and callback strings, text and peer payloads) now comes from the cart's own
+allocator, through two optional cart exports, `wc_alloc(size, align)` and
+`wc_free(ptr)`.
+
+- `wasmcart.h` defines and exports both (weak, over `aligned_alloc`/`free`)
+  for Emscripten and wasi-sdk; `wgpu-wasi/` exports them for wasi-sdk WebGPU
+  carts; `rust/wasmcart-alloc` is a crate that exports them for Rust carts.
+- Optional: a cart that never reaches one of those paths needs neither. One
+  that does, without an allocator, gets a clear error at that call naming the
+  fix. Hosts never refuse to load a cart for lacking one.
+- Every pointer the cart returns is checked (non-zero, aligned, inside its
+  memory) before the host writes through it.
+- Removed: the fallback that wrote into the top of linear memory when a cart
+  had no allocator. It wrote over the cart's live heap or statics.
+- The WebGPU glue no longer calls into the cart's `malloc`, `memalign` or
+  Emscripten stack helpers; `wgpu-wasi/exports.txt` lists `wc_alloc`/`wc_free`
+  instead, and `emwgpu_wasi.c` no longer defines `memalign` or the stack
+  helpers.
+- Deprecated: a cart without `wc_alloc` that exports `malloc` (every
+  Emscripten cart and every cart linked with `-Wl,--export=malloc` before
+  0.32) still works through its malloc/free, with one warning per load. That
+  fallback will be removed.
+
+**Migrating:** rebuild against 0.32's `wasmcart.h` and you are done. If you
+hand-roll your exports (no wasmcart.h, no libc, or your own allocator), export
+`wc_alloc` and `wc_free`. A vendored copy of `wasmcart.h` must be updated
+(`scripts/sync-headers.sh`).
+
 A cart can run on the web from an unpacked **cart directory**, starting
 before its assets are downloaded.
 

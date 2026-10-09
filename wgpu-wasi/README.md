@@ -9,8 +9,8 @@ Emscripten link would otherwise supply:
 | File | What it is |
 | --- | --- |
 | `include/emscripten/emscripten.h` | Stand-in for the one Emscripten function the port uses (`emscripten_has_asyncify`, a host import). |
-| `emwgpu_wasi.c` | `memalign` (declared but not defined by wasi-libc) and Emscripten's three stack helpers, which the host's glue calls back into. |
-| `exports.txt` | The functions the cart must export for the glue. Generated with the glue (`scripts/build-wgpu-glue.mjs`), so it cannot drift. |
+| `emwgpu_wasi.c` | Makes sure the cart exports `wc_alloc`/`wc_free` (wasmcart.h's, unless the cart defines its own), which the host's glue allocates adapter info, mapped ranges and callback strings with (SPEC.md, "Cart memory the host writes"). |
+| `exports.txt` | The functions the cart must export for the glue, `wc_alloc` and `wc_free` included. Generated with the glue (`scripts/build-wgpu-glue.mjs`), so it cannot drift. |
 | `imports.txt` | Every function the kit lets a cart import from `env` (the glue's, plus `emscripten_has_asyncify`). Generated the same way. See "Auditing imports". |
 | `wasmcart-wgpu-wasi.cmake` | `wasmcart_wgpu_wasi(target EMDAWNWEBGPU_PKG <pkg>)` adds all of the above to one CMake target; `wasmcart_wgpu_wasi_library(name EMDAWNWEBGPU_PKG <pkg>)` compiles it once for many carts. |
 
