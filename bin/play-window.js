@@ -52,6 +52,16 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
   let glLastW = -1, glLastH = -1;
 
   const loadOpts = {};
+  // The JIT off switch (WASMCART_JIT=0) must be unmistakable: a banner on
+  // stderr and in the window title, since a cart that relies on runtime code
+  // generation may run slowly or not at all without it.
+  let jitOff = null;
+  const JIT_TITLE = 'wasmcart - RUNTIME CODE GENERATION OFF (WASMCART_JIT=0)';
+  loadOpts.onJitNotice = (msg) => {
+    jitOff = msg;
+    console.error(`\n*** ${msg} ***\n`);
+    try { window?.setTitle(JIT_TITLE); } catch { /* no window yet */ }
+  };
   if (opt.seed !== null) loadOpts.deterministic = { seed: opt.seed };
   // cart SRAM: a .sav next to the cart, loaded before wc_init, written on quit
   const savPath = savPathFor(saveIdentity);
@@ -124,6 +134,8 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
       try { window.setSize(want[0], want[1]); } catch { /* compositor said no */ }
     }
   }
+
+  if (jitOff) { try { window.setTitle(JIT_TITLE); } catch { /* title unsupported */ } }
 
   // Fullscreen is just another window size: the frame is letterboxed into
   // whatever the drawable turns out to be, so the cart's aspect ratio holds

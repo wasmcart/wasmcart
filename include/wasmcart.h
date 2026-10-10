@@ -524,6 +524,44 @@ static inline void wc_pad_rumble(unsigned int pad_id, float low, float high,
 static inline void wc_pad_rumble_stop(unsigned int pad_id) { (void)pad_id; }
 #endif
 
+// --- Runtime code generation (SPEC.md, "Runtime code generation") ---
+// Hand the host a wasm module generated at runtime; its exported functions land
+// in consecutive slots of the cart's __indirect_function_table. The module may
+// import only from namespace "cart" (the cart's own exports). Returns the first
+// slot, or WC_JIT_REFUSED / WC_JIT_PENDING (poll *result) / WC_JIT_BUSY.
+#define WC_JIT_REFUSED  (-1)
+#define WC_JIT_PENDING  (-2)
+#define WC_JIT_BUSY     (-3)
+// wc_jit_config keys (-1 = no opinion)
+#define WC_JIT_CFG_THRESHOLD      0
+#define WC_JIT_CFG_OFF            1
+#define WC_JIT_CFG_TIERUP         2
+#define WC_JIT_CFG_MAX_MODULE     3
+#define WC_JIT_CFG_MAX_TOTAL      4
+#define WC_JIT_CFG_MAX_FUNCTIONS  5
+#define WC_JIT_CFG_MAX_IN_FLIGHT  6
+// Restore generation: changes every time the host restores a save state or
+// rewinds. Read it at frame (or dispatch) entry; when it differs from the value
+// you stored, forget every slot and pending *result cell and re-link lazily.
+#define WC_JIT_CFG_RESTORE_GEN    7
+
+#ifdef __wasm__
+__attribute__((import_module("env"), import_name("wc_jit_link")))
+extern int wc_jit_link(const unsigned char *bytes, unsigned int len, int *result);
+
+__attribute__((import_module("env"), import_name("wc_jit_unlink")))
+extern void wc_jit_unlink(int first_slot);
+
+__attribute__((import_module("env"), import_name("wc_jit_config")))
+extern int wc_jit_config(int key);
+#else
+static inline int wc_jit_link(const unsigned char *bytes, unsigned int len, int *result) {
+    (void)bytes; (void)len; if (result) *result = -1; return -1;
+}
+static inline void wc_jit_unlink(int first_slot) { (void)first_slot; }
+static inline int wc_jit_config(int key) { (void)key; return -1; }
+#endif
+
 // --- Asset API (ABI v2) ---
 // For .wasc carts: load assets from the archive at runtime instead of embedding.
 // For bare .wasm carts these are not available (don't import them unless you need them).

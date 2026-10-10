@@ -6,6 +6,8 @@
  * wasi_thread_start(tid, start_arg).
  */
 
+import { createJitImports } from './jit.js';
+
 let inflateSync = null;
 
 let memory;
@@ -57,7 +59,7 @@ function loadAsset(pathPtr, pathLen, destPtr, maxSize) {
 }
 
 self.onmessage = async function(e) {
-  const { module: wasmModule, memory: sharedMemory, tid: threadId, startArg, assetConfig } = e.data;
+  const { module: wasmModule, memory: sharedMemory, tid: threadId, startArg, assetConfig, jitDisabled } = e.data;
   memory = sharedMemory;
   tid = threadId;
 
@@ -74,9 +76,21 @@ self.onmessage = async function(e) {
     }
   }
 
+  // Runtime code generation: this thread's instance has its own table and
+  // links into its own slots. A worker may compile synchronously; the
+  // off-switch notice is the main thread's to show.
+  let instance = null;
+  const jit = createJitImports({
+    getInstance: () => instance,
+    getMemory: () => memory,
+    mode: 'sync',
+    disabled: !!jitDisabled,
+    onNotice: () => {},
+  });
   const imports = {
     env: {
       memory,
+      ...jit.imports,
       wc_log: (ptr, len) => {
         const bytes = new Uint8Array(memory.buffer).slice(ptr, ptr + len);
         const text = new TextDecoder().decode(bytes);
@@ -168,7 +182,7 @@ self.onmessage = async function(e) {
   }
 
   try {
-    const instance = await WebAssembly.instantiate(wasmModule, imports);
+    instance = await WebAssembly.instantiate(wasmModule, imports);
     instance.exports.wasi_thread_start(tid, startArg);
     self.postMessage({ type: 'exit', tid });
   } catch (err) {

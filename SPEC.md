@@ -1094,6 +1094,122 @@ native window and in a browser.
 - Rumble does not widen the security boundary: it is write-only to hardware the host
   already owns, and carries no data back to the cart beyond the capability bit.
 
+## Runtime code generation
+
+For carts that compile code while they run: a language VM turning hot functions
+into WebAssembly. Wasm cannot instantiate a module by itself, so the cart hands
+the bytes to the host, and the host's wasm engine compiling them is the JIT.
+Optional for carts: one that never calls these is unaffected. **Every host
+provides them**, so a cart that calls them may rely on them.
+
+```c
+int32_t wc_jit_link(const uint8_t *bytes, uint32_t len, int32_t *result);
+void    wc_jit_unlink(int32_t first_slot);
+int32_t wc_jit_config(int32_t key);
+```
+
+### `wc_jit_link`
+
+`bytes`/`len` is a complete wasm module in cart memory; the host copies it
+before returning, so the buffer is the cart's again at once. The module may
+import **only from namespace `cart`**, and each import resolves by name to the
+cart instance's own export (its `memory`, `__indirect_function_table`, or an
+exported function). Every function the module exports is installed, in export
+order, into consecutive slots of the cart's exported, growable
+`__indirect_function_table`; the cart calls them with `call_indirect` (in C,
+through a function pointer whose value is the slot).
+
+| Return | Meaning |
+|---|---|
+| `>= 0` | Installed: the slot of the first exported function. |
+| `-1` | Refused: invalid module, an import outside `cart`, a limit exceeded, or the host's switch is off. Keep interpreting. |
+| `-2` | Pending: the host compiles asynchronously and later writes the first slot, or `-1`, into `*result`, always between two calls into the cart, never during one. The cart stores `-2` in the cell before calling and polls it. |
+| `-3` | Try later: too many compiles in flight. Not a refusal; link again later. |
+
+Every outcome is also written to `*result` (when `result` is not 0). Whether a
+host compiles synchronously or asynchronously is its choice, and may depend on
+size (browsers forbid synchronous compiles over 4 KB on the main thread), so a
+cart must handle `-2`.
+
+### `wc_jit_unlink`
+
+Frees the slots of a module installed by `wc_jit_link` (pass the first slot it
+returned). Calling through them afterwards traps, and a later link may reuse
+them. An unknown slot is ignored. A long-running cart unlinks what it no longer
+needs so it does not reach the limits.
+
+### `wc_jit_config`
+
+Host advice; `-1` means no opinion.
+
+| Key | Value |
+|---|---|
+| 0 | Hotness threshold (0 = compile everything on first use) |
+| 1 | `1` = compile nothing: the host's switch is off |
+| 2 | Engine tier-up interval |
+| 3 | Max bytes of one module |
+| 4 | Max total bytes linked at once |
+| 5 | Max functions linked at once |
+| 6 | Max compiles in flight |
+| 7 | Restore generation: `0` until the host first restores a state into this instance; each restore then sets it from the restored memory (below), so the same state gives the same value on every host and peer. Never `-1`. |
+
+### Rules for hosts
+
+- **Ownership.** A link belongs to the instance that asked for it. Slots,
+  limits and in-flight compiles are per instance: a worker thread's instance
+  has its own table and never sees slots installed in another. An asynchronous
+  result for an instance that no longer exists is dropped, never installed into
+  or written into another cart.
+- **Limits.** Every host accepts at least these per instance (keys 3-6 report
+  the host's actual values, never lower): one module 4 MiB; 256 MiB linked at
+  once; 65536 functions linked at once; 32 compiles in flight. Unlinking gives
+  bytes and functions back.
+- **Save states and rewind.** Slots are not carried across a restore. Right
+  after the host writes a state back, and before the cart runs again, it does
+  one step: every slot linked before is unlinked (calling it traps), any
+  compile in flight is dropped (its `*result` cell is never written), and the
+  restore generation (key 7) changes. The generation lives in the host, per
+  instance, never in cart memory, so a restore never brings an old value back.
+  (The JS hosts: `jitUnlinkAll()`.)
+- **The generation's value.** Every host computes it the same way, so netplay
+  peers and replays stay deterministic: FNV-1a 32 over the cart's whole linear
+  memory after the write-back, read as little-endian 32-bit words (`h =
+  2166136261`, then per word `h = (h XOR word) * 16777619 mod 2^32`); `g = h AND
+  0x7fffffff`; `0` becomes `1`; if `g` equals the current value it becomes `g +
+  1` (`2^31-1` wraps to `1`). Known answer: 64 KiB with byte `i` = `(i * 31 + 7)
+  AND 255`, current `0`, gives `1954405829`. A state saved elsewhere carries the
+  value its own memory stored, which matches only by hash collision.
+- **No silent reuse.** Slots freed by a restore are not handed out again until
+  the cart has read key 7 since that restore. Until then a slot number from
+  before the restore can only trap, never reach other code. (Slots the cart
+  unlinks itself are reusable at once.)
+- **The off switch.** A host may let its user turn runtime code generation off
+  (`jit: false`, `WASMCART_JIT=0`). It is a breaking setting, so it is loud: the
+  cart sees `-1` from every link and `1` from key 1, and on the cart's first JIT
+  call the user is told, where they are looking (window, page, tool output),
+  that the setting is off, so a misbehaving cart is blamed on the switch.
+
+### Rules for engines
+
+- Behave the same with and without it: generated code computes exactly what
+  the interpreter would (wasm arithmetic, floats included, is deterministic).
+  Prove it by running your test suite with everything compiled.
+- On `-1`, keep interpreting. If you cannot run without it, stop with a message
+  that says so.
+- Detect restores with key 7. Read it once at start and store it; read it
+  again at every frame or dispatch entry, before calling any slot. When it
+  differs, forget every slot number and every pending `*result` cell (a
+  restore drops compiles in flight, so a cell left at `-2` never settles),
+  store the new value, and re-link lazily as functions get hot again.
+
+### Notes
+
+- **No new authority.** Generated code can import nothing the cart does not
+  already export, so it has exactly the cart's capabilities. No cart is
+  trusted more than another: no allowlists, signatures or engine tiers.
+- **CSP.** A web page whose CSP lacks `'wasm-unsafe-eval'` cannot compile any
+  wasm, the cart included, so there is no half-working state.
+
 ## Keyboard Input
 
 Opt-in by setting `WC_FLAG_KEYBOARD` in `wc_info_t.flags`. Both shared-memory state and event callbacks. **The flag is the only gate** (see Manifest below).
@@ -1310,6 +1426,8 @@ Auditing a wasmcart host therefore means auditing one list, and that list is sho
   `wc_pad_has_rumble`, `wc_pad_rumble`, `wc_pad_rumble_stop`
 - **Assets (read-only, path-validated)** - `wc_asset_size`, `wc_load_asset`
 - **Network (opt-in, allowlisted)** - the `wc_peer_*` family
+- **Runtime code generation** - `wc_jit_link`, `wc_jit_unlink`, `wc_jit_config`: a
+  linked module imports only the cart's own exports, never a host function
 - **GPU** - the `gl` module, and for WebGPU carts the frozen emdawnwebgpu
   set (see WebGPU). Every WebGPU call is validated by the implementation the
   host runs on (Dawn, or the browser's), the same validation a browser applies
