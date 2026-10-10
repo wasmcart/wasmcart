@@ -561,8 +561,9 @@ const wgpu2 = await page.evaluate(async () => {
   host.runFrame([]); // frame 9, read in the task that drew it
   const g = await host.readGpuFrame();
   for (let i = 0; i < 5; i++) { host.runFrame([]); await tick(); }
-  // the uncaptured-error event may take more turns to arrive in a browser
-  for (let i = 0; i < 60 && !field(host, 'edge.uncaptured'); i++) { host.runFrame([]); await new Promise((r) => setTimeout(r, 10)); }
+  // a browser can take several frames to grant the second device, and the
+  // cart raises the error and then destroys the device only after it has it
+  for (let i = 0; i < 60 && !field(host, 'edge.lost'); i++) { host.runFrame([]); await new Promise((r) => setTimeout(r, 10)); }
   host.runFrame([]);
   f = await host.readGpuFrame();
   out.edges = { adapter: field(host, 'edge.adapter'), device: field(host, 'edge.device'), separate: field(host, 'edge.separate'),
@@ -588,13 +589,8 @@ check('webgpu textures: every sampler / mip / render-target case matches (the ca
 }
 check('webgpu example: examples/webgpu-hello draws its textured triangle', wgpu2.hello,
       { size: [320, 240], px: [[26, 26, 38], [255, 0, 0], [0, 0, 255], [255, 255, 255]] });
-// Not asserted: whether an uncaptured error reaches the second device's
-// callback. It does on the Node host and wasmcart-native; Chromium has not
-// delivered it (docs/webgpu.md, "Errors and device loss").
-console.log(`  (uncaptured errors delivered to the cart's own device: ${wgpu2.edges.uncaptured})`);
-delete wgpu2.edges.uncaptured;
-check('webgpu edges: second device, device loss, resize',
-      wgpu2.edges, { adapter: 1, device: 1, separate: 1, lost: 2, info: [160, 120], before: [128, 96, 0, 255, 0], after: [160, 120, 0, 0, 255] });
+check('webgpu edges: second device, its uncaptured error, device loss, resize',
+      wgpu2.edges, { adapter: 1, device: 1, separate: 1, uncaptured: 1, lost: 2, info: [160, 120], before: [128, 96, 0, 255, 0], after: [160, 120, 0, 0, 255] });
 check('webgpu: 600 frames of create / use / release, no errors', wgpu2.vram, { frames: 600, errors: 0 });
 
 // ─── WebGPU: released textures and buffers are destroyed once unused ──────

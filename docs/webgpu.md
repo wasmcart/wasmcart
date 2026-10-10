@@ -289,9 +289,11 @@ What a cart can see today:
   already satisfies returns the host's device; one that asks for more
   features or limits gets a separate device, or a failure if the hardware
   cannot meet it. Rendering to the surface with a separate device is allowed:
-  configure the surface with that device. On the Node host and
-  wasmcart-native an uncaptured error reaches that device's callback; in
-  Chromium it did not arrive within a few dozen frames in our test.
+  configure the surface with that device. An uncaptured error reaches that
+  device's callback on every host (Node, wasmcart-native, Chromium). The
+  device arrives in its callback between frames, and a browser can take
+  several frames to grant it (Chromium: about four at one frame per task),
+  so use it only once the callback has run.
 - **Losing the host's device** (a driver reset, a GPU removed) is not
   signalled to the cart: the host logs it and keeps calling `wc_render`, whose
   WebGPU calls then do nothing, and the frame stays black. There is no

@@ -9,10 +9,13 @@
  *             uncaptured-error callback and a device-lost callback, asking for
  *             maxTextureDimension2D 8192 (above the compatibility floor of
  *             4096) so the host must make a separate device for it
- *   frame 4   an invalid buffer on that device, outside any error scope
+ *   frame 4   an invalid buffer on that device, outside any error scope (or
+ *             the first frame after it, if the device arrives later: a
+ *             browser can take several frames to grant it)
  *   frame 5   an invalid buffer on the HOST device (emscripten_webgpu_get_device),
  *             outside any error scope: the cart has no callback for that device
- *   frame 8   destroys its second device (never the host's)
+ *   frame 8   destroys its second device (never the host's); at least four
+ *             frames after the invalid buffer, so its error is not lost with it
  *   frame 10  reconfigures the #canvas surface from 128x96 to 160x120 and
  *             writes the new size into wc_info_t
  *
@@ -47,6 +50,7 @@ static WGPUSurface surface;
 static WGPUTextureFormat format;
 
 static uint32_t edge_adapter, edge_device, edge_separate, edge_uncaptured, edge_lost, edge_frames;
+static uint32_t bad_at;  /* the frame of the invalid buffer on the second device */
 static uint32_t edge_size[2] = { 128, 96 };
 WC_DEBUG_FIELDS(
     WC_DBG("edge.adapter", edge_adapter, WC_DBG_U32),
@@ -137,9 +141,9 @@ void wc_init(void) {
 __attribute__((export_name("wc_render")))
 void wc_render(void) {
     edge_frames++;
-    if (edge_frames == 4 && second) bad_buffer(second);
+    if (edge_frames >= 4 && second && !bad_at) { bad_buffer(second); bad_at = edge_frames; }
     if (edge_frames == 5) bad_buffer(device);
-    if (edge_frames == 8 && second) wgpuDeviceDestroy(second);
+    if (edge_frames >= 8 && bad_at && edge_frames == (bad_at + 4 > 8 ? bad_at + 4 : 8)) wgpuDeviceDestroy(second);
     if (edge_frames == 10) {
         configure(160, 120);
         info.width = 160;
