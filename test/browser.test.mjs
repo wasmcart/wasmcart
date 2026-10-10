@@ -587,8 +587,14 @@ check('webgpu textures: every sampler / mip / render-target case matches (the ca
   const bad = wgpu2.tex.cells.map((c, i) => (c.every((v, k) => Math.abs(v - want[i][k]) <= tol[i]) ? null : `cell ${i}: ${c}`)).filter(Boolean);
   check('webgpu textures: the host reads back the same cells', bad, []);
 }
-check('webgpu example: examples/webgpu-hello draws its textured triangle', wgpu2.hello,
-      { size: [320, 240], px: [[26, 26, 38], [255, 0, 0], [0, 0, 255], [255, 255, 255]] });
+{
+  // within 1 per channel, as on the Node host (test/wgpu-example.test.js):
+  // the background's 0.1 clear is 25.5, which GPUs round either way
+  const want = [[26, 26, 38], [255, 0, 0], [0, 0, 255], [255, 255, 255]];
+  const near = wgpu2.hello.px.every((c, i) => c.every((v, k) => Math.abs(v - want[i][k]) <= 1));
+  check('webgpu example: examples/webgpu-hello draws its textured triangle', [wgpu2.hello.size, near ? want : wgpu2.hello.px],
+        [[320, 240], want]);
+}
 check('webgpu edges: second device, its uncaptured error, device loss, resize',
       wgpu2.edges, { adapter: 1, device: 1, separate: 1, uncaptured: 1, lost: 2, info: [160, 120], before: [128, 96, 0, 255, 0], after: [160, 120, 0, 0, 255] });
 check('webgpu: 600 frames of create / use / release, no errors', wgpu2.vram, { frames: 600, errors: 0 });
