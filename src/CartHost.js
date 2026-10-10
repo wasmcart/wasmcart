@@ -317,6 +317,11 @@ export class CartHost {
     this.usesGL = false;       // true if cart imports from 'gl' module
     this.usesWgpu = false;     // true if the cart runs on WebGPU (SPEC.md, WebGPU)
     this._wgpu = null;         // the cart's WebGPU session (src/wgpu/host.js)
+    // {reason, message} once the host's WebGPU device was lost while the cart
+    // ran (load option onGpuLost is called then too); null otherwise. From
+    // then on runFrame no longer calls wc_render: every WebGPU call would do
+    // nothing and the frame would stay black (docs/webgpu.md).
+    this.gpuLost = null;
 
     // Asset index for .wasc carts
     this._assetIndex = null;   // Map<path, entry>
@@ -536,6 +541,7 @@ export class CartHost {
         width: m.width || options.preferredWidth || DEFAULT_GL_W,
         height: m.height || options.preferredHeight || DEFAULT_GL_H,
         log: msg => console.error(msg),
+        onLost: info => { this.gpuLost = info; try { options.onGpuLost?.(info); } catch (e) { console.error(e); } },
       });
       this.usesWgpu = true;
       this.usesGL = false;
@@ -1050,6 +1056,7 @@ export class CartHost {
     // some browsers, a timer-driven host may not check) stays correct without
     // having to know about lifecycle at all.
     if (this._suspended) return this._lastFrame ?? null;
+    if (this.gpuLost) return this._lastFrame ?? null;
 
     // A WebGPU callback that could not get cart memory (no wc_alloc, or it
     // failed) stops the cart here, with the allocator's error.

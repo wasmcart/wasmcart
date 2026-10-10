@@ -208,7 +208,8 @@ shader, pipeline and bind group follow in [`hello.c`](../examples/webgpu-hello/h
   contended lock in `wc_render`): poll workers instead.
 - **WGSL only.** Browsers accept nothing else, so neither does the tier.
 - **Do not destroy the host's device.** Nothing stops a cart from calling
-  `wgpuDeviceDestroy` on it, but every later frame then draws nothing.
+  `wgpuDeviceDestroy` on it, but the host then treats it as lost and stops
+  the cart (see "Errors and device loss").
 
 ## The frame loop (for host authors and embedders)
 
@@ -295,9 +296,19 @@ What a cart can see today:
   several frames to grant it (Chromium: about four at one frame per task),
   so use it only once the callback has run.
 - **Losing the host's device** (a driver reset, a GPU removed) is not
-  signalled to the cart: the host logs it and keeps calling `wc_render`, whose
-  WebGPU calls then do nothing, and the frame stays black. There is no
-  recovery path in the tier yet.
+  signalled to the cart, and the cart cannot continue: every WebGPU call
+  would do nothing and the frame would stay black. The host stops calling
+  `wc_render` and tells its embedder instead: `CartHost` and `CartHostWeb`
+  set `host.gpuLost` to `{ reason, message }` (the `GPUDeviceLostInfo`'s) and
+  call the load option `onGpuLost(info)` once; `runFrame()` then returns the
+  last frame without running the cart. A page should show a message such as
+  "the GPU was reset; reload to continue". The bundled players do this
+  themselves: `wasmcart-play` and wasmcart-native print that the GPU device
+  was lost and exit with status 4 (wasmcart-native also shows a message box
+  when it has a window). Losing a device the cart requested itself is
+  delivered to that device's device-lost callback, as above; the cart can
+  keep going on the host's device. There is no way yet for a cart to get a
+  new device after the host's is lost.
 
 ## Limits and features
 
@@ -396,8 +407,8 @@ on these hosts):
 
 - The import set is frozen at emdawnwebgpu `v20261002.154047`; a cart built
   against another release can be refused or misread.
-- No uncaptured-error or device-lost callback on the host's device, and no
-  recovery from device loss (see "Errors and device loss").
+- No uncaptured-error or device-lost callback on the host's device; losing
+  it stops the cart, which cannot recover (see "Errors and device loss").
 - No blocking waits: `wgpuInstanceWaitAny` with a timeout is not supported
   (the `TimedWaitAny` instance feature is absent).
 - Main thread only; workers may not call WebGPU.

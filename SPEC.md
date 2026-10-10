@@ -394,7 +394,9 @@ which also exports the functions the glue calls back into, listed in
   higher; a cart must not depend on that.) The device has no uncaptured-error
   or device-lost callback the cart can see: see
   [docs/webgpu.md](docs/webgpu.md), "Errors and device loss", for what each
-  host does today.
+  host does today. A host whose device is lost while the cart runs stops
+  calling `wc_render` (the cart cannot continue on it) and reports the loss
+  to its embedder or user rather than presenting black frames.
 - **More features or limits.** A cart that needs them asks with
   `wgpuInstanceRequestAdapter` / `wgpuAdapterRequestDevice` and its required
   features and limits, and gets a device made for exactly that request, or a

@@ -244,6 +244,11 @@ export class CartHostWeb {
     this.usesGL = false;
     this.usesWgpu = false;     // true if the cart runs on WebGPU (SPEC.md, WebGPU)
     this._wgpu = null;
+    // {reason, message} once the host's WebGPU device was lost while the cart
+    // ran (load option onGpuLost is called then too); null otherwise. From
+    // then on runFrame no longer calls wc_render: every WebGPU call would do
+    // nothing and the frame would stay black (docs/webgpu.md).
+    this.gpuLost = null;
 
     // Asset index for .wasc carts
     this._assetIndex = null;
@@ -444,6 +449,7 @@ export class CartHostWeb {
         width: options.preferredWidth || 640,
         height: options.preferredHeight || 480,
         log: msg => console.warn(msg),
+        onLost: info => { this.gpuLost = info; try { options.onGpuLost?.(info); } catch (e) { console.warn(e); } },
       });
       this.usesWgpu = true;
       options = { ...options, flags: (options.flags || 0) | HOST_FLAG_GPU_WGPU };
@@ -913,6 +919,7 @@ export class CartHostWeb {
     // throwing keeps a host whose rAF loop is still ticking correct without it
     // having to know about lifecycle.
     if (this._suspended) return this._lastFrame ?? null;
+    if (this.gpuLost) return this._lastFrame ?? null;
 
     // A lazy directory cart can suspend mid-frame on an asset fetch, so its
     // frame is a promise: `await host.runFrame(pads)` works for every cart.

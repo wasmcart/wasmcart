@@ -111,6 +111,40 @@ test('released textures and buffers stay usable through a kept view, bind group 
   }
 });
 
+// Losing the host's device (docs/webgpu.md, "Errors and device loss"): the
+// host stops calling wc_render and reports it once, instead of a black frame
+// forever. Forced here by destroying the host's device from outside the cart.
+test('losing the host\'s device stops the cart and is reported once (gpuLost, onGpuLost)', async () => {
+  const host = new CartHost();
+  const reports = [];
+  await host.load(fixture('wgpurelease.wasc'), { onGpuLost: (info) => reports.push(info) });
+  try {
+    for (let i = 0; i < 5; i++) { host.runFrame(); await tick(); }
+    assert.equal(host.gpuLost, null);
+    host.getGpuDevice().destroy();
+    // the loss arrives a few event-loop turns later (device.lost)
+    for (let i = 0; i < 100 && !host.gpuLost; i++) { host.runFrame(); await tick(); }
+    assert.equal(host.gpuLost?.reason, 'destroyed');
+    const frames = host.readDebugValue('rel.frames').value;
+    for (let i = 0; i < 10; i++) { host.runFrame(); await tick(); }
+    assert.equal(host.readDebugValue('rel.frames').value, frames, 'wc_render is no longer called');
+    assert.equal(reports.length, 1, 'onGpuLost is called once');
+    assert.equal(reports[0], host.gpuLost);
+  } finally {
+    host.destroy();
+  }
+  await tick();
+  assert.equal(reports.length, 1, 'the host destroying its own device at teardown is not a loss');
+  const quiet = new CartHost();
+  let called = false;
+  await quiet.load(fixture('wgpurelease.wasc'), { onGpuLost: () => { called = true; } });
+  quiet.runFrame(); await tick();
+  quiet.destroy();
+  for (let i = 0; i < 3; i++) await tick();
+  assert.equal(called, false);
+  assert.equal(quiet.gpuLost, null);
+});
+
 // Opt-in (WASMCART_VRAM_TEST=1): it reads the machine's GPU memory, which other
 // processes and the driver's own caching move, so it is a measurement for a
 // quiet machine rather than a default test.

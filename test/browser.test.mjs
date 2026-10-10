@@ -637,6 +637,39 @@ check('webgpu release: no validation errors, the released three stop drawing', [
       [40, 0, [[0, 0, 0], [0, 0, 0], [0, 0, 0], [255, 255, 0]]]);
 check('webgpu release: released textures and buffers are destroyed once unused', rel.destroyed, [true, true]);
 
+// ─── WebGPU: losing the host's device stops the cart and is reported ──────
+// (test/wgpu-claim.test.js on the Node host). Forced by destroying the
+// host's device from the page.
+const lost = await page.evaluate(async () => {
+  const { CartHostWeb } = await import('/web.js');
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const reports = [];
+  const host = new CartHostWeb();
+  await host.load('/test/fixtures/wgpurelease.wasc', { onGpuLost: (info) => reports.push(info) });
+  const frames = () => {
+    const ex = host.instance.exports, dv = new DataView(ex.memory.buffer);
+    for (let p = ex.wc_debug_state(); dv.getUint32(p, true); p += 16) {
+      let s = '';
+      for (let q = dv.getUint32(p, true), b; (b = dv.getUint8(q)); q++) s += String.fromCharCode(b);
+      if (s === 'rel.frames') return dv.getUint32(dv.getUint32(p + 4, true), true);
+    }
+  };
+  for (let i = 0; i < 5; i++) { host.runFrame([]); await tick(); }
+  const before = host.gpuLost;
+  host.getGpuDevice().destroy();
+  // the loss arrives a few tasks later (device.lost); frames keep running until then
+  for (let i = 0; i < 100 && !host.gpuLost; i++) { host.runFrame([]); await new Promise((r) => setTimeout(r, 5)); }
+  const at = frames();
+  for (let i = 0; i < 10; i++) { host.runFrame([]); await tick(); }
+  const out = { before, reason: host.gpuLost?.reason, stopped: frames() === at, reports: reports.length };
+  host.destroy();
+  await tick();
+  out.afterDestroy = reports.length;
+  return out;
+});
+check('webgpu device loss: the host stops calling wc_render and reports it once', lost,
+      { before: null, reason: 'destroyed', stopped: true, reports: 1, afterDestroy: 1 });
+
 // GPU memory over a long run of create / use / release (test/fixtures/wgpuvram.c),
 // read from the kernel's DRM accounting of Chromium's GPU process (Linux, a
 // hardware adapter: on Linux pass '--enable-features=Vulkan --use-angle=vulkan

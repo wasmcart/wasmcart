@@ -153,8 +153,11 @@ const HOST_USAGE = 0x01 /* COPY_SRC */ | 0x04 /* TEXTURE_BINDING */;
  * @param {object} [o.globals] - where the WebGPU classes live (GPUValidationError, ...):
  *   globalThis in a browser, webgpu-node's `globals` in Node
  * @param {(msg:string)=>void} [o.log]
+ * @param {(info:{reason:string,message:string})=>void} [o.onLost] - called once
+ *   if the host's device is lost while the session is open (a driver reset, a
+ *   GPU removed, or something destroying it); the host stops the cart then
  */
-export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdapter, createCanvas = createTextureCanvas, width, height, adapterOptions, globals = globalThis, log = () => {} }) {
+export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdapter, createCanvas = createTextureCanvas, width, height, adapterOptions, globals = globalThis, log = () => {}, onLost = () => {} }) {
   const { factory, manifest } = await gluePromise();
   // The WebGPU classes the glue names as globals (GPUValidationError, ...):
   // window's in a browser, the implementation's own (webgpu-node `globals`)
@@ -183,8 +186,18 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
   // for exactly that request (see cartAdapter below), as in a browser.
   const device = await adapter.requestDevice();
   const extraDevices = [];
+  // The host's device lost while the cart runs: every WebGPU call after it
+  // does nothing, so the host stops calling wc_render and tells its embedder
+  // (docs/webgpu.md, "Errors and device loss"). Not when the host itself
+  // destroyed it at teardown.
+  let closed = false;
   let lost = null;
-  device.lost.then(info => { lost = info; if (info.reason !== 'destroyed') log(`wasmcart: WebGPU device lost: ${info.message}`); });
+  device.lost.then(info => {
+    if (closed) return;
+    lost = { reason: info.reason || 'unknown', message: info.message || '' };
+    log(`wasmcart: the WebGPU device was lost (${lost.reason}${lost.message ? ': ' + lost.message : ''}); the cart is stopped`);
+    onLost(lost);
+  });
 
   // The canvas the cart renders into. Its context is the real one, with
   // COPY_SRC forced into every configuration so frames can be read back.
@@ -350,8 +363,6 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
     };
   }
 
-  let closed = false;
-
   // One full-screen-triangle pipeline per target format, for drawTo().
   const blitters = new Map();
   function blitter(dev, format) {
@@ -461,6 +472,8 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
       return true;
     },
 
+    /** {reason, message} once the host's device was lost while the cart
+     *  ran (not at teardown), else null. */
     get lost() { return lost; },
 
     /** Textures and buffers destroyed after the cart released them (tests). */

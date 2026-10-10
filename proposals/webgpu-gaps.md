@@ -1,8 +1,8 @@
 # Proposals: WebGPU tier gaps that need a spec or behaviour change
 
-Status (2026-10-10): 2 and 4 adopted into SPEC.md for 0.32; 1 is docs-only
-for 0.32, glue destroy (a) after it; 3 deferred past 0.32. Otherwise not
-implemented. docs/webgpu.md documents today's behaviour for each item; the
+Status (2026-10-10): 2 and 4 adopted into SPEC.md for 0.32; 1 (a), glue
+destroy, implemented; 3 (a), host stops and reports, implemented (b-d not).
+Otherwise not implemented. docs/webgpu.md documents today's behaviour for each item; the
 wording below is what SPEC.md could say if a change is approved. Measured on
 2026-10-09 with test/fixtures/wgpuedges.c and wgpuvram.c (Node host, Chromium,
 wasmcart-native; AMD RX 7600, Linux).
@@ -54,8 +54,9 @@ has no call to add one. Errors outside an error scope go to the host's log
 (stderr on Node, the page console in a browser). When the host's device is
 lost the host logs it and keeps calling `wc_render`; every WebGPU call then
 does nothing and the frame stays black. A device the cart requests itself
-does get both callbacks (on Node and wasmcart-native the uncaptured error
-reached the cart; in Chromium it did not arrive within ~70 frames).
+does get both callbacks (on every host, Chromium included: the earlier
+"never arrives in Chromium" was the fixture raising the error before
+Chromium had granted the device).
 
 **Options.**
 - (a) Host: on loss of its device, stop calling `wc_render` and report a load
