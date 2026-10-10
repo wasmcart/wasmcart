@@ -85,5 +85,6 @@ above `fb_ptr`, which for 0 is all of it).
 framebuffer bound check does not apply."
 
 Also found: wasmcart-native's `--shot` never wrote a frame after a WebGPU cart
-reconfigured its surface to a new size (the run had to be killed). A
-wasmcart-native bug, reported here rather than fixed (not in this repo).
+reconfigured its surface to a new size (the run had to be killed): it read
+wc_info_t only at load. Fixed in wasmcart-native (branch webgpu-fixes): it
+re-reads a WebGPU cart's size after every wc_render.

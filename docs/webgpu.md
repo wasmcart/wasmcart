@@ -267,8 +267,8 @@ The frame is the size the cart configured the surface with. To change it, call
 into your `wc_info_t`: the host re-reads `width`/`height` after every
 `wc_render` (SPEC.md, "Resolution changes") and uses them to scale and
 letterbox. [`test/fixtures/wgpuedges.c`](../test/fixtures/wgpuedges.c) does this
-mid-run, and the Node and browser hosts show and read back the new size from
-that frame on.
+mid-run, and the Node, browser and wasmcart-native hosts show and read back
+the new size from that frame on.
 
 ## Errors and device loss
 
@@ -417,8 +417,6 @@ on these hosts):
   "Determinism").
 - Hosts: Firefox on Linux needs a preference set, Safari is untested, and the
   Android and libretro hosts have no WebGPU yet.
-- wasmcart-native: `--shot` does not write a frame after a WebGPU cart
-  reconfigures its surface to a new size.
 
 ## Regenerating the host glue
 
