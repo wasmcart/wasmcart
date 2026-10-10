@@ -59,8 +59,11 @@ test('a WebGPU cart whose GPU device is lost: the player says so and exits 4', (
 test('headless --shot of a WebGPU cart is its rendered frame', async () => {
   const shot = join(os.tmpdir(), `play-wgpu-${process.pid}.png`);
   try {
-    const out = play([join(HERE, 'fixtures', 'wgpucart.wasc'), '--frames', '12', '--shot', shot]);
-    assert.match(out, /ran 12 frames\s+256x192/);
+    // The compute result arrives through mapAsync between frames, after however
+    // many frames the adapter takes (a software one in CI can need dozens), so
+    // run long enough that it has certainly landed before the shot.
+    const out = play([join(HERE, 'fixtures', 'wgpucart.wasc'), '--frames', '240', '--shot', shot]);
+    assert.match(out, /ran 240 frames\s+256x192/);
     // Decode the PNG (filter types 0-4, 8-bit RGB or RGBA) to check pixels.
     const { inflateSync } = await import('node:zlib');
     const b = readFileSync(shot);
