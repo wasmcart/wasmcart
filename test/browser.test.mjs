@@ -419,6 +419,27 @@ check('jit: async link on the main thread', jit.async, { modules: 1, unlinked: 1
 check('jit: restore generation known answer (same as Node and native)', jit.generation, { kat: 1954405829 });
 check('jit: off switch refuses and shows a banner', jit.off, { refused: 1, banner: true, bannerGone: true });
 
+// ─── Input actions (SPEC.md) in a real browser ────────────────────────────
+// fixtures/actioncart.c: Pedal (A) and Steer (left stick) in set "driving".
+const actions = await page.evaluate(async () => {
+  const { CartHostWeb, IN, DEVICE, GLYPH, padOrigin } = await import('/web.js');
+  const bytes = new Uint8Array(await (await fetch('/test/fixtures/actioncart.wasc')).arrayBuffer());
+  const host = new CartHostWeb();
+  await host.load(bytes, {});
+  host.setInputDescriber((p, input, dev) => (dev === DEVICE.GAMEPAD ? padOrigin(GLYPH.NINTENDO, input) : null));
+  host.setInputDevice(0, DEVICE.GAMEPAD);
+  host.runFrame([{ connected: true, buttons: 1 }]);
+  const names = host.getActions(0).map((a) => a.name);
+  const out = { names, rev: host.inputRevision > 1 };
+  host.setActionBinding(0, 1, IN.B);
+  host.runFrame([{ connected: true, buttons: 1 }]);
+  out.remapped = host.getActions(0)[1].input;
+  host.destroy();
+  return out;
+});
+check('actions: declared through the real imports', actions.names, ['Confirm', 'Pedal', 'Steer']);
+check('actions: revision moves, remap is in effect', [actions.rev, actions.remapped], [true, 1]);
+
 // ─── WebGPU (SPEC.md, "WebGPU") on the browser's own navigator.gpu ────────
 // Same fixtures and contract as test/wgpu.test.js on the Node host. Frames
 // are read in the SAME task as runFrame: a browser canvas hands out a fresh

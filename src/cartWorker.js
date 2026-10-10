@@ -11,6 +11,7 @@
 
 import { workerData, parentPort } from 'worker_threads';
 import { createJitImports } from './jit.js';
+import { WORKER_ACTION_IMPORTS } from './actions.js';
 import { openSync, readSync, closeSync, statSync } from 'fs';
 import { inflateRawSync } from 'zlib';
 
@@ -98,6 +99,7 @@ const imports = {
   env: {
     memory,
     ...jit.imports,
+    ...WORKER_ACTION_IMPORTS, // input actions are main-thread state; threads get "unknown"
     wc_log: (ptr, len) => {
       const bytes = new Uint8Array(memory.buffer).slice(ptr, ptr + len);
       const text = new TextDecoder().decode(bytes);

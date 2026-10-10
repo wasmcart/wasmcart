@@ -7,6 +7,7 @@
  */
 
 import { createJitImports } from './jit.js';
+import { WORKER_ACTION_IMPORTS } from './actions.js';
 
 let inflateSync = null;
 
@@ -91,6 +92,7 @@ self.onmessage = async function(e) {
     env: {
       memory,
       ...jit.imports,
+      ...WORKER_ACTION_IMPORTS, // input actions are main-thread state; threads get "unknown"
       wc_log: (ptr, len) => {
         const bytes = new Uint8Array(memory.buffer).slice(ptr, ptr + len);
         const text = new TextDecoder().decode(bytes);

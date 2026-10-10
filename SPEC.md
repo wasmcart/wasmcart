@@ -591,6 +591,78 @@ Editing keys stay on the keyboard ABI: backspace, arrows and enter are key
 presses rather than characters, so a cart drawing its own text field reads
 those through `wc_kb_on_down` and appends characters from `wc_on_text`.
 
+## Input actions
+
+Steam Input style. A cart declares **actions** ("Jump", "Steer") instead of
+reading buttons, and the host owns which physical input drives each one: its
+defaults, the user's remaps, the device in hand. The host can then tell the
+cart what an action is on, so prompts read "Press [Cross] to Jump" on a
+PlayStation pad and "Press [Space] to Jump" on a keyboard, and the host's own
+remap or help screens can name actions instead of pad positions.
+
+**Optional for carts, required of hosts.** A cart that never calls these
+imports is unaffected and reads `wc_pad_t` as before. Every host provides all
+of them, so a cart that uses them always instantiates; a host that cannot know
+an answer gives "unknown".
+
+```c
+// Declaring (any time; usually wc_init). Names are UTF-8, 1-64 bytes; the host copies.
+int32_t  wc_action_set_add(const char* name, uint32_t len);   // set id, -1 refused
+int32_t  wc_action_add(int32_t set, int32_t kind, int32_t default_input,
+                       const char* name, uint32_t len);       // action id, -1 refused
+void     wc_action_set_activate(int32_t player, int32_t set);
+
+// State, this frame
+int32_t  wc_action_digital(int32_t player, int32_t action);   // 0 / 1
+int32_t  wc_action_analog(int32_t player, int32_t action, float* xy); // writes x, y; returns 1 if nonzero
+
+// Origins
+int32_t  wc_action_origin(int32_t player, int32_t action, char* buf, uint32_t cap);
+int32_t  wc_action_glyph(int32_t player, int32_t action);
+int32_t  wc_input_device(int32_t player);
+uint32_t wc_input_revision(void);
+```
+
+**Declaring.** `kind` is 0 digital or 1 analog. `default_input` is a logical
+pad input: 0-20 the `WC_BTN_*` bit indexes, 32 left stick, 33 right stick, 34
+left trigger, 35 right trigger, 36 d-pad, or -1 none. Sets and actions are
+numbered from 0 in declaration order. Declaring the same name again returns the
+same id (the same set, kind and default input; otherwise -1). Limits: 16 sets,
+64 actions. Every player starts in set 0. Declarations last for the life of the
+instance, including across save-state restores.
+
+**State.** An action outside the player's active set, or unbound, reads 0.
+Otherwise it reads its bound input: a button gives 1 (analog x = 1); a stick
+gives x, y in -1..1 (y down, as in `wc_pad_t`); a trigger gives x in 0..1; the
+d-pad gives x, y in {-1, 0, 1}. A digital action is on when its value's
+magnitude is at least 0.5. **With no remap an action's value is its default
+pad input,** so a cart behaves the same on every host. A host replaying
+deterministically uses the same bindings as the recording.
+
+**Origins.** `wc_action_origin` writes a short UTF-8 label ("Space", "A",
+"Cross", "RT", "Left Stick") into `buf`, truncated to `cap - 1` bytes on a
+codepoint boundary and NUL-terminated, and returns the full length; `0` means
+unbound on the player's current device (hide the prompt), `-1` means the host
+does not know. `buf` may be NULL with `cap` 0 to ask only. `wc_action_glyph`
+returns `(family << 8) | element`, or 0 for none: family 1 Xbox, 2
+PlayStation, 3 Nintendo, 4 other gamepad (element: the logical input, i.e. the
+button's position; Nintendo's south button is labelled B), 5 key (element: HID
+scancode, or 0; draw the label), 6 mouse (0 left, 1 right, 2 middle, 3 wheel,
+4 motion), 7 touch (0 tap, 1 drag, 2 on-screen button). `wc_input_device`
+returns the device the player used last: 0 unknown, 1 keyboard and mouse, 2
+gamepad, 3 touch, 4 remote. Origins are answered for any action, active set or
+not.
+
+**Host rules.** Answers reflect the binding in effect, after remaps.
+`wc_input_revision` is never 0 and changes no later than the next frame after
+anything that could change an answer (device switch, pad plugged in or
+replaced, remap). A host never guesses: unsure is `-1`. These imports are
+main-thread state; called from a thread they answer unknown (`-1`, 0).
+
+**Carts** re-read prompts when the revision changes, not every frame, and fall
+back to their own names when the answer is unknown. `wasmcart.h` wraps this:
+`wc_action_label(player, action, default_input)` returns a printable string.
+
 ## Frame timing and the delta clamp
 
 `wc_time_t.delta_ms` is the time since the last rendered frame, so **a host MUST

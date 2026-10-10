@@ -29,6 +29,7 @@ import {
   GPU_API_WEBGPU,
 } from './abi.js';
 import { createJitImports } from './jit.js';
+import { ActionTable, DEVICE, padOrigin, padFamily } from './actions.js';
 import { createWebGLImports } from './webgl_imports.js';
 import { createCartAllocator } from './cartMemory.js';
 import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap, wgpuAdapterOptions } from './wgpu/host.js';
@@ -288,6 +289,14 @@ export class CartHostWeb {
 
     // Pad names (populated each frame from pad objects)
     this._padNames = ['', '', '', ''];
+    // Input actions: survive a cart reload so the embedder's describer stays.
+    this._lastPads = null;
+    this._inputOwned = false; // the embedder set a describer or device
+    this._actions = new ActionTable({ getPads: () => this._lastPads });
+    this._actions.setDescriber((player, input, device) => (this._inputOwned || device !== DEVICE.GAMEPAD
+      ? undefined : padOrigin(this._webPadFamily[player], input)));
+    this._inputOwned = false;
+    this._webPadFamily = [0, 0, 0, 0];
     this._rumbleHandler = null; // set by the embedder via setRumbleHandler()
 
     // Lifecycle. See CartHost for the rationale; the split is the same.
@@ -510,6 +519,7 @@ export class CartHostWeb {
     // larger ones go async and land between frames. options.jit === false is
     // the loud off switch: options.onJitNotice hears it once; by default the
     // notice goes to the console AND onto the page over the canvas.
+    this._actions.reset();
     this._jit?.dispose();
     const jitOpts = options.jit === false ? { disabled: true } : (options.jit || {});
     this._jitDisabled = !!jitOpts.disabled;
@@ -586,6 +596,8 @@ export class CartHostWeb {
         // --- WebSocket API (ABI v3) ---
         // --- Runtime code generation ---
         ...this._jit.imports,
+        // --- Input actions ---
+        ...this._actions.imports(() => { this._updateViews(); return this._u8; }),
         // --- Text input (ABI v3) ---
         // Characters, not scancodes. See CartHost for the full rationale.
         wc_text_input_begin: () => { this._textActive = true; },
@@ -2063,6 +2075,43 @@ export class CartHostWeb {
 
   get textInputActive() { return this._textActive; }
 
+  // --- Input actions (SPEC.md, "Input actions"; src/actions.js) ---
+  // The cart declares actions; the embedder owns how physical inputs reach
+  // them. A describer maps (player, IN.* input, device) to {label, glyph}
+  // (null: not on this device; undefined: unknown). Every setter bumps the
+  // revision the cart polls, so its prompts follow device switches and remaps.
+
+  /** @param {((player:number, input:number, device:number) => ({label:string, glyph?:number}|null|undefined))|null} fn */
+  setInputDescriber(fn) { this._inputOwned = true; this._actions.setDescriber(fn); }
+
+  /** The device a player is using now (DEVICE.*): call on the last-used change. */
+  setInputDevice(player, device) { this._inputOwned = true; this._actions.setDevice(player, device); }
+
+  /** Remap an action for a player: an IN.* id, null unbound, undefined default. */
+  setActionBinding(player, action, input) { this._actions.setBinding(player, action, input); }
+
+  /** The embedder's own key or pad mapping changed: carts re-read prompts. */
+  inputChanged() { this._actions.bump(); }
+
+  /** The cart's declared actions with the binding in effect, for remap/help UI. */
+  getActions(player = 0) { return this._actions.list(player); }
+
+  /** Current input revision (what wc_input_revision returns). */
+  get inputRevision() { return this._actions.revision; }
+
+  // With no embedder describer, a player's prompts come from the Gamepad API
+  // pad at the same index (as rumble does): device GAMEPAD, family by its id.
+  _pollWebPads() {
+    let gps = null;
+    try { gps = typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : null; } catch { gps = null; }
+    for (let i = 0; i < 4; i++) {
+      const gp = gps?.[i];
+      const fam = gp?.connected ? padFamily(gp.id) : 0;
+      if (fam !== this._webPadFamily[i]) { this._webPadFamily[i] = fam; this._actions.bump(); }
+      this._actions.setDevice(i, fam ? DEVICE.GAMEPAD : DEVICE.UNKNOWN);
+    }
+  }
+
   *_deliverTextEvents() {
     if (this._textEvents.length === 0) return;
     const fn = this.instance?.exports?.wc_on_text;
@@ -2221,13 +2270,17 @@ export class CartHostWeb {
 
   _writePads(pads) {
     const basePtr = this.info.inputPtr;
+    this._lastPads = pads;
+    if (!this._inputOwned) this._pollWebPads();
 
     for (let i = 0; i < MAX_PADS; i++) {
       const pad = pads[i];
       const offset = basePtr + (i * PAD_SIZE);
 
       // Capture pad name (if provided by caller)
-      this._padNames[i] = (pad && pad.name) ? pad.name : '';
+      const padName = (pad && pad.name) ? pad.name : '';
+      if (padName !== this._padNames[i]) this._actions.bump(); // a different device: prompts may change
+      this._padNames[i] = padName;
 
       if (!pad || !pad.connected) {
         this._u8.fill(0, offset, offset + PAD_SIZE);

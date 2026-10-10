@@ -562,6 +562,116 @@ static inline void wc_jit_unlink(int first_slot) { (void)first_slot; }
 static inline int wc_jit_config(int key) { (void)key; return -1; }
 #endif
 
+// --- Input actions (SPEC.md, "Input actions") ---
+// Steam Input style: declare named actions in action sets, each with a DEFAULT
+// binding to a logical pad input; the host owns the binding (remaps, devices)
+// and says what each action is on, so prompts read "Press [Cross] to Jump".
+// Optional: a cart that never calls these keeps reading wc_pad_t as before.
+#define WC_ACTION_DIGITAL 0
+#define WC_ACTION_ANALOG  1
+// Logical inputs: 0-20 are WC_BTN_* bit indexes, then the analog ones.
+#define WC_IN_NONE     (-1)
+#define WC_IN_A        0
+#define WC_IN_B        1
+#define WC_IN_X        2
+#define WC_IN_Y        3
+#define WC_IN_L        4
+#define WC_IN_R        5
+#define WC_IN_START    6
+#define WC_IN_SELECT   7
+#define WC_IN_UP       8
+#define WC_IN_DOWN     9
+#define WC_IN_LEFT     10
+#define WC_IN_RIGHT    11
+#define WC_IN_L3       12
+#define WC_IN_R3       13
+#define WC_IN_LSTICK   32
+#define WC_IN_RSTICK   33
+#define WC_IN_LTRIGGER 34
+#define WC_IN_RTRIGGER 35
+#define WC_IN_DPAD     36
+// wc_input_device
+#define WC_DEVICE_UNKNOWN        0
+#define WC_DEVICE_KEYBOARD_MOUSE 1
+#define WC_DEVICE_GAMEPAD        2
+#define WC_DEVICE_TOUCH          3
+#define WC_DEVICE_REMOTE         4
+// wc_action_glyph: (family << 8) | element; 0 = none (draw the label).
+// Pad families: element = WC_IN_* position. KEY: HID scancode. MOUSE: 0 left
+// 1 right 2 middle 3 wheel 4 motion. TOUCH: 0 tap 1 drag 2 on-screen button.
+#define WC_GLYPH_XBOX        1
+#define WC_GLYPH_PLAYSTATION 2
+#define WC_GLYPH_NINTENDO    3
+#define WC_GLYPH_GAMEPAD     4
+#define WC_GLYPH_KEY         5
+#define WC_GLYPH_MOUSE       6
+#define WC_GLYPH_TOUCH       7
+#define WC_GLYPH_FAMILY(g)   (((g) >> 8) & 0xff)
+#define WC_GLYPH_ELEMENT(g)  ((g) & 0xff)
+
+#ifdef __wasm__
+__attribute__((import_module("env"), import_name("wc_action_set_add")))
+extern int wc_action_set_add(const char *name, unsigned int len);
+__attribute__((import_module("env"), import_name("wc_action_add")))
+extern int wc_action_add(int set, int kind, int default_input, const char *name, unsigned int len);
+__attribute__((import_module("env"), import_name("wc_action_set_activate")))
+extern void wc_action_set_activate(int player, int set);
+__attribute__((import_module("env"), import_name("wc_action_digital")))
+extern int wc_action_digital(int player, int action);
+__attribute__((import_module("env"), import_name("wc_action_analog")))
+extern int wc_action_analog(int player, int action, float *xy);
+__attribute__((import_module("env"), import_name("wc_action_origin")))
+extern int wc_action_origin(int player, int action, char *buf, unsigned int cap);
+__attribute__((import_module("env"), import_name("wc_action_glyph")))
+extern int wc_action_glyph(int player, int action);
+__attribute__((import_module("env"), import_name("wc_input_device")))
+extern int wc_input_device(int player);
+__attribute__((import_module("env"), import_name("wc_input_revision")))
+extern unsigned int wc_input_revision(void);
+#else
+static inline int wc_action_set_add(const char *n, unsigned int l) { (void)n; (void)l; return 0; }
+static inline int wc_action_add(int s, int k, int i, const char *n, unsigned int l) {
+    (void)s; (void)k; (void)i; (void)n; (void)l; return -1;
+}
+static inline void wc_action_set_activate(int p, int s) { (void)p; (void)s; }
+static inline int wc_action_digital(int p, int a) { (void)p; (void)a; return 0; }
+static inline int wc_action_analog(int p, int a, float *xy) { (void)p; (void)a; xy[0] = xy[1] = 0; return 0; }
+static inline int wc_action_origin(int p, int a, char *b, unsigned int c) { (void)p; (void)a; (void)b; (void)c; return -1; }
+static inline int wc_action_glyph(int p, int a) { (void)p; (void)a; return 0; }
+static inline int wc_input_device(int p) { (void)p; return 0; }
+static inline unsigned int wc_input_revision(void) { return 1; }
+#endif
+
+// One-call helpers. wc_action_new(set, kind, default_input, "Jump") declares
+// an action; wc_action_set_new("menu") a set. wc_action_label(player, action)
+// returns a printable label: the host's answer, or the logical input's name
+// when the host does not know, or "" when the action is unbound on the
+// player's device (hide that prompt). The string lives in one of 4 rotating
+// static buffers, so up to 4 labels can be used in one printf. Re-read labels
+// when wc_input_revision() changes, not every frame.
+static inline unsigned int wc__strlen(const char *s) { unsigned int n = 0; while (s[n]) n++; return n; }
+static inline int wc_action_set_new(const char *name) { return wc_action_set_add(name, wc__strlen(name)); }
+static inline int wc_action_new(int set, int kind, int default_input, const char *name) {
+    return wc_action_add(set, kind, default_input, name, wc__strlen(name));
+}
+static inline const char *wc_input_name(int input) {
+    static const char *const btn[] = { "A", "B", "X", "Y", "L", "R", "Start", "Select", "Up", "Down",
+        "Left", "Right", "L3", "R3", "Guide", "Misc", "P1", "P2", "P3", "P4", "Touchpad" };
+    static const char *const axis[] = { "Left Stick", "Right Stick", "LT", "RT", "D-pad" };
+    if (input >= 0 && input <= 20) return btn[input];
+    if (input >= 32 && input <= 36) return axis[input - 32];
+    return "";
+}
+static inline const char *wc_action_label(int player, int action, int default_input) {
+    static char bufs[4][32];
+    static unsigned int next = 0;
+    char *b = bufs[next++ & 3];
+    int n = wc_action_origin(player, action, b, sizeof bufs[0]);
+    if (n > 0) return b;
+    if (n == 0) return "";
+    return wc_input_name(default_input);
+}
+
 // --- Asset API (ABI v2) ---
 // For .wasc carts: load assets from the archive at runtime instead of embedding.
 // For bare .wasm carts these are not available (don't import them unless you need them).

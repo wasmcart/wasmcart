@@ -66,12 +66,7 @@ allocator, through two optional cart exports, `wc_alloc(size, align)` and
   allocator to the host, so a cart linked with `-Wl,--export=malloc` (or an
   Emscripten cart built against older headers) gets the error on those paths.
 
-**Migrating:** rebuild against 0.32's `wasmcart.h` (or the wgpu-wasi CMake
-helper, or the `wasmcart-alloc` Rust crate), or export `wc_alloc` and
-`wc_free` yourself. A vendored copy of `wasmcart.h` must be updated
-(`scripts/sync-headers.sh`).
-
-A cart can run on the web from an unpacked **cart directory**, starting
+**Cart directories on the web.** A cart can run on the web from an unpacked **cart directory**, starting
 before its assets are downloaded.
 
 - `CartHostWeb.load(url)` takes a cart directory URL (or a .wasc/.wasm URL,
@@ -112,18 +107,47 @@ is the JIT. Optional for carts, provided by every host.
   unlinks every slot, drops compiles in flight and changes `wc_jit_config(7)`
   in one step; engines compare key 7 at frame entry and re-link when it
   changed. Its value is a specified hash of the restored memory (FNV-1a 32 over
-  little-endian words, `restoreGeneration()`), the same on every host. Slots freed by a restore are reused only after the cart has read
-  key 7, so a stale slot number traps rather than reaching other code.
+  little-endian words, `restoreGeneration()`), the same on every host. Slots freed by a
+  restore are reused only after the cart has read key 7, so a stale slot number traps rather than reaching other code.
 - `jit: false` or `WASMCART_JIT=0` turns it off: carts get `-1`, and the user
   gets one unmistakable notice (`onJitNotice`, stderr, the player's window
   title, a banner in a page).
 - `createJitImports` is exported for hosts and harnesses that build their own
   imports.
 
-Migrating to 0.32 (runtime code generation): nothing changes for existing
-carts. Embedders that build their own import object add
-`createJitImports(...).imports`; an embedder that restores save states calls
-`jitUnlinkAll()` after writing memory back.
+
+**Input actions** (SPEC.md, "Input actions"), Steam Input style. Optional
+for carts, provided by every host; a cart that never calls them reads
+`wc_pad_t` as before.
+
+- A cart declares action sets (`wc_action_set_add`) and digital or analog
+  actions (`wc_action_add`), each with a default binding to a logical pad
+  input (`WC_IN_*`: the `WC_BTN_*` bit indexes, sticks, triggers, d-pad), and
+  picks a set per player (`wc_action_set_activate`).
+- It reads state per player (`wc_action_digital`, `wc_action_analog`); with no
+  remap that equals the default pad input, so every host behaves the same.
+- It asks what an action is on (`wc_action_origin`: a label into its own
+  buffer, `0` unbound, `-1` unknown; `wc_action_glyph`: a standard glyph id),
+  which device the player uses (`wc_input_device`), and re-reads when
+  `wc_input_revision` changes. No allocator: the cart owns every buffer.
+- `wasmcart.h`: `wc_action_set_new`, `wc_action_new`, `wc_action_label`.
+- Embedders: `setInputDescriber`, `setInputDevice`, `setActionBinding`,
+  `inputChanged`, `getActions()`. `npx wasmcart` labels its keyboard map
+  and the controller's family (Xbox, PlayStation, Nintendo); `CartHostWeb`
+  with no describer answers from the Gamepad API pad at the player's index.
+
+**Migrating to 0.32:**
+
+- Carts that reach a path where the host writes into cart memory (GL
+  pointer-returning calls, WebGPU, text and peer payloads): rebuild against
+  0.32's `wasmcart.h` (or the wgpu-wasi CMake helper, or the `wasmcart-alloc`
+  Rust crate), or export `wc_alloc` and `wc_free` yourself. A vendored copy of
+  `wasmcart.h` must be updated (`scripts/sync-headers.sh`). Carts that never
+  reach those paths run unchanged.
+- Runtime code generation and input actions change nothing for existing
+  carts. Embedders that build their own import object add
+  `createJitImports(...).imports` and the action imports (`ActionTable`); an embedder that
+  restores save states calls `jitUnlinkAll()` after writing memory back.
 
 ## 0.31.0
 
