@@ -39,6 +39,8 @@ extern "C" {
 __attribute__((weak, used, export_name("wc_alloc")))
 void *wc_alloc(size_t size, size_t align) {
     if (align < sizeof(void *)) align = sizeof(void *);
+    if (align & (align - 1)) return 0;         /* not a power of two */
+    if (size > (size_t)-1 - align) return 0;   /* rounding up would wrap */
     /* aligned_alloc wants a size that is a multiple of the alignment */
     size = size ? (size + align - 1) & ~(align - 1) : align;
     return aligned_alloc(align, size);

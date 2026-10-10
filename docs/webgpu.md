@@ -8,9 +8,11 @@ repo, and the C below is quoted from a cart the test suite builds and runs.
 ## Start from the example
 
 [`examples/webgpu-hello/`](../examples/webgpu-hello/) is a complete cart: a
-triangle that samples a 2x2 texture, about 150 lines of C.
+triangle that samples a 2x2 texture, about 150 lines of C. The example lives in
+the wasmcart repository, not the npm package, so build it from a clone:
 
 ```sh
+git clone https://github.com/wasmcart/wasmcart && cd wasmcart && npm install
 cd examples/webgpu-hello
 EMDAWN=<path>/emdawnwebgpu_pkg ./build.sh     # writes webgpu-hello.wasc
 npx wasmcart webgpu-hello.wasc                # opens it in a window (Node host)
@@ -31,7 +33,7 @@ pinned to**:
 | Release | `v20261002.154047` (Dawn `b1236a9bb4a47f1262bc3acb253bb1c2181e90dd`) |
 | Package | [`emdawnwebgpu_pkg-v20261002.154047.zip`](https://github.com/google/dawn/releases/tag/v20261002.154047), unzipped (it holds `emdawnwebgpu_pkg/emdawnwebgpu.port.py`) |
 | SHA-256 | `6b14532b85c7f4d51154b6eeb6bd3fcf7735ad5c7cfd698d83985dd21a1c15c2` (also in [`scripts/wgpu/emdawnwebgpu.json`](../scripts/wgpu/emdawnwebgpu.json)) |
-| Emscripten | 4.0.18 builds the fixtures and the example; the port, not emcc, fixes the import set |
+| Emscripten | 4.0.18 builds the fixtures and the example (`./emsdk install 4.0.18 && ./emsdk activate 4.0.18 && source ./emsdk_env.sh` in an [emsdk](https://github.com/emscripten-core/emsdk) checkout); the port, not emcc, fixes the import set |
 | wasi-sdk | 33 (see [`wgpu-wasi/`](../wgpu-wasi/README.md)) |
 
 Use the package's port file, not the `emdawnwebgpu` port built into newer
@@ -46,6 +48,10 @@ emcc cart.c -O2 -I<wasmcart>/include \
   -sEXPORTED_FUNCTIONS=_wc_init,_wc_render,_wc_get_info -o cart.wasm
 npx wasmcart-pack --wasm cart.wasm --name mycart -o mycart.wasc
 ```
+
+`wasmcart-pack` and the `wasmcart` player come from the npm package: in your
+own project, `npm install --save-dev wasmcart@^0.32` first (WebGPU needs 0.32
+or later).
 
 `<wasmcart>/include` is the `include/` directory of this repo or of the npm
 package (`node_modules/wasmcart/include`).
