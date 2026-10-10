@@ -1,4 +1,5 @@
 export { CartHost } from './src/CartHost.js';
 export { createJitImports, jitOptionsFromEnv, JIT_LIMITS, JIT_OFF_NOTICE } from './src/jit.js';
+export { ActionTable, ACTION_DIGITAL, ACTION_ANALOG, IN, DEVICE, GLYPH, glyphId, padOrigin, padFamily } from './src/actions.js';
 export { ABI_VERSION, MIN_ABI_VERSION, BUTTON, PAD_SIZE, INFO_FIELDS, FLAG_NET_PEER, PEER_CONNECTING, PEER_OPEN, PEER_CLOSING, PEER_CLOSED, TRANSPORT_UNKNOWN, TRANSPORT_RELIABLE, TRANSPORT_ORDERED, TRANSPORT_LOW_LATENCY, FLAG_POINTER, FLAG_KEYBOARD, FLAG_DEBUG, FLAG_DETERMINISTIC, HOST_FLAG_DETERMINISTIC } from './src/abi.js';
 export { createWebGLImports, noteGlCurrent } from './src/webgl_imports.js';

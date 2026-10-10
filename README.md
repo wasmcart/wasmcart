@@ -390,6 +390,7 @@ A cart that doesn't use the GPU at all can write pixels directly to a shared-mem
 - **WASI threads** - carts compiled with wasi-sdk `-pthread` can spawn background threads via pthreads
 - **WebAssembly exceptions** - standardized Wasm EH, including wasi-sdk's native `setjmp`/`longjmp`
 - **Runtime code generation** - a cart that compiles code as it runs (a Lua or JavaScript VM) links the wasm it generates with `wc_jit_link`; the host compiles it and installs it in the cart's own function table, with nothing beyond the cart's own exports. Every host provides it; `jit: false` / `WASMCART_JIT=0` turns it off, loudly. See SPEC.md, "Runtime code generation"
+- **Input actions** - Steam Input style: a cart declares named actions ("Jump", "Steer") in action sets, each with a default pad binding; the host owns the binding (remaps, devices) and tells the cart what each action is on (`wc_action_origin`: "Space", "Cross", "RT"), so prompts are right on every device. Optional for carts; every host provides the imports. Embedders feed labels with `setInputDescriber`, `setInputDevice`, `setActionBinding`, and read `getActions()` for remap/help UI. See SPEC.md, "Input actions"
 
 ## Node.js API
 

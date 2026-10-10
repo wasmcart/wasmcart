@@ -84,6 +84,26 @@ carts. Embedders that build their own import object add
 `createJitImports(...).imports`; an embedder that restores save states calls
 `jitUnlinkAll()` after writing memory back.
 
+**Input actions** (SPEC.md, "Input actions"), Steam Input style. Optional
+for carts, provided by every host; a cart that never calls them reads
+`wc_pad_t` as before.
+
+- A cart declares action sets (`wc_action_set_add`) and digital or analog
+  actions (`wc_action_add`), each with a default binding to a logical pad
+  input (`WC_IN_*`: the `WC_BTN_*` bit indexes, sticks, triggers, d-pad), and
+  picks a set per player (`wc_action_set_activate`).
+- It reads state per player (`wc_action_digital`, `wc_action_analog`); with no
+  remap that equals the default pad input, so every host behaves the same.
+- It asks what an action is on (`wc_action_origin`: a label into its own
+  buffer, `0` unbound, `-1` unknown; `wc_action_glyph`: a standard glyph id),
+  which device the player uses (`wc_input_device`), and re-reads when
+  `wc_input_revision` changes. No allocator: the cart owns every buffer.
+- `wasmcart.h`: `wc_action_set_new`, `wc_action_new`, `wc_action_label`.
+- Embedders: `setInputDescriber`, `setInputDevice`, `setActionBinding`,
+  `inputChanged`, `getActions()`. `npx wasmcart` labels its keyboard map
+  and the controller's family (Xbox, PlayStation, Nintendo); `CartHostWeb`
+  with no describer answers from the Gamepad API pad at the player's index.
+
 ## 0.31.0
 
 **ABI v4.** Every analog axis is int16 (triggers were uint8) and

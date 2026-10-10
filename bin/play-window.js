@@ -17,6 +17,7 @@
  */
 
 import { BUTTON, WHEEL_DELTA } from '../src/abi.js';
+import { IN, DEVICE, GLYPH, glyphId, padOrigin, padFamily } from '../src/actions.js';
 import { fitRect } from '../src/letterbox.js';
 import { savPathFor, loadSave, makeSaver } from '../src/save.js';
 
@@ -25,6 +26,15 @@ const KEYMAP = {
   w: 'UP', s: 'DOWN', a: 'LEFT', d: 'RIGHT',
   x: 'A', z: 'B', space: 'A', return: 'START', tab: 'SELECT',
   '[': 'L', ']': 'R',
+};
+
+// What KEYMAP puts each logical input on, for input-action prompts (SPEC.md,
+// "Input actions"): the first key listed above, as a label and HID scancode.
+// Inputs with no key here (X, Y, sticks, triggers) are unbound on keyboard.
+const KEY_ORIGINS = {
+  [IN.A]: ['Space', 0x2c], [IN.B]: ['Z', 0x1d], [IN.START]: ['Enter', 0x28], [IN.SELECT]: ['Tab', 0x2b],
+  [IN.L]: ['[', 0x2f], [IN.R]: [']', 0x30], [IN.UP]: ['Up', 0x52], [IN.DOWN]: ['Down', 0x51],
+  [IN.LEFT]: ['Left', 0x50], [IN.RIGHT]: ['Right', 0x4f], [IN.DPAD]: ['Arrow keys', 0],
 };
 
 // SDL's trigger axes. Same width as the sticks (int16) as of ABI v4, but
@@ -158,7 +168,7 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
     }
     if (k === 'escape' || k === 'q') return quit();
     const name = KEYMAP[k];
-    if (name) held.add(name);
+    if (name) { held.add(name); host.setInputDevice(0, DEVICE.KEYBOARD_MOUSE); }
   });
 
   // Committed text from SDL: already layout-, shift- and IME-processed. The
@@ -323,6 +333,16 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
    * could: a Bluetooth pad that drops mid-session comes back.
    */
   let ctrl = null;
+  let padFam = GLYPH.GAMEPAD;
+  // Input-action origins follow the device player 0 used last.
+  host.setInputDescriber((player, input, device) => {
+    if (player !== 0) return null;
+    if (device === DEVICE.GAMEPAD) return padOrigin(padFam, input);
+    const k = KEY_ORIGINS[input];
+    return k ? { label: k[0], glyph: k[1] ? glyphId(GLYPH.KEY, k[1]) : 0 } : null;
+  });
+  host.setInputDevice(0, DEVICE.KEYBOARD_MOUSE);
+  const usePad = () => host.setInputDevice(0, DEVICE.GAMEPAD);
   const openController = (dev) => {
     if (ctrl || !dev) return;                       // pad 0 only; see the rumble note below
     try {
@@ -331,7 +351,10 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
       ctrl = null;                                  // unplugged between the event and here
       return;
     }
-    ctrl.on('buttonDown', (e) => { const n = CONTROLLER_BUTTONS[e.button]; if (n) held.add(n); });
+    padFam = padFamily(`${dev.name ?? ''} ${dev.type ?? ''}`);
+    usePad();
+    host.inputChanged();
+    ctrl.on('buttonDown', (e) => { const n = CONTROLLER_BUTTONS[e.button]; if (n) { held.add(n); usePad(); } });
     ctrl.on('buttonUp', (e) => { const n = CONTROLLER_BUTTONS[e.button]; if (n) held.delete(n); });
     ctrl.on('axisMotion', (e) => {
       if (!(e.axis in analog)) return;
@@ -340,6 +363,7 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
       // which is the only thing separating them here: SDL hands both over as
       // a float, and a pad whose trigger rests near 0.5 would otherwise
       // report half-pressed as a negative stick value.
+      if (Math.abs(e.value ?? 0) > 0.5) usePad();
       analog[e.axis] = TRIGGER_AXES.has(e.axis)
         ? Math.max(0, Math.min(32767, Math.round(Math.abs(e.value ?? 0) * 32767)))
         : Math.max(-32767, Math.min(32767, Math.round((e.value ?? 0) * 32767)));
@@ -355,6 +379,7 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
       if (!ctrl || (gone && ctrl.device && gone.id !== undefined && ctrl.device.id !== gone.id)) return;
       try { ctrl.close(); } catch { /* already gone with the hardware */ }
       ctrl = null;
+      host.setInputDevice(0, DEVICE.KEYBOARD_MOUSE);
       // Drop held pad buttons: a cart must not keep walking because the
       // controller was yanked mid-press.
       for (const n of Object.values(CONTROLLER_BUTTONS)) held.delete(n);
