@@ -40,6 +40,15 @@ changes, and GL stays the tier every host must run.
   default there). Safari is untested.
 - Embedders driving `runFrame()` themselves must yield a task between frames
   (not only `await`): async results and the release of GPU objects depend on it.
+- A texture or buffer the cart released is destroyed once nothing live uses
+  it (a view, bind group, render bundle or unsubmitted command buffer still
+  holding it keeps it), so GPU memory stays flat in browsers too; Chromium
+  otherwise grew without bound (7 GB by frame 3000 of a create-and-release
+  test cart).
+- Losing the host's GPU device stops the cart instead of presenting black
+  frames: `host.gpuLost` becomes `{ reason, message }`, the load option
+  `onGpuLost` is called once, and `runFrame()` no longer calls `wc_render`.
+  `wasmcart-play` prints the reason and exits 4. No ABI change.
 
 **Cart memory the host writes** (SPEC.md, "Cart memory the host writes").
 Every byte a host places in a cart at an address it picks (glGetString,
