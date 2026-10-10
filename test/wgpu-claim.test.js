@@ -5,6 +5,8 @@
 //   wgputex.wasc   nine texture / sampler cases, checked by the cart itself
 //                  (tex.pass) and here from the host's readback
 //   wgpuvram.wasc  creates and releases ~1.3 MiB of GPU objects per frame
+//   wgpurelease.wasc  uses textures and buffers after releasing them (through
+//                  a kept view, bind group or render bundle, or before submit)
 //
 // GPU memory is read from the kernel's per-client DRM accounting
 // (/proc/self/fdinfo, drm-memory-vram / drm-total-*), Linux only; elsewhere,
@@ -74,6 +76,36 @@ test('textures and samplers: nearest, linear, repeat, clamp, mirror, explicit mi
         assert.ok(Math.abs(got[k] - want[k]) <= TOL[c], `cell ${c}: got ${got.slice(0, 3)}, want ${want}`);
       }
     });
+  } finally {
+    host.destroy();
+  }
+});
+
+// The host destroys a released texture or buffer once nothing live uses it
+// (src/wgpu/release.js): each quadrant goes black, or the frame raises a
+// validation error, if one is destroyed too early.
+test('released textures and buffers stay usable through a kept view, bind group or bundle, and are destroyed once unused', async () => {
+  const host = new CartHost();
+  await host.load(fixture('wgpurelease.wasc'));
+  try {
+    const quads = (f) => [[16, 16], [48, 16], [16, 48], [48, 48]].map(([x, y]) => pixel(f, x, y).slice(0, 3));
+    for (let i = 0; i < 20; i++) { host.runFrame(); await tick(); }
+    const before = quads(await host.readGpuFrame());
+    const destroyedBefore = host._wgpu.released.destroyed;
+    for (let i = 0; i < 20; i++) { host.runFrame(); await tick(); }
+    const after = quads(await host.readGpuFrame());
+    const destroyedAfter = host._wgpu.released.destroyed;
+    await tick();
+    assert.equal(host.readDebugValue('rel.frames').value, 40);
+    assert.equal(host.readDebugValue('rel.errors').value, 0, 'no validation errors: nothing in use was destroyed');
+    assert.deepEqual(before, [[255, 0, 255], [0, 255, 0], [255, 255, 255], [255, 255, 0]],
+      'kept bind group, kept view, kept bundle, and released-before-submit all draw');
+    assert.deepEqual(after, [[0, 0, 0], [0, 0, 0], [0, 0, 0], [255, 255, 0]], 'the cart stopped drawing the three it released at frame 30');
+    // per frame: the bottom-right texture and two uniform buffers
+    assert.ok(destroyedBefore >= 20 * 3, `released per-frame objects are destroyed (${destroyedBefore} by frame 20)`);
+    // frames 21-40, plus at frame 30 the kept group's texture and buffer,
+    // the bundle's, and the kept view's texture
+    assert.ok(destroyedAfter - destroyedBefore >= 20 * 2 + 5, `the kept objects' textures and buffers are destroyed once released (${destroyedAfter - destroyedBefore} more)`);
   } finally {
     host.destroy();
   }

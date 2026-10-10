@@ -185,8 +185,9 @@ shader, pipeline and bind group follow in [`hello.c`](../examples/webgpu-hello/h
 - **Never call `wgpuSurfacePresent`.** The host presents.
 - **Each frame's surface texture is fresh**: do not depend on last frame's
   contents (clear it, as above).
-- **Release what you make each frame**, the surface texture included. See
-  "GPU memory" below for why releasing is necessary but not enough.
+- **Release what you make each frame**, the surface texture included: a
+  released texture or buffer is destroyed once nothing uses it (see "GPU
+  memory" below).
 
 ## Rules that bite
 
@@ -231,28 +232,32 @@ between the frames of a stepped burst.
 
 ## GPU memory
 
-The glue does not destroy a GPU object when the cart releases it: a cart may
-release a texture right after making a view of it, or a buffer after binding
-it into a bind group, and keep using the view or the group, so destroying the
-object would break them. A released object is freed when the host's
-JavaScript engine collects its wrapper. How soon that happens depends on the
-host. Measured with [`test/fixtures/wgpuvram.c`](../test/fixtures/wgpuvram.c),
+When a cart releases a texture or buffer, the host destroys it as soon as
+nothing the cart still holds uses it: no live view of the texture, bind group
+naming it, render bundle or unsubmitted command buffer or encoder that
+recorded it. A cart may release a texture right after making a view of it,
+or a buffer after binding it into a bind group, and keep using the view or
+group; the object is destroyed when the view or group is released. Work
+already submitted is unaffected: WebGPU's `destroy()` waits for it. Other
+released objects (views, bind groups, pipelines, samplers) are freed when the
+host's JavaScript engine collects them, as before; they hold little GPU
+memory. Measured with [`test/fixtures/wgpuvram.c`](../test/fixtures/wgpuvram.c),
 which creates and releases about 1.3 MiB of textures and buffers every frame,
-yielding a task after each frame:
+yielding a task after each frame (RX 7600, Linux):
 
 | Host | GPU memory over 3000 frames |
 | --- | --- |
-| Node (`CartHost`) | levels off at about 0.7 GiB after about 1000 frames |
-| Chromium (`CartHostWeb`) | **does not level off**: about 2.5 MiB a frame, 7 GB by frame 3000 (RX 7600) |
+| Node (`CartHost`) | flat from the start at about 60 MiB |
+| Chromium (`CartHostWeb`, Vulkan) | flat from the start at about 80 MiB |
 
-Chromium's garbage collector does not know how much GPU memory a small
-wrapper object holds, so it may not run before the GPU is full. **Make GPU
-resources once and reuse them**: textures, buffers, bind groups, pipelines.
-Write new contents into an existing buffer with `wgpuQueueWriteBuffer`, or
-into an existing texture with `wgpuQueueWriteTexture`, instead of creating
-new ones per frame. The per-frame objects the example makes (an encoder, a
-pass, a command buffer, a view of the surface texture) are small; creating
-textures or buffers every frame is what fills the GPU.
+(Before the host destroyed released objects, Chromium grew about 2.5 MiB a
+frame, 7 GB by frame 3000: its garbage collector does not know how much GPU
+memory a small wrapper object holds.)
+
+Creating textures and buffers every frame still costs an allocation and a
+free per object. **Make GPU resources once and reuse them** where you can:
+write new contents into an existing buffer with `wgpuQueueWriteBuffer`, or
+into an existing texture with `wgpuQueueWriteTexture`.
 
 ## Resize
 
@@ -391,8 +396,6 @@ on these hosts):
   against another release can be refused or misread.
 - No uncaptured-error or device-lost callback on the host's device, and no
   recovery from device loss (see "Errors and device loss").
-- Released GPU objects are freed by garbage collection, which in Chromium can
-  fall far behind (see "GPU memory").
 - No blocking waits: `wgpuInstanceWaitAny` with a timeout is not supported
   (the `TimedWaitAny` instance feature is absent).
 - Main thread only; workers may not call WebGPU.
@@ -414,6 +417,8 @@ downloads the pinned package, checks its SHA-256, and rewrites
 `src/wgpu/emdawnwebgpu-glue.mjs` and its manifest. The script routes every
 allocation the generated glue makes in cart memory (its `malloc`, `memalign`
 and Emscripten stack helpers) through the cart's `wc_alloc`/`wc_free`
-(`scripts/wgpu/glue-alloc.mjs`), and fails if the generated code has changed
-shape so that an allocation would escape. Moving the pin is an ABI
+(`scripts/wgpu/glue-alloc.mjs`), hooks the glue's object table so the host
+sees every object made, used and released (`scripts/wgpu/glue-release.mjs`,
+for "GPU memory"), and fails if the generated code has changed shape so that
+an allocation or an object would escape. Moving the pin is an ABI
 change: carts and hosts must move together.

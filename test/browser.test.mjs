@@ -22,7 +22,7 @@
 
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, extname } from 'node:path';
 
@@ -113,7 +113,9 @@ await new Promise((r) => setTimeout(r, 700));
 // Headless, the adapter it then offers is SwiftShader (CPU), which is what the
 // WebGPU checks below run on.
 // WASMCART_BROWSER_ARGS adds Chromium flags: on Linux, WebGPU runs on
-// SwiftShader (software) unless '--enable-features=Vulkan' is among them.
+// SwiftShader (software) unless '--enable-features=Vulkan' is among them
+// (with no display, as under a GPU test sandbox, also '--use-angle=vulkan
+// --ignore-gpu-blocklist --enable-gpu').
 const browser = await chromium.launch({ headless: !process.argv.includes('--headed'),
   args: ['--enable-unsafe-webgpu', ...(process.env.WASMCART_BROWSER_ARGS || '').split(' ').filter(Boolean)] });
 const page = await browser.newPage();
@@ -594,6 +596,120 @@ delete wgpu2.edges.uncaptured;
 check('webgpu edges: second device, device loss, resize',
       wgpu2.edges, { adapter: 1, device: 1, separate: 1, lost: 2, info: [160, 120], before: [128, 96, 0, 255, 0], after: [160, 120, 0, 0, 255] });
 check('webgpu: 600 frames of create / use / release, no errors', wgpu2.vram, { frames: 600, errors: 0 });
+
+// ─── WebGPU: released textures and buffers are destroyed once unused ──────
+// (src/wgpu/release.js; test/wgpu-claim.test.js on the Node host)
+const rel = await page.evaluate(async () => {
+  const { CartHostWeb } = await import('/web.js');
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const host = new CartHostWeb();
+  await host.load('/test/fixtures/wgpurelease.wasc');
+  const quads = async () => {
+    host.runFrame([]);
+    const f = await host.readGpuFrame();
+    return [[16, 16], [48, 16], [16, 48], [48, 48]].map(([x, y]) => Array.from(f.data.slice((y * 64 + x) * 4, (y * 64 + x) * 4 + 3)));
+  };
+  for (let i = 0; i < 19; i++) { host.runFrame([]); await tick(); }
+  const before = await quads();
+  const destroyedBefore = host._wgpu.released.destroyed;
+  for (let i = 0; i < 19; i++) { host.runFrame([]); await tick(); }
+  const after = await quads();
+  for (let i = 0; i < 5; i++) await tick();
+  const ex = host.instance.exports;
+  const dv = new DataView(ex.memory.buffer);
+  const field = (name) => {
+    for (let p = ex.wc_debug_state(); dv.getUint32(p, true); p += 16) {
+      let s = '';
+      for (let q = dv.getUint32(p, true), b; (b = dv.getUint8(q)); q++) s += String.fromCharCode(b);
+      if (s === name) return dv.getUint32(dv.getUint32(p + 4, true), true);
+    }
+  };
+  const out = { before, after, errors: field('rel.errors'), frames: field('rel.frames'),
+                destroyed: [destroyedBefore >= 60, host._wgpu.released.destroyed - destroyedBefore >= 45] };
+  host.destroy();
+  return out;
+});
+check('webgpu release: a kept bind group, view and bundle and a texture released before submit all draw', rel.before,
+      [[255, 0, 255], [0, 255, 0], [255, 255, 255], [255, 255, 0]]);
+check('webgpu release: no validation errors, the released three stop drawing', [rel.frames, rel.errors, rel.after],
+      [40, 0, [[0, 0, 0], [0, 0, 0], [0, 0, 0], [255, 255, 0]]]);
+check('webgpu release: released textures and buffers are destroyed once unused', rel.destroyed, [true, true]);
+
+// GPU memory over a long run of create / use / release (test/fixtures/wgpuvram.c),
+// read from the kernel's DRM accounting of Chromium's GPU process (Linux, a
+// hardware adapter: on Linux pass '--enable-features=Vulkan --use-angle=vulkan
+// --ignore-gpu-blocklist --enable-gpu' in WASMCART_BROWSER_ARGS). Without the
+// host destroying released objects this grew ~2.5 MiB a frame (7 GB by 3000).
+function browserGpuBytes() {
+  let total = null;
+  let pids;
+  try { pids = readdirSync('/proc').filter((p) => /^\d+$/.test(p)); } catch { return null; }
+  for (const pid of pids) {
+    let cmd, stat;
+    try { cmd = readFileSync(`/proc/${pid}/cmdline`, 'utf8'); stat = readFileSync(`/proc/${pid}/stat`, 'utf8'); } catch { continue; }
+    if (!cmd.includes('--type=gpu-process')) continue;
+    // ours: a descendant of this process
+    let ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
+    for (let i = 0; i < 8 && ppid > 1 && ppid !== process.pid; i++) {
+      try { const st = readFileSync(`/proc/${ppid}/stat`, 'utf8'); ppid = Number(st.slice(st.lastIndexOf(')') + 2).split(' ')[1]); } catch { ppid = 0; }
+    }
+    if (ppid !== process.pid) continue;
+    const clients = new Map();
+    let fds = [];
+    try { fds = readdirSync(`/proc/${pid}/fdinfo`); } catch { continue; }
+    for (const fd of fds) {
+      let text;
+      try { text = readFileSync(`/proc/${pid}/fdinfo/${fd}`, 'utf8'); } catch { continue; }
+      const id = /drm-client-id:\s*(\d+)/.exec(text);
+      if (!id) continue;
+      let bytes = 0;
+      for (const m of text.matchAll(/drm-(?:memory|total)-(vram|gtt):\s*(\d+)\s*(KiB|MiB)?/g)) {
+        bytes += Number(m[2]) * (m[3] === 'MiB' ? 1 << 20 : m[3] === 'KiB' ? 1024 : 1);
+      }
+      clients.set(id[1], Math.max(clients.get(id[1]) || 0, bytes));
+    }
+    if (clients.size) total = (total || 0) + [...clients.values()].reduce((a, b) => a + b, 0);
+  }
+  return total;
+}
+await page.evaluate(async () => {
+  const { CartHostWeb } = await import('/web.js');
+  window.vramHost = new CartHostWeb();
+  await window.vramHost.load('/test/fixtures/wgpuvram.wasc');
+  window.vramHost.runFrame([]);
+  await new Promise((r) => setTimeout(r, 0));
+});
+if (browserGpuBytes() === null) {
+  console.log('  (GPU memory over a long run: not measured; no DRM accounting for the browser\'s GPU process, e.g. a software adapter)');
+} else {
+  const frames = Number(process.env.WASMCART_VRAM_FRAMES || 3000);
+  const samples = [];
+  for (let done = 1; done < frames;) {
+    const n = Math.min(250 - (done % 250), frames - done);
+    await page.evaluate(async (n) => {
+      for (let i = 0; i < n; i++) { window.vramHost.runFrame([]); await new Promise((r) => setTimeout(r, 0)); }
+    }, n);
+    done += n;
+    if (done % 250 === 0) samples.push({ frame: done, mib: browserGpuBytes() / (1 << 20) });
+  }
+  const vram = await page.evaluate(() => {
+    const h = window.vramHost, ex = h.instance.exports, dv = new DataView(ex.memory.buffer);
+    const field = (name) => {
+      for (let p = ex.wc_debug_state(); dv.getUint32(p, true); p += 16) {
+        let s = '';
+        for (let q = dv.getUint32(p, true), b; (b = dv.getUint8(q)); q++) s += String.fromCharCode(b);
+        if (s === name) return dv.getUint32(dv.getUint32(p + 4, true), true);
+      }
+    };
+    return { frames: field('vram.frames'), errors: field('vram.errors') };
+  });
+  console.log(`  (Chromium GPU memory (MiB) by frame: ${samples.map((s) => `${s.frame}:${s.mib.toFixed(0)}`).join(' ')})`);
+  const settled = samples.filter((s) => s.frame >= frames / 3);
+  const first = settled[0].mib, peak = Math.max(...settled.map((s) => s.mib));
+  check(`webgpu: ${frames} frames of create / use / release, no errors`, vram, { frames, errors: 0 });
+  check(`webgpu: Chromium's GPU memory levels off (within 64 MiB after frame ${settled[0].frame})`, peak - first < 64, true);
+}
+await page.evaluate(() => window.vramHost.destroy());
 
 await browser.close();
 ws.kill();

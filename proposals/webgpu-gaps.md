@@ -28,6 +28,12 @@ Chromium grows ~2.5 MiB a frame: 7 GB at frame 3000, nearly the whole card.
 Decided (2026-10-10): (c) for 0.32, (a) after it with a test in the browser suite
 (wgpuvram must plateau in Chromium).
 
+Done: (a), in the host glue (src/wgpu/release.js, hooks added by
+scripts/wgpu/glue-release.mjs). wgpuvram is flat at ~80 MiB in Chromium and
+~60 MiB on Node over 3000 frames; test/fixtures/wgpurelease.c checks that a
+texture or buffer used through a kept view, bind group or render bundle, or
+released before submit, still draws.
+
 ## 2. The yield between frames (host contract)
 
 **Today.** SPEC.md says async results arrive "between frames, on its event

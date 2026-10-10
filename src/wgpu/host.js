@@ -20,6 +20,7 @@
 
 import gluePromise from './glue-loader.js';
 import { createCartAllocator } from '../cartMemory.js';
+import { createReleaseTracker } from './release.js';
 
 /**
  * The adapter request every host makes for a WebGPU cart. The tier's floor is
@@ -330,6 +331,13 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
     while (scopes.length >= mark && scopes.length) for (const p of scopes.pop()) allocator.free(p);
   };
 
+  // Released textures and buffers are destroyed once nothing the cart still
+  // holds uses them (release.js; the glue's hooks: scripts/wgpu/glue-release.mjs).
+  const tracker = createReleaseTracker(globals, ptr => Module.WebGPU.Internals.jsObjects[ptr >>> 0]);
+  Module.wcGpuMade = tracker.made;
+  Module.wcGpuUse = tracker.used;
+  Module.wcGpuRelease = tracker.released;
+
   const env = {};
   for (const { name } of wanted) {
     const fn = info.env[name];
@@ -337,7 +345,8 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
       refresh();
       const outer = inCall;
       inCall = name;
-      try { return fn(...args); } finally { inCall = outer; }
+      tracker.enter(name, args[0]);
+      try { return fn(...args); } finally { tracker.leave(); inCall = outer; }
     };
   }
 
@@ -453,6 +462,9 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
     },
 
     get lost() { return lost; },
+
+    /** Textures and buffers destroyed after the cart released them (tests). */
+    get released() { return tracker.stats(); },
 
     /** An allocation error from an async WebGPU callback (the cart has no
      *  allocator, or it failed), once; the host throws it from its next frame. */

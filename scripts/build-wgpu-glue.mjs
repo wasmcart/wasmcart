@@ -11,13 +11,16 @@
 //
 // How: link a C file that takes the address of every function in webgpu.h,
 // so every JS function the port has is pulled in, then keep Emscripten's
-// generated JS and drop its wasm. Three edits make it hostable:
+// generated JS and drop its wasm. Four edits make it hostable:
 //   - `navigator` and `document` become per-instance values the host passes
 //     in, so two carts in one process can hold different devices and canvases;
 //   - the WebGPU object table and the memory-view refresh are exported;
 //   - every allocation in cart memory (malloc, memalign, Emscripten's stack
 //     helpers) goes through the cart's wc_alloc/wc_free instead
-//     (wgpu/glue-alloc.mjs; SPEC.md "Cart memory the host writes").
+//     (wgpu/glue-alloc.mjs; SPEC.md "Cart memory the host writes");
+//   - the object table reports every object made, looked up and released,
+//     so the host can destroy released textures and buffers nothing uses
+//     (wgpu/glue-release.mjs; docs/webgpu.md "GPU memory").
 //
 // Needs emcc (the repo-local emsdk works). Not run by npm install or tests:
 // the output is committed, and is the frozen snapshot.
@@ -30,6 +33,7 @@ import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { routeGlueAllocation, ALLOCATOR_EXPORTS } from './wgpu/glue-alloc.mjs'
+import { hookGlueObjects } from './wgpu/glue-release.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const pin = JSON.parse(fs.readFileSync(path.join(root, 'scripts/wgpu/emdawnwebgpu.json'), 'utf8'))
@@ -103,6 +107,8 @@ try {
   // Allocation in the cart goes through wc_alloc/wc_free, not the cart's
   // malloc or stack.
   js = routeGlueAllocation(js)
+  // Released textures and buffers are destroyed once nothing uses them.
+  js = hookGlueObjects(js)
 
   // The functions a cart may import from this glue, read from the glue's own
   // import list so the host can name anything a cart wants that it lacks.
