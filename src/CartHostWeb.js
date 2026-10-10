@@ -18,6 +18,9 @@ import {
   TRANSPORT_WS,
   FLAG_POINTER,
   FLAG_KEYBOARD,
+  FLAG_AUDIO_F32,
+  FLAG_DEBUG,
+  FLAG_DETERMINISTIC,
   POINTER_SIZE,
   MAX_POINTERS,
   KEYS_STATE_SIZE,
@@ -30,6 +33,7 @@ import {
 } from './abi.js';
 import { createJitImports } from './jit.js';
 import { ActionTable, DEVICE, padOrigin, padFamily } from './actions.js';
+import { readDebugState, readDebugValue, writeDebugValue, pushDebugEvent, MAX_DEBUG_EVENTS } from './debugState.js';
 import { createWebGLImports } from './webgl_imports.js';
 import { createCartAllocator } from './cartMemory.js';
 import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap, wgpuAdapterOptions } from './wgpu/host.js';
@@ -213,6 +217,9 @@ function isDirectoryUrl(source) {
 
 
 export class CartHostWeb {
+  /** Cap per debug-event ring (log / marks) between drains. */
+  static MAX_DEBUG_EVENTS = MAX_DEBUG_EVENTS;
+
   constructor() {
     this.instance = null;
     this.memory = null;
@@ -223,6 +230,15 @@ export class CartHostWeb {
     this.startTime = 0;
     this.lastFrameTime = 0;
     this.audioReadCursor = 0;
+
+    // Deterministic-clock mode (opt-in via setFixedStep), as in CartHost.
+    // 0 = wall-clock; > 0 = each frame advances this many virtual ms.
+    this._fixedStepMs = 0;
+
+    // Debug event capture (pull-drained, capped): wc_log lines and
+    // wc_debug_mark(id) annotations, stamped with their frame. See CartHost.
+    this.debugLog = [];
+    this.debugMarks = [];
 
     // Views into cart memory
     this._u8 = null;
@@ -552,11 +568,14 @@ export class CartHostWeb {
             const bytes = this._u8.slice(ptr, ptr + len);
             const text = new TextDecoder().decode(bytes);
             console.warn('[cart]', text);
+            this._pushDebugEvent(this.debugLog, { frame: this.frameCount, text });
           }
         },
-        // Debug-ABI frame annotation — no-op stub on the play host (the intent
-        // is zero call sites in a release cart; a debug build still instantiates).
-        wc_debug_mark: () => {},
+        // Frame annotation (debug ABI): the cart timestamps a moment so a
+        // trace/replay is navigable by event. Pull-drained (drainDebugEvents).
+        wc_debug_mark: (id) => {
+          this._pushDebugEvent(this.debugMarks, { frame: this.frameCount, id: id >>> 0 });
+        },
         // Loop-inversion protocol for ported engines that own their main
         // loop: the cart is post-processed with binaryen's asyncify pass
         // (asyncify-imports = env.wc_frame_yield) and calls this once per
@@ -1037,17 +1056,26 @@ export class CartHostWeb {
   }
 
   *_frame(pads) {
-    const now = performance.now();
-    // Clamp: a long stall must not become a giant time step. See CartHost --
-    // this is the general guard, since a GC pause or a background tab throttle
-    // produces the same spike with no lifecycle event to hang a fix on.
-    const raw = now - this.lastFrameTime;
-    const deltaMs = raw > MAX_DELTA_MS ? MAX_DELTA_MS : raw;
-    // Absorb the discarded time so time_ms stays consistent with the deltas the
-    // cart was actually handed.
-    if (raw > MAX_DELTA_MS) this.startTime += raw - MAX_DELTA_MS;
-    const timeMs = now - this.startTime;
-    this.lastFrameTime = now;
+    let timeMs, deltaMs;
+    if (this._fixedStepMs > 0) {
+      // Deterministic clock (setFixedStep): frame N reports N * step however
+      // long it really took. Not clamped: the caller chose the step.
+      deltaMs = this._fixedStepMs;
+      timeMs = this.frameCount * this._fixedStepMs;
+      this.lastFrameTime = this.startTime + timeMs;
+    } else {
+      const now = performance.now();
+      // Clamp: a long stall must not become a giant time step. See CartHost --
+      // this is the general guard, since a GC pause or a background tab throttle
+      // produces the same spike with no lifecycle event to hang a fix on.
+      const raw = now - this.lastFrameTime;
+      deltaMs = raw > MAX_DELTA_MS ? MAX_DELTA_MS : raw;
+      // Absorb the discarded time so time_ms stays consistent with the deltas the
+      // cart was actually handed.
+      if (raw > MAX_DELTA_MS) this.startTime += raw - MAX_DELTA_MS;
+      timeMs = now - this.startTime;
+      this.lastFrameTime = now;
+    }
 
     this._updateViews();
 
@@ -1213,6 +1241,16 @@ export class CartHostWeb {
   /** Unlink every runtime-generated function (after a state restore). See CartHost. */
   jitUnlinkAll() {
     this._jit?.unlinkAll();
+  }
+
+  /**
+   * Deterministic clock: each runFrame advances `stepMs` virtual ms, so frame
+   * N always reports time_ms = N * stepMs regardless of real elapsed time.
+   * 0 (or less) returns to the wall clock. Same contract as CartHost.
+   * @param {number} [stepMs=1000/60] virtual ms per frame
+   */
+  setFixedStep(stepMs = 1000 / 60) {
+    this._fixedStepMs = stepMs > 0 ? stepMs : 0;
   }
 
   // The off switch must be visible where the user is looking: a banner fixed
@@ -1713,6 +1751,54 @@ export class CartHostWeb {
 
   getManifest() {
     return this._manifest ? { ...this._manifest } : null;
+  }
+
+  // ── Debug ABI (OPT-IN, PULL-ONLY) ────────────────────────────────────
+  // Read on demand only, never per frame (SPEC.md, "Debug state"). Shared
+  // with the other host in debugState.js, which bounds-checks every pointer.
+
+  /**
+   * Read the cart's debug-state descriptor table (the fields it chose to
+   * expose by name). Returns null if the cart didn't opt in (no FLAG_DEBUG /
+   * no wc_debug_state export). Pull-only — call when a debug consumer asks.
+   * @returns {Array<{name,type,typeName,valuePtr,len}> | null}
+   */
+  readDebugState() {
+    return readDebugState(this);
+  }
+
+  /**
+   * Read a named debug value, decoded per its declared type. Scalars return
+   * {value}, arrays {len, values}, BYTES a copy in {bytes}. Throws a clear
+   * error if the name isn't in the table.
+   */
+  readDebugValue(name) {
+    return readDebugValue(this, name);
+  }
+
+  /** Write a named scalar debug value (BYTES/arrays not supported — use write). */
+  writeDebugValue(name, value) {
+    return writeDebugValue(this, name, value);
+  }
+
+  /** Capped push for the debug event rings (oldest entries drop past the cap). */
+  _pushDebugEvent(ring, ev) {
+    pushDebugEvent(ring, ev, CartHostWeb.MAX_DEBUG_EVENTS);
+  }
+
+  /**
+   * Drain captured debug events — wc_log lines and wc_debug_mark(id)
+   * annotations, each stamped with the frame it occurred on — clearing the
+   * rings. Pull-model: the host stores what the cart emitted; nothing is
+   * read or computed per frame.
+   * @returns {{log: {frame:number, text:string}[], marks: {frame:number, id:number}[]}}
+   */
+  drainDebugEvents() {
+    const log = this.debugLog;
+    const marks = this.debugMarks;
+    this.debugLog = [];
+    this.debugMarks = [];
+    return { log, marks };
   }
 
   // --- Networking (ABI v3) ---
@@ -2218,7 +2304,7 @@ export class CartHostWeb {
     }
 
     info.flags = u32[base + 12] || 0;
-    info.audioIsF32 = !!(info.flags & 1);
+    info.audioIsF32 = !!(info.flags & FLAG_AUDIO_F32);
     info.audioSampleRate = u32[base + 13] || 0;
 
     // Read v3 fields (offset 56, 60)
@@ -2252,6 +2338,13 @@ export class CartHostWeb {
 
     // gpu_api (offset 64, u32 index 16) - 0=2D, 1=WebGL2, 2=WebGPU, 3=Vulkan
     info.gpuApi = u32[base + 16] || 0;
+
+    // Debug ABI (opt-in): FLAG_DEBUG + wc_debug_state(). Pull-only: the table
+    // is read by readDebugState on demand, never here or per frame.
+    info.hasDebug = !!(info.flags & FLAG_DEBUG);
+    // The cart declares it honours deterministic mode (host-seeded RNG and
+    // wc_time-only timing), recorded as CartHost records it.
+    info.hasDeterministic = !!(info.flags & FLAG_DETERMINISTIC);
 
     return info;
   }
@@ -2409,8 +2502,7 @@ export class CartHostWeb {
   }
 
   _rebaseClock() {
-    // This host has no deterministic fixed-step clock (that is a node-side
-    // harness feature), so there is only the wall-clock case to correct.
+    if (this._fixedStepMs > 0) return; // deterministic clock has no wall-clock gap
     const now = performance.now();
     const gap = now - this.lastFrameTime;
     if (gap > 0) {

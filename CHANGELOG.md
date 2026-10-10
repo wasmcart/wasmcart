@@ -145,6 +145,8 @@ for carts, provided by every host; a cart that never calls them reads
   and the controller's family (Xbox, PlayStation, Nintendo); `CartHostWeb`
   with no describer answers from the Gamepad API pad at the player's index.
 
+**`CartHostWeb` gains the debug ABI and `setFixedStep`**, as in `CartHost`: `FLAG_DEBUG`, `readDebugState`/`readDebugValue`/`writeDebugValue`, `wc_debug_mark` and `wc_log` captured for `drainDebugEvents`, and the fixed-step clock (shared code in `src/debugState.js`, bounds-checked against cart memory).
+
 **Migrating to 0.32:**
 
 - Carts that reach a path where the host writes into cart memory (GL

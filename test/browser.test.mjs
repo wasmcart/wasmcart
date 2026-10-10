@@ -574,6 +574,64 @@ check('cart memory: a cart with no allocator runs while it needs none', cartmem.
 check('cart memory: ...and gets the clear error when it calls glGetString', cartmem.noneError, true);
 check('cart memory: a malloc-only cart gets the same clear error, no fallback, no warning', [cartmem.malloc, cartmem.warnings], [true, 0]);
 
+// ─── Debug ABI and the fixed-step clock (SPEC.md, "Debug state") ──────────
+// (test/carthost.test.js and test/deterministic.test.js on the Node host).
+// test/fixtures/detrng.wasc sets WC_FLAG_DEBUG, exposes three u32 fields,
+// marks init (1) and frame 5 (2), and logs once at init.
+const dbg = await page.evaluate(async () => {
+  const { CartHostWeb } = await import('/web.js');
+  const host = new CartHostWeb();
+  await host.load('/test/fixtures/detrng.wasc');
+  const RIGHT = { connected: true, buttons: 1 << 11 };
+  const clock = () => {
+    const dv = new DataView(host.memory.buffer), p = host.info.timePtr;
+    return [dv.getFloat64(p, true), dv.getFloat64(p + 8, true)];
+  };
+  host.setFixedStep(1000); // above MAX_DELTA_MS: a step the caller chose is not clamped
+  const times = [];
+  for (let i = 0; i < 10; i++) {
+    host.runFrame([RIGHT]);
+    times.push(clock());
+    await new Promise((r) => setTimeout(r, i % 3 ? 0 : 30)); // uneven real time between frames
+  }
+  const out = {
+    hasDebug: host.getInfo().hasDebug,
+    fields: host.readDebugState().map((f) => [f.name, f.typeName, f.len]),
+    frame: host.readDebugValue('frame_n'),
+    playerX: host.readDebugValue('player_x').value,
+    times,
+  };
+  host.writeDebugValue('player_x', 7);
+  out.written = host.readDebugValue('player_x').value;
+  host.runFrame([RIGHT]);
+  out.steered = host.readDebugValue('player_x').value;
+  try { host.readDebugValue('nope'); out.missing = 'no error'; } catch (e) { out.missing = /not found/.test(e.message); }
+  const ev = host.drainDebugEvents();
+  out.marks = ev.marks;
+  out.log = ev.log.map((l) => [l.frame, /detrng init/.test(l.text)]);
+  out.drained = host.drainDebugEvents();
+  host.setFixedStep(0);
+  host.runFrame([RIGHT]);
+  out.wallDelta = clock()[1] < 1000;
+  host.destroy();
+  const plain = new CartHostWeb();
+  await plain.load('/test/fixtures/hello.wasc');
+  out.plain = plain.readDebugState();
+  plain.destroy();
+  return out;
+});
+check('debug ABI: FLAG_DEBUG read and the cart\'s field table listed',
+      [dbg.hasDebug, dbg.fields], [true, [['frame_n', 'u32', 1], ['noise_x', 'u32', 1], ['player_x', 'u32', 1]]]);
+check('debug ABI: fields read by name (10 frames, right held: player_x 64 -> 84)',
+      [dbg.frame, dbg.playerX], [{ name: 'frame_n', type: 'u32', value: 10 }, 84]);
+check('debug ABI: a written field is what the cart runs with', [dbg.written, dbg.steered, dbg.missing], [7, 9, true]);
+check('debug ABI: wc_debug_mark and wc_log captured frame-stamped, drained once',
+      [dbg.marks, dbg.log, dbg.drained], [[{ frame: 0, id: 1 }, { frame: 4, id: 2 }], [[0, true]], { log: [], marks: [] }]);
+check('setFixedStep: frame N reports time N * step and delta step, whatever the real time',
+      dbg.times, Array.from({ length: 10 }, (_, i) => [i * 1000, 1000]));
+check('setFixedStep(0) returns to the wall clock', dbg.wallDelta, true);
+check('debug ABI: a cart without FLAG_DEBUG has no debug state', dbg.plain, null);
+
 // ─── WebGPU textures and samplers, the documented example, the tier's edges ──
 // (test/wgpu-claim.test.js and test/wgpu-example.test.js on the Node host)
 const wgpu2 = await page.evaluate(async () => {

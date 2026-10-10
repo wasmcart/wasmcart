@@ -11,7 +11,7 @@
 // GPU memory is read from the kernel's per-client DRM accounting
 // (/proc/self/fdinfo, drm-memory-vram / drm-total-*), Linux only; elsewhere,
 // or on a software adapter with no DRM client, the plateau test is skipped.
-// WASMCART_VRAM_FRAMES sets its length (default 3000); WASMCART_VRAM_TEST=1 runs it.
+// WASMCART_VRAM_FRAMES sets its length (default 6000, under two seconds on a GPU).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -145,11 +145,9 @@ test('losing the host\'s device stops the cart and is reported once (gpuLost, on
   assert.equal(quiet.gpuLost, null);
 });
 
-// Opt-in (WASMCART_VRAM_TEST=1): it reads the machine's GPU memory, which other
-// processes and the driver's own caching move, so it is a measurement for a
-// quiet machine rather than a default test.
+// Runs wherever the kernel accounts GPU memory per process. The accounting is
+// this process's own, so other processes on the GPU do not move it.
 test('GPU memory levels off over thousands of frames when the loop yields between frames', async (t) => {
-  if (process.env.WASMCART_VRAM_TEST !== '1') return t.skip('set WASMCART_VRAM_TEST=1 to measure');
   if (processGpuBytes() === null) {
     // a WebGPU device must exist before a DRM client shows; probe with the cart
     const probe = new CartHost();
@@ -159,7 +157,7 @@ test('GPU memory levels off over thousands of frames when the loop yields betwee
     probe.destroy();
     if (seen === null) return t.skip('no per-process GPU memory accounting here (not Linux, or a software adapter)');
   }
-  const frames = Number(process.env.WASMCART_VRAM_FRAMES || 3000);
+  const frames = Number(process.env.WASMCART_VRAM_FRAMES || 6000);
   const host = new CartHost();
   await host.load(fixture('wgpuvram.wasc'));
   try {
@@ -174,14 +172,16 @@ test('GPU memory levels off over thousands of frames when the loop yields betwee
     const frame = await host.readGpuFrame();
     const want = [[200, 40, 40], [40, 200, 40], [40, 40, 200], [200, 200, 40]][host.readDebugValue('vram.colour').value];
     assert.deepEqual(pixel(frame, 32, 32).slice(0, 3), want, 'the last frame drew this frame\'s texture');
-    // Level after the first third of the run; the rest may wander by GC
-    // timing but must not climb with the frame count (that would be ~1.3 MiB
-    // a frame: thousands of MiB over the run).
-    const settled = samples.filter(s => s.frame >= frames / 3);
-    const first = settled[0].mib, peak = Math.max(...settled.map(s => s.mib)), last = settled.at(-1).mib;
+    // The driver's and Dawn's pools grow for the first several hundred frames
+    // (to ~220 MiB here, reached anywhere from frame 750 to 2250), so the
+    // level is the high-water mark of the first half. The second half may
+    // wander by GC timing but must not climb past it: a leak is ~1.3 MiB a
+    // frame, ~2000 MiB over the second half.
+    const half = samples.filter(s => s.frame <= frames / 2), rest = samples.filter(s => s.frame > frames / 2);
+    const level = Math.max(...half.map(s => s.mib)), peak = Math.max(...rest.map(s => s.mib)), last = rest.at(-1).mib;
     t.diagnostic(`GPU memory (MiB) by frame: ${samples.map(s => `${s.frame}:${s.mib.toFixed(0)}`).join(' ')}`);
-    assert.ok(peak - first < 64, `GPU memory kept growing after frame ${settled[0].frame}: ${first.toFixed(0)} -> peak ${peak.toFixed(0)} MiB`);
-    assert.ok(last - first < 64, `GPU memory ${first.toFixed(0)} -> ${last.toFixed(0)} MiB`);
+    assert.ok(peak - level < 64, `GPU memory kept growing after frame ${half.at(-1).frame}: ${level.toFixed(0)} -> peak ${peak.toFixed(0)} MiB`);
+    assert.ok(last - level < 64, `GPU memory ${level.toFixed(0)} -> ${last.toFixed(0)} MiB`);
   } finally {
     host.destroy();
   }

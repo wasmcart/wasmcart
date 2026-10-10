@@ -102,6 +102,24 @@ test('debug ABI: readDebugState/readDebugValue/writeDebugValue round-trip', asyn
   assert.throws(() => host.readDebugValue('nope'), /not found/);
 });
 
+test('debug ABI: pointers outside cart memory are refused, not read', () => {
+  const host = new CartHost();
+  const mem = new WebAssembly.Memory({ initial: 1 }); // 65536 bytes
+  host.memory = mem;
+  host.info = { hasDebug: true, flags: 1 << 5 };
+  const dv = new DataView(mem.buffer);
+  new Uint8Array(mem.buffer).set(new TextEncoder().encode('far\0'), 0x100);
+  dv.setUint32(0x300, 0x100, true);
+  dv.setUint32(0x304, 65536 - 2, true); // a u32 straddling the end of memory
+  dv.setUint8(0x308, 4);                // type U32
+  dv.setUint32(0x30C, 1, true);
+  host.instance = { exports: { wc_debug_state: () => 0x300 } };
+  assert.throws(() => host.readDebugValue('far'), /runs past cart memory/);
+  assert.throws(() => host.writeDebugValue('far', 1), /runs past cart memory/);
+  host.instance = { exports: { wc_debug_state: () => 65536 - 8 } }; // table off the end
+  assert.throws(() => host.readDebugState(), /runs past cart memory/);
+});
+
 test('debug ABI: a non-debug cart returns null (default off, structurally absent)', () => {
   const host = new CartHost();
   host.info = { hasDebug: false, flags: 0 };
