@@ -22,7 +22,9 @@
 //     so the host can destroy released textures and buffers nothing uses
 //     (wgpu/glue-release.mjs; docs/webgpu.md "GPU memory").
 //
-// Needs emcc (the repo-local emsdk works). Not run by npm install or tests:
+// Needs emcc at the version pinned in wgpu/emdawnwebgpu.json (`glueEmcc`):
+// the transforms match that release's generated code, and another emcc
+// arranges its exports differently. Not run by npm install or tests:
 // the output is committed, and is the frozen snapshot.
 //
 //   node scripts/build-wgpu-glue.mjs [path/to/emdawnwebgpu_pkg]
@@ -46,6 +48,14 @@ function emcc() {
     if (fs.existsSync(file)) return file
   }
   throw new Error('emcc not found: put emsdk on PATH or set EMCC')
+}
+
+function checkEmcc(file) {
+  const v = execFileSync(file, ['--version'], { encoding: 'utf8' }).split('\n')[0]
+  if (!v.includes(` ${pin.glueEmcc} `)) {
+    throw new Error(`the glue is generated with emcc ${pin.glueEmcc} (scripts/wgpu/emdawnwebgpu.json glueEmcc), found: ${v}`)
+  }
+  return file
 }
 
 // The package: a path given on the command line, or the pinned release
@@ -79,7 +89,7 @@ try {
   ].join('\n'))
   fs.writeFileSync(path.join(work, 'post.js'), "Module['WebGPU'] = WebGPU;\nModule['wcUpdateMemoryViews'] = updateMemoryViews;\n")
 
-  execFileSync(emcc(), [
+  execFileSync(checkEmcc(emcc()), [
     path.join(work, 'all.c'), '-O1', `--use-port=${path.join(pkg, 'emdawnwebgpu.port.py')}`,
     '--no-entry', '-sMODULARIZE=1', '-sEXPORT_ES6=1', '-sENVIRONMENT=web,node',
     '-sALLOW_MEMORY_GROWTH=1', '-sASSERTIONS=0', "-sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=$WebGPU",

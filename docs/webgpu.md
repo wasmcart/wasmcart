@@ -14,7 +14,7 @@ the wasmcart repository, not the npm package, so build it from a clone:
 ```sh
 git clone https://github.com/wasmcart/wasmcart && cd wasmcart && npm install
 cd examples/webgpu-hello
-EMDAWN=<path>/emdawnwebgpu_pkg ./build.sh     # writes webgpu-hello.wasc
+EMDAWN=<path>/emdawnwebgpu_pkg ./build.sh     # writes webgpu-hello.wasc (the package: see Toolchain)
 npx wasmcart webgpu-hello.wasc                # opens it in a window (Node host)
 ```
 
@@ -427,8 +427,12 @@ on these hosts):
 ## Regenerating the host glue
 
 ```sh
-EMCC=<emsdk>/upstream/emscripten/emcc node scripts/build-wgpu-glue.mjs
+EMCC=<emsdk 4.0.6>/upstream/emscripten/emcc node scripts/build-wgpu-glue.mjs
 ```
+
+The generator needs emcc **4.0.6** (`glueEmcc` in `scripts/wgpu/emdawnwebgpu.json`),
+not the 4.0.18 that builds carts: its transforms match the code that release
+generates, and the script refuses any other version.
 
 downloads the pinned package, checks its SHA-256, and rewrites
 `src/wgpu/emdawnwebgpu-glue.mjs` and its manifest. The script routes every
