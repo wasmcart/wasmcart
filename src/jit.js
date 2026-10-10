@@ -29,12 +29,21 @@
  *     0 hotness threshold  1 compile nothing (1 = the host's switch is off)
  *     2 tier-up interval   3 max module bytes   4 max total linked bytes
  *     5 max linked functions   6 max compiles in flight
+ *     7 restore generation: 0 until the host first restores a state into this
+ *       instance; every restore then sets a new value (random, 1..2^31-1,
+ *       never the current one). Engines compare it with the value they stored
+ *       and, when it differs, forget every slot and pending cell and re-link.
  *
  * Ownership: every link belongs to the instance that asked for it, and its
  * slots, limits and in-flight compiles are that instance's alone (a worker
  * instance has its own). An asynchronous result for an instance that is gone,
  * or whose slots were reset by a state restore, is dropped: it is never
  * installed into, or written into the memory of, anything else.
+ *
+ * Restores: unlinkAll() unlinks every slot and changes key 7 in one step. The
+ * slots it frees are not reused until the cart has read key 7 since the
+ * restore, so a slot number from before a restore can only trap, never reach
+ * different code, until the engine has seen the new generation.
  */
 
 /** Spec minimums: every host accepts at least this much per cart instance. */
@@ -86,8 +95,8 @@ export function createJitImports(opts) {
   function stateOf(inst) {
     let s = states.get(inst);
     if (!s) {
-      s = { inst, dead: false, epoch: 0, bytes: 0, functions: 0, pending: 0, reserved: 0,
-        links: new Map(), free: [] };
+      s = { inst, dead: false, epoch: 0, generation: 0, bytes: 0, functions: 0, pending: 0, reserved: 0,
+        links: new Map(), free: [], held: [] };
       states.set(inst, s);
     }
     return s;
@@ -217,13 +226,13 @@ export function createJitImports(opts) {
     return -2;
   }
 
-  function unlinkIn(s, first) {
+  function unlinkIn(s, first, hold = false) {
     const link = s.links.get(first);
     if (!link) return;
     s.links.delete(first);
     const table = s.inst.exports.__indirect_function_table;
     for (let i = 0; i < link.count; i++) table.set(first + i, null);
-    giveSlots(s, first, link.count);
+    if (hold) s.held.push([first, link.count]); else giveSlots(s, first, link.count);
     s.functions -= link.count;
     s.bytes -= link.bytes;
     stats.functions -= link.count;
@@ -250,6 +259,15 @@ export function createJitImports(opts) {
       case 4: return Math.min(maxTotalBytes, 0x7fffffff);
       case 5: return Math.min(maxFunctions, 0x7fffffff);
       case 6: return Math.min(maxPending, 0x7fffffff);
+      case 7: {
+        const inst = getInstance();
+        if (!inst) return 0;
+        const s = stateOf(inst);
+        // The cart has now seen this generation: slots freed by the restore
+        // may be handed out again.
+        for (const [first, count] of s.held.splice(0)) giveSlots(s, first, count);
+        return s.generation;
+      }
       default: return -1;
     }
   }
@@ -258,16 +276,21 @@ export function createJitImports(opts) {
     imports: { wc_jit_link, wc_jit_unlink, wc_jit_config },
     stats,
     /**
-     * Unlink every slot of the current instance and drop its in-flight
-     * compiles. A host calls this after restoring a save state or rewinding:
-     * JIT slots are never carried across a restore.
+     * Unlink every slot of the current instance, drop its in-flight
+     * compiles and change its restore generation (wc_jit_config key 7), as
+     * one step. A host calls this right after writing a save state back
+     * (restore, rewind): JIT slots are never carried across a restore. The
+     * freed slots stay unused until the cart reads key 7.
      */
     unlinkAll() {
       const inst = getInstance();
       if (!inst) return;
       const s = stateOf(inst);
       s.epoch++;
-      for (const first of [...s.links.keys()]) unlinkIn(s, first);
+      let g;
+      do g = 1 + Math.floor(Math.random() * 0x7fffffff); while (g === s.generation || g > 0x7fffffff);
+      s.generation = g;
+      for (const first of [...s.links.keys()]) unlinkIn(s, first, true);
     },
     /** The current instance is going away: drop anything still compiling for it. */
     dispose() {

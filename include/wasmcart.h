@@ -486,6 +486,10 @@ static inline void wc_pad_rumble_stop(unsigned int pad_id) { (void)pad_id; }
 #define WC_JIT_CFG_MAX_TOTAL      4
 #define WC_JIT_CFG_MAX_FUNCTIONS  5
 #define WC_JIT_CFG_MAX_IN_FLIGHT  6
+// Restore generation: changes every time the host restores a save state or
+// rewinds. Read it at frame (or dispatch) entry; when it differs from the value
+// you stored, forget every slot and pending *result cell and re-link lazily.
+#define WC_JIT_CFG_RESTORE_GEN    7
 
 #ifdef __wasm__
 __attribute__((import_module("env"), import_name("wc_jit_link")))

@@ -1040,6 +1040,7 @@ Host advice; `-1` means no opinion.
 | 4 | Max total bytes linked at once |
 | 5 | Max functions linked at once |
 | 6 | Max compiles in flight |
+| 7 | Restore generation: `0` until the host first restores a state into this instance; each restore then sets a new value in `1..2^31-1`, never the current one (hosts pick it at random, so a state saved by another instance or process is unlikely to carry it). Never `-1`. |
 
 ### Rules for hosts
 
@@ -1052,9 +1053,17 @@ Host advice; `-1` means no opinion.
   the host's actual values, never lower): one module 4 MiB; 256 MiB linked at
   once; 65536 functions linked at once; 32 compiles in flight. Unlinking gives
   bytes and functions back.
-- **Save states and rewind.** Slots are not carried across a restore. After the
-  host writes a state back, every slot linked before it is unlinked (calling it
-  traps) and any compile in flight is dropped. (The JS hosts: `jitUnlinkAll()`.)
+- **Save states and rewind.** Slots are not carried across a restore. Right
+  after the host writes a state back, and before the cart runs again, it does
+  one step: every slot linked before is unlinked (calling it traps), any
+  compile in flight is dropped (its `*result` cell is never written), and the
+  restore generation (key 7) changes. The generation lives in the host, per
+  instance, never in cart memory, so a restore never brings an old value back.
+  (The JS hosts: `jitUnlinkAll()`.)
+- **No silent reuse.** Slots freed by a restore are not handed out again until
+  the cart has read key 7 since that restore. Until then a slot number from
+  before the restore can only trap, never reach other code. (Slots the cart
+  unlinks itself are reusable at once.)
 - **The off switch.** A host may let its user turn runtime code generation off
   (`jit: false`, `WASMCART_JIT=0`). It is a breaking setting, so it is loud: the
   cart sees `-1` from every link and `1` from key 1, and on the cart's first JIT
@@ -1068,7 +1077,11 @@ Host advice; `-1` means no opinion.
   Prove it by running your test suite with everything compiled.
 - On `-1`, keep interpreting. If you cannot run without it, stop with a message
   that says so.
-- After a restore, slots from before it are gone: re-link lazily on a miss.
+- Detect restores with key 7. Read it once at start and store it; read it
+  again at every frame or dispatch entry, before calling any slot. When it
+  differs, forget every slot number and every pending `*result` cell (a
+  restore drops compiles in flight, so a cell left at `-2` never settles),
+  store the new value, and re-link lazily as functions get hot again.
 
 ### Notes
 

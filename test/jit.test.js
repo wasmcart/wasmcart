@@ -233,6 +233,44 @@ test('a restore (unlinkAll) unlinks every slot and drops compiles in flight', as
   assert.equal(s.ex.callslot(cell(s.dv), 1), 104);
 });
 
+test('a restore changes key 7 every time, never to the value it had', async () => {
+  const { ex, jit } = await boot();
+  const seen = [ex.cfg(7)];
+  for (let i = 0; i < 20; i++) {
+    jit.unlinkAll();
+    const g = ex.cfg(7);
+    assert.ok(g >= 1 && g <= 0x7fffffff);
+    assert.notEqual(g, seen.at(-1));
+    seen.push(g);
+  }
+});
+
+test('MUST FAIL: an engine detects a stale slot through key 7; one that skips the check traps', async () => {
+  const { ex, jit, len } = await boot();
+  // A save state taken here carries the engine's slot number and generation.
+  const engine = { gen: ex.cfg(7), slot: ex.go(MOD, len, CELL) };
+  assert.equal(ex.callslot(engine.slot, 1), 104);
+  const saved = new Uint8Array(ex.memory.buffer).slice();
+  // Restore: memory is written back, then the host unlinks and bumps.
+  new Uint8Array(ex.memory.buffer).set(saved);
+  jit.unlinkAll();
+  // Control: the engine that trusts its stored slot traps.
+  assert.throws(() => ex.callslot(engine.slot, 1), WebAssembly.RuntimeError);
+  // A link made before the engine reads key 7 never reuses the stale slot.
+  const other = ex.go(MOD, len, CELL);
+  assert.notEqual(other, engine.slot);
+  assert.throws(() => ex.callslot(engine.slot, 1), WebAssembly.RuntimeError);
+  ex.unlink(other);
+  // The engine checks at frame entry, sees the change, re-links lazily.
+  const g = ex.cfg(7);
+  assert.notEqual(g, engine.gen, 'restore detected');
+  engine.gen = g;
+  engine.slot = ex.go(MOD, len, CELL);
+  assert.equal(ex.callslot(engine.slot, 1), 104);
+  // Having read key 7, the slots the restore freed are free again.
+  assert.equal(engine.slot, 1, 'held slot reused after key 7 was read');
+});
+
 test('MUST FAIL: over each limit the link is refused with -1 (under it, it links)', async () => {
   const m = jitModule();
   const size = await boot({ maxModuleBytes: m.length - 1 });
@@ -291,7 +329,8 @@ test('wc_jit_config reports the knobs and the spec-minimum limits', async () => 
   assert.equal(ex.cfg(4), 256 * 1024 * 1024);
   assert.equal(ex.cfg(5), 65536);
   assert.equal(ex.cfg(6), 32);
-  assert.equal(ex.cfg(7), -1);
+  assert.equal(ex.cfg(7), 0, 'restore generation starts at 0');
+  assert.equal(ex.cfg(8), -1);
   const plain = await boot();
   assert.equal(plain.ex.cfg(0), -1);
   assert.equal(plain.ex.cfg(1), -1);

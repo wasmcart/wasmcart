@@ -60,7 +60,7 @@ is the JIT. Optional for carts, provided by every host.
 - New imports `wc_jit_link(bytes, len, *result)` (first slot, `-1` refused,
   `-2` pending into `*result`, `-3` try later), `wc_jit_unlink(first_slot)`
   and `wc_jit_config(key)` (keys 0-2 engine advice and the off switch, 3-6 the
-  limits). Declared in `wasmcart.h`.
+  limits, 7 the restore generation). Declared in `wasmcart.h`.
 - A generated module imports only from namespace `cart`, resolved to the
   cart's own exports, so it has exactly the cart's authority.
 - Per instance: slots, limits and compiles belong to the instance that asked
@@ -68,7 +68,11 @@ is the JIT. Optional for carts, provided by every host.
   cart is dropped.
 - Spec minimum limits: 4 MiB per module, 256 MiB and 65536 functions linked
   at once, 32 compiles in flight.
-- Slots do not survive a save-state restore or rewind (`jitUnlinkAll()`).
+- Slots do not survive a save-state restore or rewind. `jitUnlinkAll()`
+  unlinks every slot, drops compiles in flight and changes `wc_jit_config(7)`
+  in one step; engines compare key 7 at frame entry and re-link when it
+  changed. Slots freed by a restore are reused only after the cart has read
+  key 7, so a stale slot number traps rather than reaching other code.
 - `jit: false` or `WASMCART_JIT=0` turns it off: carts get `-1`, and the user
   gets one unmistakable notice (`onJitNotice`, stderr, the player's window
   title, a banner in a page).

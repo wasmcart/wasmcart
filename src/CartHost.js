@@ -1185,7 +1185,9 @@ export class CartHost {
   /**
    * Unlink every runtime-generated function of the cart. A host that restores
    * a save state or rewinds calls this after writing memory back: JIT slots
-   * are never carried across a restore (SPEC.md, "Runtime code generation").
+   * are never carried across a restore, and the restore generation
+   * (wc_jit_config key 7) changes in the same step so the cart's engine sees
+   * it (SPEC.md, "Runtime code generation").
    */
   jitUnlinkAll() {
     this._jit?.unlinkAll();
