@@ -5,7 +5,7 @@
 // no compiler anywhere. The must-fail controls each pair with a passing twin.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createJitImports, jitOptionsFromEnv, JIT_LIMITS, JIT_OFF_NOTICE } from '../src/jit.js';
+import { createJitImports, jitOptionsFromEnv, restoreGeneration, JIT_LIMITS, JIT_OFF_NOTICE } from '../src/jit.js';
 
 const uleb = (n) => { const o = []; do { let b = n & 0x7f; n >>>= 7; if (n) b |= 0x80; o.push(b); } while (n); return o; };
 const str = (s) => [...uleb(s.length), ...Buffer.from(s)];
@@ -233,16 +233,47 @@ test('a restore (unlinkAll) unlinks every slot and drops compiles in flight', as
   assert.equal(s.ex.callslot(cell(s.dv), 1), 104);
 });
 
-test('a restore changes key 7 every time, never to the value it had', async () => {
-  const { ex, jit } = await boot();
-  const seen = [ex.cfg(7)];
-  for (let i = 0; i < 20; i++) {
-    jit.unlinkAll();
-    const g = ex.cfg(7);
-    assert.ok(g >= 1 && g <= 0x7fffffff);
-    assert.notEqual(g, seen.at(-1));
-    seen.push(g);
+// The known answer every host must reproduce (SPEC.md, wc_jit_config key 7):
+// 64 KiB where byte i is (i * 31 + 7) & 255. The browser suite and
+// wasmcart-native's test check the same value.
+const katBytes = () => { const b = new Uint8Array(65536); for (let i = 0; i < b.length; i++) b[i] = (i * 31 + 7) & 255; return b; };
+const KAT_GENERATION = 1954405829;
+
+test('restore generation: FNV-1a 32 over little-endian words, the known answer', () => {
+  const b = katBytes();
+  // independent reference: byte-wise assembly of each word
+  let h = 2166136261;
+  for (let i = 0; i < b.length; i += 4) {
+    const w = (b[i] | (b[i + 1] << 8) | (b[i + 2] << 16) | (b[i + 3] << 24)) >>> 0;
+    h = Math.imul(h ^ w, 16777619) >>> 0;
   }
+  assert.equal(h & 0x7fffffff, KAT_GENERATION);
+  assert.equal(restoreGeneration(b.buffer, 0), KAT_GENERATION);
+  assert.equal(restoreGeneration(b, 0), KAT_GENERATION, 'a Uint8Array view hashes the same');
+  // equal to the current value: the next one; 2^31-1 wraps to 1
+  assert.equal(restoreGeneration(b.buffer, KAT_GENERATION), KAT_GENERATION + 1);
+  assert.equal(restoreGeneration(new ArrayBuffer(0), 2166136261 & 0x7fffffff), (2166136261 & 0x7fffffff) + 1);
+});
+
+test('a restore sets key 7 from the restored bytes: same state, same value, in any instance', async () => {
+  const a = await boot();
+  const b = await boot();
+  assert.equal(a.ex.cfg(7), 0);
+  const state = new Uint8Array(a.ex.memory.buffer).slice();
+  new Uint8Array(b.ex.memory.buffer).set(state);
+  a.jit.unlinkAll();
+  b.jit.unlinkAll();
+  const g = a.ex.cfg(7);
+  assert.ok(g >= 1 && g <= 0x7fffffff);
+  assert.equal(b.ex.cfg(7), g, 'two peers restoring one state agree');
+  assert.equal(g, restoreGeneration(state, 0));
+  // restoring the same state again still changes the value
+  a.jit.unlinkAll();
+  assert.equal(a.ex.cfg(7), g === 0x7fffffff ? 1 : g + 1);
+  // a different state gives a different value
+  new Uint8Array(b.ex.memory.buffer)[500] ^= 1;
+  b.jit.unlinkAll();
+  assert.notEqual(b.ex.cfg(7), g);
 });
 
 test('MUST FAIL: an engine detects a stale slot through key 7; one that skips the check traps', async () => {

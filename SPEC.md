@@ -1040,7 +1040,7 @@ Host advice; `-1` means no opinion.
 | 4 | Max total bytes linked at once |
 | 5 | Max functions linked at once |
 | 6 | Max compiles in flight |
-| 7 | Restore generation: `0` until the host first restores a state into this instance; each restore then sets a new value in `1..2^31-1`, never the current one (hosts pick it at random, so a state saved by another instance or process is unlikely to carry it). Never `-1`. |
+| 7 | Restore generation: `0` until the host first restores a state into this instance; each restore then sets it from the restored memory (below), so the same state gives the same value on every host and peer. Never `-1`. |
 
 ### Rules for hosts
 
@@ -1060,6 +1060,14 @@ Host advice; `-1` means no opinion.
   restore generation (key 7) changes. The generation lives in the host, per
   instance, never in cart memory, so a restore never brings an old value back.
   (The JS hosts: `jitUnlinkAll()`.)
+- **The generation's value.** Every host computes it the same way, so netplay
+  peers and replays stay deterministic: FNV-1a 32 over the cart's whole linear
+  memory after the write-back, read as little-endian 32-bit words (`h =
+  2166136261`, then per word `h = (h XOR word) * 16777619 mod 2^32`); `g = h AND
+  0x7fffffff`; `0` becomes `1`; if `g` equals the current value it becomes `g +
+  1` (`2^31-1` wraps to `1`). Known answer: 64 KiB with byte `i` = `(i * 31 + 7)
+  AND 255`, current `0`, gives `1954405829`. A state saved elsewhere carries the
+  value its own memory stored, which matches only by hash collision.
 - **No silent reuse.** Slots freed by a restore are not handed out again until
   the cart has read key 7 since that restore. Until then a slot number from
   before the restore can only trap, never reach other code. (Slots the cart

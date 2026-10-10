@@ -384,9 +384,13 @@ check('direct present: same picture as a scaled redirect', direct.match.sample, 
 // Small modules compile synchronously; syncLimit 0 forces the main-thread
 // async path a large module takes (Chromium refuses sync compiles > 4 KB).
 const jit = await page.evaluate(async () => {
-  const { CartHostWeb } = await import('/web.js');
+  const { CartHostWeb, restoreGeneration } = await import('/web.js');
   const bytes = new Uint8Array(await (await fetch('/test/fixtures/jitcart.wasc')).arrayBuffer());
   const out = {};
+  // the restore generation's known answer (test/jit.test.js, wasmcart-native)
+  const kat = new Uint8Array(65536);
+  for (let i = 0; i < kat.length; i++) kat[i] = (i * 31 + 7) & 255;
+  out.generation = { kat: restoreGeneration(kat.buffer, 0) };
   for (const [name, opts] of [['sync', {}], ['async', { jit: { syncLimit: 0 } }]]) {
     const host = new CartHostWeb();
     await host.load(bytes, opts);
@@ -409,6 +413,7 @@ const jit = await page.evaluate(async () => {
 });
 check('jit: sync link, call, unlink, re-link', jit.sync, { modules: 1, unlinked: 1, failures: 0 });
 check('jit: async link on the main thread', jit.async, { modules: 1, unlinked: 1, failures: 0 });
+check('jit: restore generation known answer (same as Node and native)', jit.generation, { kat: 1954405829 });
 check('jit: off switch refuses and shows a banner', jit.off, { refused: 1, banner: true, bannerGone: true });
 
 // ─── WebGPU (SPEC.md, "WebGPU") on the browser's own navigator.gpu ────────

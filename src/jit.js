@@ -30,9 +30,11 @@
  *     2 tier-up interval   3 max module bytes   4 max total linked bytes
  *     5 max linked functions   6 max compiles in flight
  *     7 restore generation: 0 until the host first restores a state into this
- *       instance; every restore then sets a new value (random, 1..2^31-1,
- *       never the current one). Engines compare it with the value they stored
- *       and, when it differs, forget every slot and pending cell and re-link.
+ *       instance; every restore then sets restoreGeneration(memory, current)
+ *       (a hash of the restored memory in 1..2^31-1, never the current value),
+ *       so the same state gives the same value on every host and peer. Engines
+ *       compare it with the value they stored and, when it differs, forget
+ *       every slot and pending cell and re-link.
  *
  * Ownership: every link belongs to the instance that asked for it, and its
  * slots, limits and in-flight compiles are that instance's alone (a worker
@@ -45,6 +47,33 @@
  * restore, so a slot number from before a restore can only trap, never reach
  * different code, until the engine has seen the new generation.
  */
+
+const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+
+/**
+ * The restore generation for a state just written back (SPEC.md, wc_jit_config
+ * key 7): FNV-1a 32 over the memory as little-endian 32-bit words (offset basis
+ * 2166136261, prime 16777619, one xor + multiply per word), masked to 31 bits;
+ * 0 becomes 1, and a value equal to `current` becomes the next one (2^31-1
+ * wraps to 1). Every host computes exactly this, so it is deterministic.
+ * @param {ArrayBuffer|SharedArrayBuffer|Uint8Array} memory
+ * @param {number} current
+ */
+export function restoreGeneration(memory, current) {
+  const bytes = memory instanceof Uint8Array ? memory : new Uint8Array(memory);
+  const n = bytes.byteLength >>> 2;
+  let h = 2166136261;
+  if (LITTLE_ENDIAN && (bytes.byteOffset & 3) === 0) {
+    const w = new Uint32Array(bytes.buffer, bytes.byteOffset, n);
+    for (let i = 0; i < n; i++) h = Math.imul(h ^ w[i], 16777619);
+  } else {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, n * 4);
+    for (let i = 0; i < n; i++) h = Math.imul(h ^ dv.getUint32(i * 4, true), 16777619);
+  }
+  let g = (h & 0x7fffffff) || 1;
+  if (g === current) g = g === 0x7fffffff ? 1 : g + 1;
+  return g;
+}
 
 /** Spec minimums: every host accepts at least this much per cart instance. */
 export const JIT_LIMITS = Object.freeze({
@@ -287,9 +316,8 @@ export function createJitImports(opts) {
       if (!inst) return;
       const s = stateOf(inst);
       s.epoch++;
-      let g;
-      do g = 1 + Math.floor(Math.random() * 0x7fffffff); while (g === s.generation || g > 0x7fffffff);
-      s.generation = g;
+      const mem = getMemory(inst);
+      s.generation = restoreGeneration(mem ? mem.buffer : new ArrayBuffer(0), s.generation);
       for (const first of [...s.links.keys()]) unlinkIn(s, first, true);
     },
     /** The current instance is going away: drop anything still compiling for it. */

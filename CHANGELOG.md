@@ -71,7 +71,8 @@ is the JIT. Optional for carts, provided by every host.
 - Slots do not survive a save-state restore or rewind. `jitUnlinkAll()`
   unlinks every slot, drops compiles in flight and changes `wc_jit_config(7)`
   in one step; engines compare key 7 at frame entry and re-link when it
-  changed. Slots freed by a restore are reused only after the cart has read
+  changed. Its value is a specified hash of the restored memory (FNV-1a 32 over
+  little-endian words, `restoreGeneration()`), the same on every host. Slots freed by a restore are reused only after the cart has read
   key 7, so a stale slot number traps rather than reaching other code.
 - `jit: false` or `WASMCART_JIT=0` turns it off: carts get `-1`, and the user
   gets one unmistakable notice (`onJitNotice`, stderr, the player's window
