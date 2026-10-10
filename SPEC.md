@@ -437,6 +437,11 @@ JSPI is involved. A host that steps several frames without yielding (a test
 harness) delivers them when it next yields; a cart must not assume a result
 arrives on the next frame.
 
+**A host MUST let its event loop run a full turn (a macrotask, not only
+microtasks) at least every 16 frames.** Asynchronous results, and the freeing
+of objects the cart released, depend on it: a loop of `await host.runFrame()`
+never leaves the microtask queue, and GPU memory then grows without bound.
+
 Mapped ranges are copies in the cart's memory (wasm cannot alias GPU
 memory); `wgpuQueueWriteBuffer` and `wgpuQueueWriteTexture` are the fast
 upload path.
@@ -709,6 +714,12 @@ The size computation MUST NOT overflow: `width * height * 4` can exceed 2^32
 in 32-bit integers would turn an absurd request into a small, plausible one.
 
 A host SHOULD warn on rejection, and SHOULD do so once rather than per frame.
+
+**GPU carts.** For a cart with `gpu_api` 1 or 2 the frame is the GL default
+framebuffer or the WebGPU surface, not `fb_ptr`. Such a cart changes size by
+resizing that (for WebGPU, `wgpuSurfaceConfigure` with the new size) and
+writing the same size into `wc_info_t`; the framebuffer bound check above does
+not apply.
 
 ## Debug state
 

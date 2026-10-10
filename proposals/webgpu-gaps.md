@@ -1,6 +1,7 @@
 # Proposals: WebGPU tier gaps that need a spec or behaviour change
 
-Status: **proposals only, for monteslu's decision.** Nothing here is
+Status (2026-10-10): 2 and 4 adopted into SPEC.md for 0.32; 1 is docs-only
+for 0.32, glue destroy (a) after it; 3 deferred past 0.32. Otherwise not
 implemented. docs/webgpu.md documents today's behaviour for each item; the
 wording below is what SPEC.md could say if a change is approved. Measured on
 2026-10-09 with test/fixtures/wgpuedges.c and wgpuvram.c (Node host, Chromium,
@@ -24,7 +25,7 @@ Chromium grows ~2.5 MiB a frame: 7 GB at frame 3000, nearly the whole card.
   hosts MAY destroy a released texture or buffer once nothing depends on it.
 - (c) Docs only (done): tell cart authors to reuse resources.
 
-Recommendation: (c) for 0.32, (a) after it with a test in the browser suite
+Decided (2026-10-10): (c) for 0.32, (a) after it with a test in the browser suite
 (wgpuvram must plateau in Chromium).
 
 ## 2. The yield between frames (host contract)

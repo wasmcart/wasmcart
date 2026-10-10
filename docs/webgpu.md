@@ -216,7 +216,7 @@ a macrotask turn**, not just `await`: that is when async results reach the
 cart, and when the WebGPU implementation frees objects the cart released. A
 loop of `await host.runFrame()` never leaves the microtask queue; on the Node
 host GPU memory then grew by about 0.9 MiB per frame without bound (measured on
-a real cart). Yield after every frame, or at least every 16 frames:
+a real cart). Yield after every frame (SPEC.md requires at least every 16):
 
 ```js
 for (let frame = 0; running; frame++) {
@@ -227,7 +227,7 @@ for (let frame = 0; running; frame++) {
 
 The bundled hosts already do: `wasmcart-play` and a page loop per animation
 frame, wasmcart-native runs its event loop every frame, and romdev yields
-every 16 frames of a burst.
+between the frames of a stepped burst.
 
 ## GPU memory
 
@@ -328,7 +328,7 @@ complete one.
 | `CartHostWeb`: Firefox | the browser's `navigator.gpu` | **not by default on Linux**: Firefox 157 on Linux has no `navigator.gpu`, so a WebGPU-only cart is refused there with the reason. With `dom.webgpu.enabled` set, the example renders correctly (Firefox 157, Linux, RX 7600). Not tested on Windows, where Firefox ships WebGPU |
 | `CartHostWeb`: Safari | the browser's `navigator.gpu` | **not tested** (Safari 26 ships WebGPU; nobody has run a cart on it yet) |
 | wasmcart-native | native-dawn's `dawn.node` in its embedded Node, when built with `WASMCART_WGPU_JS_DIR` and `NATIVE_DAWN_DIR` | Linux. Tested, RX 7600 |
-| romdev | wasmcart's `CartHost` | frames, screenshots and debug state; yields every 16 frames of a stepped burst |
+| romdev | wasmcart's `CartHost` | frames, screenshots and debug state; yields between the frames of a stepped burst |
 | wasmcart-android, wasmcart-libretro | built without WebGPU | refuse WebGPU-only carts with the reason; dual carts run on GL |
 
 In Chromium on Linux, WebGPU without `--enable-features=Vulkan` (plus
@@ -401,6 +401,8 @@ on these hosts):
   "Determinism").
 - Hosts: Firefox on Linux needs a preference set, Safari is untested, and the
   Android and libretro hosts have no WebGPU yet.
+- wasmcart-native: `--shot` does not write a frame after a WebGPU cart
+  reconfigures its surface to a new size.
 
 ## Regenerating the host glue
 
