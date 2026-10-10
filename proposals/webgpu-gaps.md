@@ -1,8 +1,8 @@
 # Proposals: WebGPU tier gaps that need a spec or behaviour change
 
-Status (2026-10-10): 2 and 4 adopted into SPEC.md for 0.32; 1 is docs-only
-for 0.32, glue destroy (a) after it; 3 deferred past 0.32. Otherwise not
-implemented. docs/webgpu.md documents today's behaviour for each item; the
+Status (2026-10-10): 2 and 4 adopted into SPEC.md for 0.32; 1 (a), glue
+destroy, implemented; 3 (a), host stops and reports, implemented (b-d not).
+Otherwise not implemented. docs/webgpu.md documents today's behaviour for each item; the
 wording below is what SPEC.md could say if a change is approved. Measured on
 2026-10-09 with test/fixtures/wgpuedges.c and wgpuvram.c (Node host, Chromium,
 wasmcart-native; AMD RX 7600, Linux).
@@ -28,6 +28,12 @@ Chromium grows ~2.5 MiB a frame: 7 GB at frame 3000, nearly the whole card.
 Decided (2026-10-10): (c) for 0.32, (a) after it with a test in the browser suite
 (wgpuvram must plateau in Chromium).
 
+Done: (a), in the host glue (src/wgpu/release.js, hooks added by
+scripts/wgpu/glue-release.mjs). wgpuvram is flat at ~80 MiB in Chromium and
+~60 MiB on Node over 3000 frames; test/fixtures/wgpurelease.c checks that a
+texture or buffer used through a kept view, bind group or render bundle, or
+released before submit, still draws.
+
 ## 2. The yield between frames (host contract)
 
 **Today.** SPEC.md says async results arrive "between frames, on its event
@@ -48,8 +54,9 @@ has no call to add one. Errors outside an error scope go to the host's log
 (stderr on Node, the page console in a browser). When the host's device is
 lost the host logs it and keeps calling `wc_render`; every WebGPU call then
 does nothing and the frame stays black. A device the cart requests itself
-does get both callbacks (on Node and wasmcart-native the uncaptured error
-reached the cart; in Chromium it did not arrive within ~70 frames).
+does get both callbacks (on every host, Chromium included: the earlier
+"never arrives in Chromium" was the fixture raising the error before
+Chromium had granted the device).
 
 **Options.**
 - (a) Host: on loss of its device, stop calling `wc_render` and report a load
@@ -78,5 +85,6 @@ above `fb_ptr`, which for 0 is all of it).
 framebuffer bound check does not apply."
 
 Also found: wasmcart-native's `--shot` never wrote a frame after a WebGPU cart
-reconfigured its surface to a new size (the run had to be killed). A
-wasmcart-native bug, reported here rather than fixed (not in this repo).
+reconfigured its surface to a new size (the run had to be killed): it read
+wc_info_t only at load. Fixed in wasmcart-native (branch webgpu-fixes): it
+re-reads a WebGPU cart's size after every wc_render.

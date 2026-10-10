@@ -197,6 +197,15 @@ const KEYMAP = {
   '[': 'L', ']': 'R',
 };
 
+// The host's WebGPU device was lost (a driver reset, the GPU removed): the
+// host has stopped the cart, which cannot continue (docs/webgpu.md, "Errors
+// and device loss"). Every player says so and exits 4 rather than showing a
+// black frame.
+function gpuLostMessage({ reason, message }) {
+  return `wasmcart-play: the GPU device was lost (${reason}${message ? `: ${message}` : ''}). ` +
+    'The cart cannot continue; restart it to play again.';
+}
+
 // ── main ─────────────────────────────────────────────────────────────
 
 async function main() {
@@ -217,6 +226,7 @@ async function main() {
       await runWindowed(cartSource, opt, {
         CartHost,
         toInt16,
+        gpuLostMessage,
         saveIdentity: cartPath,
         cleanupSource: remoteCart?.cleanup,
       });
@@ -313,6 +323,7 @@ async function main() {
   let frame = null;
   const step = () => {
     frame = host.runFrame(pad());
+    if (host.gpuLost) return;
     // Importing `gl` is not the same as RENDERING through it. An SDK that
     // links a GL backend into every cart (the pygame shim does) makes
     // usesGL true even for a cart that only writes the CPU framebuffer, and
@@ -332,6 +343,13 @@ async function main() {
   if (opt.frames > 0 && !opt.window) {
     for (let i = 0; i < opt.frames; i++) {
       step();
+      if (host.gpuLost) {
+        console.error(gpuLostMessage(host.gpuLost));
+        persistSave();
+        host.destroy();
+        remoteCart?.cleanup();
+        process.exit(4);
+      }
       // A WebGPU cart's async results (maps, error scopes) arrive on the event
       // loop between frames (SPEC.md, "WebGPU"), so let it run.
       if (host.usesWgpu) await new Promise((resolve) => setImmediate(resolve));
@@ -404,6 +422,11 @@ async function main() {
   let tickCount = 0;
   const interval = setInterval(() => {
     step();
+    if (host.gpuLost) {
+      cleanup();
+      console.error(gpuLostMessage(host.gpuLost));
+      process.exit(4);
+    }
     tickCount++;
     if (tickCount % framesPerRender !== 0) return;
     const cols = opt.scale || Math.min(process.stdout.columns || 80, 160);

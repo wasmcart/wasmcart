@@ -48,7 +48,7 @@ const CONTROLLER_BUTTONS = {
   start: 'START', back: 'SELECT', guide: 'SELECT',
 };
 
-export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdentity = cartPath, cleanupSource }) {
+export async function runWindowed(cartPath, opt, { CartHost, toInt16, gpuLostMessage, saveIdentity = cartPath, cleanupSource }) {
   const sdl = (await import('@kmamal/sdl')).default;
 
   const host = new CartHost();
@@ -517,6 +517,7 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
 
 
   let closing = false;
+  let exitCode = 0;   // 4: the GPU device was lost
   function quit() {
     if (closing) return;
     closing = true;
@@ -528,7 +529,7 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
     try { window?.destroy(); } catch { /* already gone */ }
     host.destroy();
     cleanupSource?.();
-    process.exit(0);
+    process.exit(exitCode);
   }
 
   // Ctrl-C and `kill` are ordinary ways to stop a game, not crashes, so they
@@ -584,6 +585,11 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, saveIdenti
       return;
     }
     step();
+    if (host.gpuLost) {
+      console.error(gpuLostMessage(host.gpuLost));
+      exitCode = 4;
+      return quit();
+    }
     await present();
     if (opt.frames > 0 && ticks >= opt.frames) return quit();
     if (paceWithVsync) setImmediate(tick);

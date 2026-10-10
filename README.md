@@ -461,8 +461,15 @@ await cart.load('game.wasc', {
   // two-GPU machine; WASMCART_WGPU_POWER=low-power|high-performance sets the
   // default for every load. cart.getGpuAdapterInfo() says which GPU it got.
   wgpuCanvas: myCanvas,           // browser: render straight into a visible canvas
+  onGpuLost: ({ reason, message }) => showMessage('The GPU was reset; reload to continue'),
 });
 ```
+
+If the host's GPU device is lost (a driver reset, the GPU removed), the cart
+cannot continue: the host stops calling its `wc_render`, sets
+`cart.gpuLost` to `{ reason, message }` and calls `onGpuLost` once.
+`runFrame()` keeps returning the last frame, so show the player a message
+rather than a black screen. `wasmcart-play` prints the reason and exits 4.
 
 `webgpu-node` is a dependency, as `webgl-node` is for GL, and is loaded only
 when a WebGPU cart arrives. Without a GPU adapter a WebGPU-only cart is

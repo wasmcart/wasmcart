@@ -2,7 +2,7 @@
 // The interactive TTY player can't run in CI; these cover everything else.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -46,6 +46,14 @@ test('headless run writes a valid PNG with the cart resolution', async () => {
   } finally {
     await rm(shot, { force: true });
   }
+});
+
+test('a WebGPU cart whose GPU device is lost: the player says so and exits 4', () => {
+  // wgpulost.wasc destroys the host's device at frame 5, as a driver reset loses it
+  const r = spawnSync(process.execPath, [BIN, join(HERE, 'fixtures', 'wgpulost.wasc'), '--frames', '20'], { encoding: 'utf8' });
+  assert.equal(r.status, 4, r.stderr);
+  assert.match(r.stderr, /the GPU device was lost \(destroyed/);
+  assert.doesNotMatch(r.stdout, /ran 20 frames/);
 });
 
 test('headless --shot of a WebGPU cart is its rendered frame', async () => {

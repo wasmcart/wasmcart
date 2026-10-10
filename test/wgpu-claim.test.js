@@ -5,6 +5,8 @@
 //   wgputex.wasc   nine texture / sampler cases, checked by the cart itself
 //                  (tex.pass) and here from the host's readback
 //   wgpuvram.wasc  creates and releases ~1.3 MiB of GPU objects per frame
+//   wgpurelease.wasc  uses textures and buffers after releasing them (through
+//                  a kept view, bind group or render bundle, or before submit)
 //
 // GPU memory is read from the kernel's per-client DRM accounting
 // (/proc/self/fdinfo, drm-memory-vram / drm-total-*), Linux only; elsewhere,
@@ -77,6 +79,70 @@ test('textures and samplers: nearest, linear, repeat, clamp, mirror, explicit mi
   } finally {
     host.destroy();
   }
+});
+
+// The host destroys a released texture or buffer once nothing live uses it
+// (src/wgpu/release.js): each quadrant goes black, or the frame raises a
+// validation error, if one is destroyed too early.
+test('released textures and buffers stay usable through a kept view, bind group or bundle, and are destroyed once unused', async () => {
+  const host = new CartHost();
+  await host.load(fixture('wgpurelease.wasc'));
+  try {
+    const quads = (f) => [[16, 16], [48, 16], [16, 48], [48, 48]].map(([x, y]) => pixel(f, x, y).slice(0, 3));
+    for (let i = 0; i < 20; i++) { host.runFrame(); await tick(); }
+    const before = quads(await host.readGpuFrame());
+    const destroyedBefore = host._wgpu.released.destroyed;
+    for (let i = 0; i < 20; i++) { host.runFrame(); await tick(); }
+    const after = quads(await host.readGpuFrame());
+    const destroyedAfter = host._wgpu.released.destroyed;
+    await tick();
+    assert.equal(host.readDebugValue('rel.frames').value, 40);
+    assert.equal(host.readDebugValue('rel.errors').value, 0, 'no validation errors: nothing in use was destroyed');
+    assert.deepEqual(before, [[255, 0, 255], [0, 255, 0], [255, 255, 255], [255, 255, 0]],
+      'kept bind group, kept view, kept bundle, and released-before-submit all draw');
+    assert.deepEqual(after, [[0, 0, 0], [0, 0, 0], [0, 0, 0], [255, 255, 0]], 'the cart stopped drawing the three it released at frame 30');
+    // per frame: the bottom-right texture and two uniform buffers
+    assert.ok(destroyedBefore >= 20 * 3, `released per-frame objects are destroyed (${destroyedBefore} by frame 20)`);
+    // frames 21-40, plus at frame 30 the kept group's texture and buffer,
+    // the bundle's, and the kept view's texture
+    assert.ok(destroyedAfter - destroyedBefore >= 20 * 2 + 5, `the kept objects' textures and buffers are destroyed once released (${destroyedAfter - destroyedBefore} more)`);
+  } finally {
+    host.destroy();
+  }
+});
+
+// Losing the host's device (docs/webgpu.md, "Errors and device loss"): the
+// host stops calling wc_render and reports it once, instead of a black frame
+// forever. Forced here by destroying the host's device from outside the cart.
+test('losing the host\'s device stops the cart and is reported once (gpuLost, onGpuLost)', async () => {
+  const host = new CartHost();
+  const reports = [];
+  await host.load(fixture('wgpurelease.wasc'), { onGpuLost: (info) => reports.push(info) });
+  try {
+    for (let i = 0; i < 5; i++) { host.runFrame(); await tick(); }
+    assert.equal(host.gpuLost, null);
+    host.getGpuDevice().destroy();
+    // the loss arrives a few event-loop turns later (device.lost)
+    for (let i = 0; i < 100 && !host.gpuLost; i++) { host.runFrame(); await tick(); }
+    assert.equal(host.gpuLost?.reason, 'destroyed');
+    const frames = host.readDebugValue('rel.frames').value;
+    for (let i = 0; i < 10; i++) { host.runFrame(); await tick(); }
+    assert.equal(host.readDebugValue('rel.frames').value, frames, 'wc_render is no longer called');
+    assert.equal(reports.length, 1, 'onGpuLost is called once');
+    assert.equal(reports[0], host.gpuLost);
+  } finally {
+    host.destroy();
+  }
+  await tick();
+  assert.equal(reports.length, 1, 'the host destroying its own device at teardown is not a loss');
+  const quiet = new CartHost();
+  let called = false;
+  await quiet.load(fixture('wgpurelease.wasc'), { onGpuLost: () => { called = true; } });
+  quiet.runFrame(); await tick();
+  quiet.destroy();
+  for (let i = 0; i < 3; i++) await tick();
+  assert.equal(called, false);
+  assert.equal(quiet.gpuLost, null);
 });
 
 // Opt-in (WASMCART_VRAM_TEST=1): it reads the machine's GPU memory, which other
