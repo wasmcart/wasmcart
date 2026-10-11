@@ -21,6 +21,7 @@ import {
   FLAG_AUDIO_F32,
   FLAG_DEBUG,
   FLAG_DETERMINISTIC,
+  FLAG_HOST_THREADS,
   POINTER_SIZE,
   MAX_POINTERS,
   KEYS_STATE_SIZE,
@@ -2346,6 +2347,10 @@ export class CartHostWeb {
     // wc_time-only timing), recorded as CartHost records it.
     info.hasDeterministic = !!(info.flags & FLAG_DETERMINISTIC);
 
+    // The cart's host-info struct has hardware_threads (offset 20): only then
+    // may the host write it (an older cart's struct ends at 20 bytes).
+    info.wantsHostThreads = !!(info.flags & FLAG_HOST_THREADS);
+
     return info;
   }
 
@@ -2358,6 +2363,8 @@ export class CartHostWeb {
     u32[base + 2] = 0; // reserved
     u32[base + 3] = options.audioSampleRate || 48000;
     u32[base + 4] = options.flags || 0;
+    // the machine's hardware threads, for a cart that sizes a thread pool (0: the browser does not say)
+    if (this.info.wantsHostThreads) u32[base + 5] = (globalThis.navigator && navigator.hardwareConcurrency) >>> 0;
   }
 
   _writeTime(timeMs, deltaMs, frame) {

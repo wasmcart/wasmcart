@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.33.0
+
+**The host's hardware thread count** (SPEC.md, "wc_host_info_t"). Additive:
+a cart built before it is untouched, byte for byte.
+
+- `wc_host_info_t` gains `hardware_threads` at byte offset 20: the hardware
+  threads (logical CPUs) the host machine offers, 0 when the host cannot tell.
+  A threaded cart sizes its thread pool from it instead of guessing. `CartHost`
+  writes `os.availableParallelism()`, `CartHostWeb` `navigator.hardwareConcurrency`.
+- A cart declares the 24-byte struct with the new flag `WC_FLAG_HOST_THREADS`
+  (`FLAG_HOST_THREADS`, `1 << 7`), and only then does a host write offset 20:
+  in an older cart the four bytes after its 20-byte struct are its own memory.
+  `wc_cart.h`'s `WC_FILL_INFO` sets the flag. On a host that predates the field
+  such a cart reads 0.
+- SPEC.md documents `wc_host_info_t` field by field (it had only the flags), and
+  says to ignore offset 8: it is reserved, but wasmcart-native has written a
+  frame rate there.
+
 ## 0.32.0
 
 **WebGPU**, an optional second GPU tier (SPEC.md, "WebGPU";

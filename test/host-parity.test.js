@@ -104,7 +104,8 @@ test('both hosts decode every ABI flag a cart can set', () => {
   // silently ignores a capability the cart declared -- the exact shape of
   // the bug where a Defold cart's FLAG_DEBUG did nothing in a browser.
   for (const flag of ['FLAG_POINTER', 'FLAG_KEYBOARD', 'FLAG_DEBUG',
-                      'FLAG_NET_PEER', 'FLAG_AUDIO_F32', 'FLAG_DETERMINISTIC']) {
+                      'FLAG_NET_PEER', 'FLAG_AUDIO_F32', 'FLAG_DETERMINISTIC',
+                      'FLAG_HOST_THREADS']) {
     assert.ok(nativeSrc.includes(flag), `CartHost does not read ${flag}`);
     assert.ok(webSrc.includes(flag), `CartHostWeb does not read ${flag}`);
   }

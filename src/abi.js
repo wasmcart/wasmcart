@@ -129,8 +129,11 @@ export const HOST_INFO_FIELDS = {
   RESERVED0:        8,
   AUDIO_SAMPLE_RATE: 12,
   FLAGS:            16,
+  // Written only for a cart that sets FLAG_HOST_THREADS: a cart built before
+  // the field has a 20-byte struct, and the bytes after it are its own.
+  HARDWARE_THREADS: 20,
 };
-export const HOST_INFO_SIZE = 20;
+export const HOST_INFO_SIZE = 20; // 24 for a cart that sets FLAG_HOST_THREADS
 
 // Cart info flags (wc_info_t.flags)
 export const FLAG_AUDIO_F32 = 1 << 0;  // audio ring buffer uses float32
@@ -142,6 +145,9 @@ export const FLAG_POINTER   = 1 << 3;  // cart wants pointer input
 export const FLAG_KEYBOARD  = 1 << 4;  // cart wants raw keyboard input
 export const FLAG_DEBUG     = 1 << 5;  // cart exports wc_debug_state() (opt-in; default OFF)
 export const FLAG_DETERMINISTIC = 1 << 6; // cart honors deterministic mode (opt-in; default OFF)
+// The cart's wc_host_info_t has hardware_threads at offset 20 (24 bytes): the
+// host writes the machine's hardware thread count there, 0 when it cannot tell.
+export const FLAG_HOST_THREADS = 1 << 7;
 
 // Peer connection state (wc_peer_state)
 export const PEER_CONNECTING = 0;

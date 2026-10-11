@@ -4,6 +4,7 @@ import { join, extname } from 'path';
 import { open as yauzlOpen } from 'yauzl';
 import { inflateRawSync } from 'zlib';
 import { Worker } from 'worker_threads';
+import { availableParallelism } from 'os';
 import {
   ABI_VERSION,
   MIN_ABI_VERSION,
@@ -22,6 +23,7 @@ import {
   FLAG_KEYBOARD,
   FLAG_DEBUG,
   FLAG_DETERMINISTIC,
+  FLAG_HOST_THREADS,
   HOST_FLAG_DETERMINISTIC,
   HOST_FLAG_GPU_WGPU,
   GPU_API_WEBGPU,
@@ -2529,6 +2531,10 @@ export class CartHost {
     // deterministic mode (host-seeded RNG + wc_time-only timing).
     info.hasDeterministic = !!(info.flags & FLAG_DETERMINISTIC);
 
+    // The cart's host-info struct has hardware_threads (offset 20): only then
+    // may the host write it (an older cart's struct ends at 20 bytes).
+    info.wantsHostThreads = !!(info.flags & FLAG_HOST_THREADS);
+
     return info;
   }
 
@@ -2548,6 +2554,8 @@ export class CartHost {
     u32[base + 2] = 0; // reserved (was hostFps - unused, carts use delta_ms)
     u32[base + 3] = options.audioSampleRate || 48000;
     u32[base + 4] = options.flags || 0;
+    // the machine's hardware threads, for a cart that sizes a thread pool
+    if (this.info.wantsHostThreads) u32[base + 5] = availableParallelism();
   }
 
   _writeTime(timeMs, deltaMs, frame) {

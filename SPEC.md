@@ -532,6 +532,7 @@ typedef struct {
 #define WC_FLAG_KEYBOARD    0x10  // cart wants raw keyboard input
 #define WC_FLAG_DEBUG       0x20  // cart exports wc_debug_state() (opt-in, default off)
 #define WC_FLAG_DETERMINISTIC 0x40 // cart honors deterministic mode (opt-in, default off)
+#define WC_FLAG_HOST_THREADS  0x80 // cart's wc_host_info_t has hardware_threads (24 bytes)
 ```
 
 Host-info flags (`wc_host_info_t.flags`, written by the host BEFORE `wc_init`,
@@ -542,6 +543,39 @@ read by the cart ONCE at init — never per frame):
 #define WC_HOST_FLAG_GPU_WGPU      0x02  // the host selected WebGPU for a cart
                                          // importing both GPU APIs (see WebGPU)
 ```
+
+### wc_host_info_t
+
+The cart owns this struct (at `host_info_ptr`); the host writes it once,
+before `wc_init`, and the cart reads it during `wc_init`.
+
+```c
+typedef struct {
+    uint32_t preferred_width;   // byte offset 0: the host's preferred size, 0 = none
+    uint32_t preferred_height;  // 4
+    uint32_t _reserved0;        // 8: unused (was host_fps; read wc_time_t.delta_ms).
+                                //    Some hosts still write a frame rate here: ignore it
+    uint32_t audio_sample_rate; // 12
+    uint32_t flags;             // 16: WC_HOST_FLAG_*
+    // only with WC_FLAG_HOST_THREADS
+    uint32_t hardware_threads;  // 20: the host machine's hardware threads, 0 = unknown
+} wc_host_info_t;
+```
+
+**`hardware_threads`** is the number of hardware threads (logical CPUs) the
+host machine offers the process running the cart: Node's
+`os.availableParallelism()`, the browser's `navigator.hardwareConcurrency`,
+`std::thread::hardware_concurrency()` natively. 0 means the host cannot tell.
+A threaded cart sizes its thread pool from it; it is a performance hint, so a
+cart MUST NOT let it change its results (deterministic carts above all).
+
+A cart built before this field has a 20-byte struct, and the four bytes after
+it are its own memory. So the field is written **only** when the cart sets
+`WC_FLAG_HOST_THREADS` in `wc_info_t.flags`, declaring a 24-byte struct; a host
+writes nothing at offset 20 otherwise. A cart that sets the flag and runs on a
+host that predates it reads the 0 it initialised the field with: unknown.
+`wc_cart.h`'s `WC_FILL_INFO` sets the flag, since its `wc_host_info_t` is the
+24-byte one.
 
 ---
 

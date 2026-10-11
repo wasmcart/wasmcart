@@ -155,6 +155,10 @@ typedef struct {
     uint32_t _reserved0;        // (was host_fps — unused, carts use wc_time.delta_ms instead)
     uint32_t audio_sample_rate; // host audio rate (e.g. 48000)
     uint32_t flags;             // WC_HOST_FLAG_* (wc_cart.h has DETERMINISTIC); read once at wc_init
+    // Offset 20, written only when the cart sets WC_FLAG_HOST_THREADS (a cart
+    // built before it has a 20-byte struct, and the host must not write past it).
+    uint32_t hardware_threads;  // the host machine's hardware threads (logical CPUs
+                                // this process may use); 0 = unknown. Read once at wc_init
 } wc_host_info_t;
 
 // Host-info flag: the host selected WebGPU for a cart that imports BOTH the
@@ -320,6 +324,9 @@ typedef struct {
 // byte-for-byte identical to one built before they existed - see SPEC.md.
 #define WC_FLAG_DEBUG      (1 << 5)  // cart exports wc_debug_state() (see wc_cart.h)
 #define WC_FLAG_DETERMINISTIC (1 << 6) // cart honors host deterministic mode
+// The cart's wc_host_info_t has hardware_threads (24 bytes): the host writes it.
+// wc_cart.h's WC_FILL_INFO sets it (its wc_host_info_t is this header's).
+#define WC_FLAG_HOST_THREADS (1 << 7)
 
 // Info struct (returned by wc_get_info)
 typedef struct {

@@ -150,9 +150,9 @@
 
 /* Auto-set WC_FLAG_AUDIO_F32 unless cart opts into legacy I16 */
 #ifdef WC_AUDIO_FORMAT_I16
-  #define _WC_FILL_INFO_AUDIO_FLAG
+  #define _WC_FILL_INFO_AUDIO_FLAG | WC_FLAG_HOST_THREADS
 #else
-  #define _WC_FILL_INFO_AUDIO_FLAG | WC_FLAG_AUDIO_F32
+  #define _WC_FILL_INFO_AUDIO_FLAG | WC_FLAG_AUDIO_F32 | WC_FLAG_HOST_THREADS
 #endif
 
 /* ── Debug ABI (OPT-IN, DEFAULT OFF) ─────────────────────────────
