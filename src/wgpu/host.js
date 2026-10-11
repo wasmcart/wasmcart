@@ -429,8 +429,6 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
   // its bind group per source texture (the canvas's ring of up to three).
   const blitters = new Map();
   const blitGroups = new WeakMap();
-  // the target the cart draws straight into (presentTo), if any
-  let directTarget = null;
   function blitter(dev, format) {
     const key = format + (dev === device ? '' : ':extra');
     let b = blitters.get(key);
@@ -516,39 +514,6 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
       encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow, rowsPerImage: h }, [w, h, 1]);
       dev.queue.submit([encoder.finish()]);
       return readMapped(buffer, w, h, bytesPerRow, format);
-    },
-
-    /** Show the cart's current frame in `target` (a canvas context on this
-     *  device, e.g. a window), scaled into `dst` ({x,y,w,h}, top-down target
-     *  pixels; the whole target if omitted). The caller presents the target.
-     *  When the frame fills a target exactly the cart's size, the target is
-     *  configured as the cart configured its canvas and the cart draws
-     *  straight into the target's texture from its next frame on: no copy.
-     *  Any other size draws the frame letterboxed (drawTo). */
-    presentTo(target, dst) {
-      if (closed || !configured) return false;
-      const tc = target.canvas, cfg = realContext.getConfiguration?.();
-      const fills = !!(tc && cfg && canvas.setDirect && tc.width === canvas.width && tc.height === canvas.height &&
-        (!dst || (dst.x === 0 && dst.y === 0 && dst.w === tc.width && dst.h === tc.height)));
-      if (canvas.isDirect) {
-        // the cart drew straight into target's texture; from the next frame
-        // on it draws into its own again if the frame no longer fills target
-        if (!fills || directTarget !== target) { canvas.setDirect(null); directTarget = null; }
-        return true;
-      }
-      if (fills && directTarget === target && canvas.hasDirect) return false;  // the cart drew nothing this frame
-      if (fills && directTarget !== target) {
-        try {
-          target.configure({ device: cfg.device, format: cfg.format, usage: cfg.usage, viewFormats: cfg.viewFormats, alphaMode: cfg.alphaMode });
-          directTarget = target;
-        } catch { directTarget = null; }
-      } else if (!fills && directTarget) {
-        canvas.setDirect(null);
-        directTarget = null;
-      }
-      const drew = this.drawTo(target, dst);
-      if (directTarget === target) canvas.setDirect(() => target.getCurrentTexture());
-      return drew;
     },
 
     /** Draw the cart's current frame into `target` (another configured

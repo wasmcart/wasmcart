@@ -1310,15 +1310,11 @@ export class CartHost {
    * Draw the WebGPU cart's last frame into another canvas context (a window),
    * scaled into `dst` (top-down pixels; the whole target if omitted). The
    * caller presents the target. Returns false if there is nothing to draw.
-   * A window exactly the cart's size, filled by the frame, is configured as
-   * the cart configured its canvas, and the cart draws straight into the
-   * window's texture from its next frame on (no copy). (In a browser, pass
-   * the page's canvas to load as `wgpuCanvas` for that.)
    * @param {GPUCanvasContext} target - configured with getGpuDevice()
    */
   presentWgpuTo(target, dst) {
     if (!this._wgpu) return false;
-    return this._wgpu.presentTo(target, dst);
+    return this._wgpu.drawTo(target, dst);
   }
 
   /** The GPUDevice a WebGPU cart runs on (null for other carts). */
