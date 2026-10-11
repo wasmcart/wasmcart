@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.34.2
+
+**Node host CPU per WebGPU frame, and window pacing.** No change to the ABI or
+to what a cart sees.
+
+- A WebGPU cart's hottest imports call Dawn directly. These are the render
+  and compute pass's state, draws and dispatches, and
+  `wgpuQueueWriteBuffer`, served by native-dawn's `wasmImports` (new in
+  native-dawn 0.1.5, now a direct dependency).
+  - Rider makes about 2,350 such calls a frame. Through the glue and Dawn's
+    Node binding each cost about 1.6 us.
+  - Its `runFrame` went from 4.50 ms to 2.14 ms on average (p95 7.54 to 3.16
+    ms) on a Ryzen AI 9 HX 370 with an RX 7600.
+  - A call naming an object the table does not have, or memory outside the
+    cart's, goes to the glue's function, so results are unchanged. Only a GPU
+    `CartHost` makes from webgpu-node gets them; an embedder's own `gpu` does
+    not.
+- `wasmcart-play --window` opens a WebGPU cart's window on Wayland when the
+  session has Wayland, even if Xwayland is running. Under Xwayland, Vulkan
+  presentation paced Rider at 1 to 24 fps with 100 ms stalls. The same session
+  gave a steady rate on a Wayland window. GL carts keep SDL's default, X11.
+  `SDL_VIDEODRIVER` still overrides both.
+- The window loop no longer stops stepping while the audio queue is more than
+  250 ms ahead. Each such stop held the next frame back, and the loading burst
+  left the queue 150 to 200 ms deep for the whole run, close enough to the
+  limit that any hitch stopped it again.
+  - Audio more than 80 ms behind is now dropped, a frame's worth at a time.
+    `--stats` counts the dropped samples.
+  - The loop never runs faster than the display refreshes, including when a
+    compositor stops pacing the window (a locked screen, a minimized window).
+
 ## 0.34.1
 
 - Reverts 0.34.0's direct presentation (`presentWgpuTo` configuring a window
