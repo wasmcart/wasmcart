@@ -101,35 +101,62 @@ export function gpuImportTrap(name, selected) {
  * later mapAsync on a device once it had taken a canvas texture. A texture the
  * host owns has neither problem and behaves the same in Node and a browser.
  *
- * Like a canvas, present() ends the frame: the next getCurrentTexture() is a
- * fresh texture, so a cart cannot depend on last frame's contents here and
- * then break on a real canvas.
+ * Like a canvas, present() ends the frame: the next getCurrentTexture() is
+ * another texture, so a cart cannot depend on last frame's contents here and
+ * then break on a real canvas. The textures come from a ring, as a swap
+ * chain's do (webgpu-node's offscreen canvas, 2746769): allocating and
+ * destroying a full-size texture every frame cost ~90 us at 1280x720. A
+ * presented texture comes back two presents later, so the next frame never
+ * gets the one just presented; the ring is dropped on resize and reconfigure.
+ *
+ * A host presenting into a window the cart's size can have the cart draw
+ * straight into the window's texture: setDirect(() => texture) makes
+ * getCurrentTexture() return what the function gives (null: the ring's), so
+ * no copy into the window is needed (drawTo then reports it drew nothing).
  */
 export function createTextureCanvas(width, height) {
-  let w = width, h = height, config = null, texture = null;
-  const drop = () => { texture?.destroy(); texture = null; };
+  let w = width, h = height, config = null, texture = null, direct = null, fromDirect = false;
+  let spare = [];
+  const drop = (recycle = false) => {
+    const t = texture;
+    texture = null;
+    if (!t || fromDirect) { fromDirect = false; return; }
+    if (recycle && spare.length < 3) spare.push(t); else t.destroy();
+  };
+  const flush = () => { drop(); for (const t of spare) t.destroy(); spare = []; };
   const canvas = {
     get width() { return w; },
-    set width(v) { if (v !== w) { w = v; drop(); } },
+    set width(v) { if (v !== w) { w = v; flush(); direct = null; } },
     get height() { return h; },
-    set height(v) { if (v !== h) { h = v; drop(); } },
+    set height(v) { if (v !== h) { h = v; flush(); direct = null; } },
     getContext: type => (type === 'webgpu' ? context : null),
+    /** (host) draw straight into another texture of the canvas's size and
+     *  configuration: fn() gives it, or null. Cleared when the canvas is
+     *  resized or reconfigured. */
+    setDirect(fn) { if (fn !== direct) { drop(); direct = fn; } },
+    /** (host) a setDirect function is in place */
+    get hasDirect() { return direct !== null; },
+    /** (host) the current texture came from setDirect's function */
+    get isDirect() { return fromDirect; },
   };
   const context = {
     canvas,
-    configure(c) { drop(); config = { ...c, viewFormats: [...(c.viewFormats || [])] }; },
-    unconfigure() { drop(); config = null; },
+    configure(c) { flush(); direct = null; config = { ...c, viewFormats: [...(c.viewFormats || [])] }; },
+    unconfigure() { flush(); direct = null; config = null; },
     getConfiguration() { return config ? { ...config } : null; },
     getCurrentTexture() {
       if (!config) throw new Error('the cart canvas is not configured');
-      texture ??= config.device.createTexture({
+      if (texture) return texture;
+      const d = direct?.();
+      if (d) { fromDirect = true; return (texture = d); }
+      texture = (spare.length >= 2 ? spare.shift() : null) ?? config.device.createTexture({
         label: 'wasmcart cart canvas', size: [w, h, 1], format: config.format,
         usage: config.usage, viewFormats: config.viewFormats,
       });
       return texture;
     },
-    present() { drop(); },
-    destroy() { drop(); config = null; },
+    present() { drop(true); },
+    destroy() { flush(); config = null; },
   };
   return canvas;
 }
@@ -156,8 +183,14 @@ const HOST_USAGE = 0x01 /* COPY_SRC */ | 0x04 /* TEXTURE_BINDING */;
  * @param {(info:{reason:string,message:string})=>void} [o.onLost] - called once
  *   if the host's device is lost while the session is open (a driver reset, a
  *   GPU removed, or something destroying it); the host stops the cart then
+ * @param {(handle:number, object:object)=>void} [o.onObject] - every WebGPU
+ *   object the cart gets a handle to, with that handle (its pointer in cart
+ *   memory): an embedder that serves some of the cart's WebGPU imports
+ *   natively keeps its own handle -> object table (wasmcart-native)
+ * @param {(handle:number, object:object)=>void} [o.onRelease] - the cart
+ *   released its last reference to that handle
  */
-export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdapter, createCanvas = createTextureCanvas, width, height, adapterOptions, globals = globalThis, log = () => {}, onLost = () => {} }) {
+export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdapter, createCanvas = createTextureCanvas, width, height, adapterOptions, globals = globalThis, log = () => {}, onLost = () => {}, onObject = null, onRelease = null }) {
   const { factory, manifest } = await gluePromise();
   // The WebGPU classes the glue names as globals (GPUValidationError, ...):
   // window's in a browser, the implementation's own (webgpu-node `globals`)
@@ -346,25 +379,56 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
 
   // Released textures and buffers are destroyed once nothing the cart still
   // holds uses them (release.js; the glue's hooks: scripts/wgpu/glue-release.mjs).
-  const tracker = createReleaseTracker(globals, ptr => Module.WebGPU.Internals.jsObjects[ptr >>> 0]);
-  Module.wcGpuMade = tracker.made;
-  Module.wcGpuUse = tracker.used;
-  Module.wcGpuRelease = tracker.released;
+  const tracker = createReleaseTracker(globals, ptr => Module.WebGPU.Internals.jsObjects[ptr >>> 0],
+    fn => { Module.WebGPU.wcRecord = fn; });
+  Module.wcGpuMade = onObject ? (obj, ptr) => { tracker.made(obj); onObject(ptr >>> 0, obj); } : tracker.made;
+  Module.wcGpuRelease = onRelease ? (obj, ptr) => { onRelease(ptr >>> 0, obj); tracker.released(obj); } : tracker.released;
 
+  // The cart's imports: each glue function behind a wrapper of its own arity
+  // (a rest-args wrapper allocated an array per call), refreshing the memory
+  // views and naming the call for an allocation error. The few calls the
+  // release tracker needs to see (release.js) get their own wrappers.
   const env = {};
-  for (const { name } of wanted) {
-    const fn = info.env[name];
-    env[name] = (...args) => {
-      refresh();
-      const outer = inCall;
-      inCall = name;
-      tracker.enter(name, args[0]);
-      try { return fn(...args); } finally { tracker.leave(); inCall = outer; }
-    };
+  for (const { name } of wanted) env[name] = wrapImport(name, info.env[name]);
+
+  function wrapImport(name, fn) {
+    const enter = () => { refresh(); const outer = inCall; inCall = name; return outer; };
+    if (name === 'wgpuTextureCreateView') {
+      return (tex, desc) => { const o = enter(); try { return tracker.view(tex, () => fn(tex, desc)); } finally { inCall = o; } };
+    }
+    if (name === 'wgpuDeviceCreateBindGroup') {
+      return (dev, desc) => { const o = enter(); try { return tracker.bindGroup(() => fn(dev, desc)); } finally { inCall = o; } };
+    }
+    if (name === 'wgpuSurfaceGetCurrentTexture') {
+      return (surface, out) => { const o = enter(); try { return tracker.surfaceTexture(() => fn(surface, out)); } finally { inCall = o; } };
+    }
+    if (name.startsWith('wgpuRenderBundleEncoder')) {
+      return (enc, ...rest) => { const o = enter(); try { return tracker.bundle(enc, () => fn(enc, ...rest)); } finally { inCall = o; } };
+    }
+    if (name === 'wgpuCommandEncoderFinish') {
+      return (enc, desc) => { const o = enter(); try { return fn(enc, desc); } finally { tracker.finish(enc); inCall = o; } };
+    }
+    if (name === 'wgpuQueueSubmit') {
+      return (queue, count, cbs) => { const o = enter(); try { return fn(queue, count, cbs); } finally { tracker.submit(count, cbs, Module.HEAPU32); inCall = o; } };
+    }
+    switch (fn.length) {
+      case 0: return () => { const o = enter(); try { return fn(); } finally { inCall = o; } };
+      case 1: return (a) => { const o = enter(); try { return fn(a); } finally { inCall = o; } };
+      case 2: return (a, b) => { const o = enter(); try { return fn(a, b); } finally { inCall = o; } };
+      case 3: return (a, b, c) => { const o = enter(); try { return fn(a, b, c); } finally { inCall = o; } };
+      case 4: return (a, b, c, d) => { const o = enter(); try { return fn(a, b, c, d); } finally { inCall = o; } };
+      case 5: return (a, b, c, d, e) => { const o = enter(); try { return fn(a, b, c, d, e); } finally { inCall = o; } };
+      case 6: return (a, b, c, d, e, f) => { const o = enter(); try { return fn(a, b, c, d, e, f); } finally { inCall = o; } };
+      case 7: return (a, b, c, d, e, f, g) => { const o = enter(); try { return fn(a, b, c, d, e, f, g); } finally { inCall = o; } };
+      case 8: return (a, b, c, d, e, f, g, h) => { const o = enter(); try { return fn(a, b, c, d, e, f, g, h); } finally { inCall = o; } };
+      default: return (...args) => { const o = enter(); try { return fn(...args); } finally { inCall = o; } };
+    }
   }
 
-  // One full-screen-triangle pipeline per target format, for drawTo().
+  // One full-screen-triangle pipeline per target format, for drawTo(), and
+  // its bind group per source texture (the canvas's ring of up to three).
   const blitters = new Map();
+  const blitGroups = new WeakMap();
   function blitter(dev, format) {
     const key = format + (dev === device ? '' : ':extra');
     let b = blitters.get(key);
@@ -415,6 +479,7 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
       }
       giveInstance({ exports }, null);
       await ready;
+      Module.WebGPU.wcRecord = null; // the release tracker's lookup recorder (none installed)
       Module.wcUpdateMemoryViews();
     },
 
@@ -423,6 +488,13 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
     beginFrame() {
       if (closed || !configured) return;
       if (typeof realContext.present === 'function') realContext.present();
+    },
+
+    /** Called after wc_render returns, after the frame's last submit:
+     *  destroys the textures and buffers the cart released that nothing
+     *  uses (release.js). */
+    endFrame() {
+      if (!closed) tracker.frameEnd();
     },
 
     /** The last rendered frame as top-down RGBA, or null if the cart has not
@@ -454,10 +526,15 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
       const out = target.getCurrentTexture();
       const dev = canvasDevice || device;
       const blit = blitter(dev, out.format);
-      const bind = dev.createBindGroup({
-        layout: blit.pipeline.getBindGroupLayout(0),
-        entries: [{ binding: 0, resource: blit.sampler }, { binding: 1, resource: source.createView() }],
-      });
+      let cached = blitGroups.get(source);
+      if (cached?.blit !== blit) {
+        cached = { blit, group: dev.createBindGroup({
+          layout: blit.pipeline.getBindGroupLayout(0),
+          entries: [{ binding: 0, resource: blit.sampler }, { binding: 1, resource: source.createView() }],
+        }) };
+        blitGroups.set(source, cached);
+      }
+      const bind = cached.group;
       const encoder = dev.createCommandEncoder();
       const pass = encoder.beginRenderPass({ colorAttachments: [{ view: out.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] });
       const r = dst || { x: 0, y: 0, w: out.width, h: out.height };

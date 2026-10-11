@@ -314,6 +314,7 @@ export class CartHost {
     this._sharedMemory = null;
     this._compiledModule = null;
     this._workers = new Map();   // tid → Worker
+    this._threadFatal = null;    // a cart thread died (_threadDied): thrown from runFrame
     this._nextTid = 1;
 
     // GL state
@@ -1095,6 +1096,8 @@ export class CartHost {
     // failed) stops the cart here, with the allocator's error.
     const wgpuFatal = this._wgpu?.takeFatal();
     if (wgpuFatal) throw wgpuFatal;
+    // A cart thread that died stops the cart (_threadDied).
+    if (this._threadFatal) throw this._threadFatal;
 
     // A GL cart on a context THIS host created must make it current before
     // the cart's draws run — in a multi-context process, whoever rendered
@@ -1168,6 +1171,7 @@ export class CartHost {
       this._asyncify.unwound = false;
     }
     this._updateViews(); // in case memory grew during render
+    this._wgpu?.endFrame(); // after the frame's last submit: destroy what the cart released
 
     // Re-read width/height from WASM memory (cart may update during deferred init)
     const base = this._infoPtr >> 2;
@@ -1427,6 +1431,19 @@ export class CartHost {
   }
 
   /**
+   * A cart thread died after it was spawned (it trapped, or its worker failed
+   * or exited without returning). The cart's thread pool is then a worker
+   * short, and a pool waiting on it can hang, so this is an error, not a log
+   * line: logged at once, and thrown from the next runFrame(), which stops
+   * the cart with it.
+   */
+  _threadDied(tid, reason) {
+    const err = new Error(`wasmcart: cart thread ${tid} died (${reason}); the cart's thread pool is a worker short, so the cart is stopped`);
+    console.error(err.message);
+    this._threadFatal ??= err;
+  }
+
+  /**
    * Spawn a thread for WASI threads model.
    * Called when the cart invokes wasi.thread-spawn(start_arg).
    * Returns a positive tid on success, or negative on error.
@@ -1465,23 +1482,27 @@ export class CartHost {
       },
     });
 
+    let exited = false;
     worker.on('message', (msg) => {
       if (msg.type === 'spawn') {
         // Nested thread spawning: worker thread requested a new thread
         const nestedTid = this._spawnThread(msg.startArg);
         worker.postMessage({ type: 'spawned', tid: nestedTid, requestId: msg.requestId });
       } else if (msg.type === 'exit') {
+        exited = true;
         this._workers.delete(msg.tid);
+        if (msg.error) this._threadDied(tid, msg.error);
       }
     });
 
     worker.on('error', (err) => {
-      console.error(`[thread ${tid}] error:`, err.message);
       this._workers.delete(tid);
+      this._threadDied(tid, err?.message || String(err));
     });
 
-    worker.on('exit', () => {
-      this._workers.delete(tid);
+    worker.on('exit', (code) => {
+      // a thread that returned says so first; any other exit is a death
+      if (this._workers.delete(tid) && !exited) this._threadDied(tid, `its worker exited (code ${code})`);
     });
 
     this._workers.set(tid, worker);

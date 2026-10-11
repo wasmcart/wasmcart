@@ -775,7 +775,7 @@ async function createWasm() {
   jsObjectInsert:(ptr, jsObject) => {
           ptr >>>= 0
           WebGPU.Internals.jsObjects[ptr] = jsObject;
-          Module['wcGpuMade'](jsObject);
+          Module['wcGpuMade'](jsObject, ptr);
         },
   bufferOnUnmaps:[],
   futures:[],
@@ -785,24 +785,26 @@ async function createWasm() {
   getJsObject:(ptr) => {
         if (!ptr) return undefined;
         ptr >>>= 0
-        return Module['wcGpuUse'](WebGPU.Internals.jsObjects[ptr]);
+        var obj = WebGPU.Internals.jsObjects[ptr];
+        if (WebGPU.wcRecord) WebGPU.wcRecord(obj);
+        return obj;
       },
   importJsAdapter:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateAdapter(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsBindGroup:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateBindGroup(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsBindGroupLayout:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateBindGroupLayout(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsBuffer:(buffer, parentPtr = 0) => {
@@ -815,25 +817,25 @@ async function createWasm() {
   importJsCommandBuffer:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateCommandBuffer(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsCommandEncoder:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateCommandEncoder(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsComputePassEncoder:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateComputePassEncoder(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsComputePipeline:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateComputePipeline(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsDevice:(device, parentPtr = 0) => {
@@ -846,79 +848,79 @@ async function createWasm() {
   importJsExternalTexture:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateExternalTexture(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsPipelineLayout:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreatePipelineLayout(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsQuerySet:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateQuerySet(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsQueue:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateQueue(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsRenderBundle:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateRenderBundle(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsRenderBundleEncoder:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateRenderBundleEncoder(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsRenderPassEncoder:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateRenderPassEncoder(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsRenderPipeline:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateRenderPipeline(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsSampler:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateSampler(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsShaderModule:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateShaderModule(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsSurface:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateSurface(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsTexture:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateTexture(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   importJsTextureView:(obj, parentPtr = 0) => {
             var ptr = _emwgpuCreateTextureView(parentPtr);
             WebGPU.Internals.jsObjects[ptr] = obj;
-            Module['wcGpuMade'](obj);
+            Module['wcGpuMade'](obj, ptr);
             return ptr;
           },
   errorCallback:(callback, type, message, userdata) => {
@@ -1971,7 +1973,7 @@ async function createWasm() {
   var _emwgpuDelete = (ptr) => {
       var obj = WebGPU.Internals.jsObjects[ptr];
       delete WebGPU.Internals.jsObjects[ptr];
-      Module['wcGpuRelease'](obj);
+      Module['wcGpuRelease'](obj, ptr);
     };
 
   
@@ -2708,6 +2710,15 @@ async function createWasm() {
     };
 
   
+  // wasmcart: dynamic offsets as a reused array (scripts/wgpu/glue-offsets.mjs).
+  var wcOffsetArrays = [];
+  var wcDynamicOffsets = (ptr, count) => {
+      var a = wcOffsetArrays[count] ??= new Array(count);
+      var p = ptr >>> 2;
+      for (var i = 0; i < count; i++) a[i] = HEAPU32[p + i];
+      return a;
+    };
+
   var _wgpuComputePassEncoderSetBindGroup = (passPtr, groupIndex, groupPtr, dynamicOffsetCount, dynamicOffsetsPtr) => {
       
       var pass = WebGPU.getJsObject(passPtr);
@@ -2715,7 +2726,7 @@ async function createWasm() {
       if (dynamicOffsetCount == 0) {
         pass.setBindGroup(groupIndex, group);
       } else {
-        pass.setBindGroup(groupIndex, group, HEAPU32, ((dynamicOffsetsPtr)>>2), dynamicOffsetCount);
+        pass.setBindGroup(groupIndex, group, wcDynamicOffsets(dynamicOffsetsPtr, dynamicOffsetCount));
       }
     };
 
@@ -3361,7 +3372,7 @@ async function createWasm() {
       if (dynamicOffsetCount == 0) {
         pass.setBindGroup(groupIndex, group);
       } else {
-        pass.setBindGroup(groupIndex, group, HEAPU32, ((dynamicOffsetsPtr)>>2), dynamicOffsetCount);
+        pass.setBindGroup(groupIndex, group, wcDynamicOffsets(dynamicOffsetsPtr, dynamicOffsetCount));
       }
     };
 
@@ -3538,7 +3549,7 @@ async function createWasm() {
       if (dynamicOffsetCount == 0) {
         pass.setBindGroup(groupIndex, group);
       } else {
-        pass.setBindGroup(groupIndex, group, HEAPU32, ((dynamicOffsetsPtr)>>2), dynamicOffsetCount);
+        pass.setBindGroup(groupIndex, group, wcDynamicOffsets(dynamicOffsetsPtr, dynamicOffsetCount));
       }
     };
 

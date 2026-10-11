@@ -9,167 +9,198 @@
 // right after making a view of it, or a buffer after naming it in a bind
 // group, and keep using the view or group.
 //
-// So this tracks who holds whom, from the glue's own object table
-// (scripts/wgpu/glue-release.mjs adds three hooks to it): every object the
-// glue looks up during one WebGPU call is "used" by that call, and
-//   - an object the call makes (a view, bind group, command buffer, pass or
-//     bundle) holds what the call used;
-//   - an encoder the call is a method of holds what the call used or made
-//     (a pass holds its bind groups and buffers; the command encoder holds
-//     the pass, and the command buffer it finishes into holds the encoder).
-// A texture or buffer is destroyed once the cart has released it and no
-// holder that is still alive reaches it. Holders die when released, and a
-// command buffer also when submitted (it cannot be submitted again), an
-// encoder when finished. Work already submitted is safe: destroy() waits for
-// it (WebGPU's destroy() semantics). Surface textures belong to the canvas
-// and are never destroyed.
-
-const RESOURCES = ['GPUTexture', 'GPUBuffer'];
-const HOLDERS = ['GPUTextureView', 'GPUBindGroup', 'GPURenderBundle', 'GPUCommandBuffer'];
-// encoders: holders whose methods record uses (the call's first argument)
-const ENCODERS = {
-  GPUCommandEncoder: 'wgpuCommandEncoder',
-  GPURenderPassEncoder: 'wgpuRenderPassEncoder',
-  GPUComputePassEncoder: 'wgpuComputePassEncoder',
-  GPURenderBundleEncoder: 'wgpuRenderBundleEncoder',
-};
+// What can keep a released texture or buffer in use, and how each is covered:
+//   - a view of it, a bind group naming it (or a view of it), a render bundle
+//     that recorded it: holders that outlive a frame. Only the calls that make
+//     them are tracked (wgpuTextureCreateView, wgpuDeviceCreateBindGroup and
+//     the render bundle encoder's methods): the objects such a call looks up
+//     in the glue's table become what the new object holds. A texture or
+//     buffer the cart released is destroyed once no live holder reaches it.
+//   - command encoders, passes and command buffers: not tracked. Destroys
+//     wait for the end of the frame (the host calls frameEnd() after
+//     wc_render returns), after the frame's last submit; WebGPU's destroy()
+//     waits for submitted work. While the cart holds a command encoder it has
+//     not finished or a command buffer it has not submitted (encoding across
+//     frames), they wait for those too.
+// Every other WebGPU call runs untracked: bookkeeping every object every call
+// looked up cost about 14% of a WebGPU cart's main-thread CPU. Surface
+// textures belong to the canvas and are never destroyed.
 
 /**
  * @param {object} globals - where the WebGPU classes live (window, or webgpu-node's globals)
- * @param {(ptr:number)=>object|undefined} lookup - the glue's table, read without the use hook
- * @returns the hooks the glue calls (made, used, released) and the call
- *   brackets host.js puts around every WebGPU import (enter, leave). Inert
- *   where the implementation lacks a class it needs.
+ * @param {(ptr:number)=>object|undefined} lookup - the glue's table, read directly
+ * @param {(fn:((obj:object)=>void)|null)=>void} setRecorder - installs a
+ *   function the glue calls with every object it looks up (null: none)
+ * @returns the hooks the glue calls (made, released), the brackets host.js
+ *   puts around the tracked calls, frameEnd() and stats(). Inert where the
+ *   implementation lacks a class it needs.
  */
-export function createReleaseTracker(globals, lookup) {
-  const classes = [...RESOURCES, ...HOLDERS, ...Object.keys(ENCODERS)];
+export function createReleaseTracker(globals, lookup, setRecorder) {
+  const PENDING = ['GPUCommandEncoder', 'GPUCommandBuffer'];
+  const classes = ['GPUTexture', 'GPUBuffer', 'GPUTextureView', 'GPUBindGroup', 'GPURenderBundle', 'GPURenderBundleEncoder', ...PENDING];
   if (classes.some(c => typeof globals[c] !== 'function')) {
     const nop = () => {};
-    return { made: nop, used: o => o, released: nop, enter: nop, leave: nop, stats: () => null };
+    const run = (...a) => a[a.length - 1]();
+    return { made: nop, released: nop, frameEnd: nop, finish: nop, submit: nop,
+      view: run, bindGroup: run, bundle: run, surfaceTexture: run, stats: () => null };
   }
+  // Each object's kind by its constructor (one Map lookup per object made);
+  // a subclass is matched with instanceof once and remembered.
+  const kinds = new Map(classes.map(c => [globals[c], c]));
   const kindOf = obj => {
-    if (!obj || typeof obj !== 'object') return null;
-    for (const c of classes) if (obj instanceof globals[c]) return c;
-    return null;
+    const ctor = obj?.constructor;
+    let k = kinds.get(ctor);
+    if (k !== undefined) return k;
+    k = classes.find(c => obj instanceof globals[c]) || null;
+    if (ctor) kinds.set(ctor, k);
+    return k;
   };
+  const isResource = k => k === 'GPUTexture' || k === 'GPUBuffer';
 
   /** @type {WeakMap<object, Node>} */
   const nodes = new WeakMap();
-  const calls = [];
+  // command encoders not yet finished, command buffers not yet submitted
+  const openEncoders = new Set();
+  const unsubmitted = new Set();
+  // released textures and buffers nothing holds, destroyed at the frame end
+  let doomed = [];
   let destroyed = 0;
+  // during a tracked call: the objects it made, and those it looked up
+  let made = null;
+  let used = null;
+  const record = obj => { const n = obj && nodes.get(obj); if (n) used.push(n); };
 
   class Node {
     constructor(obj, kind) {
       this.obj = obj;
       this.kind = kind;
       this.refs = 0;          // glue handles (pointers) naming this object
-      this.done = false;      // submitted or finished: holds nothing for the future
       this.external = false;  // a surface texture: the canvas owns it
-      this.holds = new Set();
-      this.heldBy = new Set();
+      this.queued = false;    // waiting in doomed
+      this.holds = null;      // Set<Node>: what this holder keeps in use
+      this.heldBy = null;     // Set<Node>: the holders keeping this
     }
-    get live() { return this.refs > 0 && !this.done; }
   }
 
   const hold = (holder, held) => {
     if (holder === held) return;
-    holder.holds.add(held);
-    held.heldBy.add(holder);
+    (holder.holds ??= new Set()).add(held);
+    (held.heldBy ??= new Set()).add(holder);
   };
 
-  // True if a live holder reaches n (through holders that are themselves dead
-  // but held, e.g. a released view inside a live bind group).
+  // True if a holder the cart still has a handle to reaches n (through
+  // holders that are released but held, e.g. a released view in a live group).
   function isHeld(n) {
-    const seen = new Set([n]);
+    if (!n.heldBy?.size) return false;
+    const visited = new Set([n]);
     const stack = [...n.heldBy];
     while (stack.length) {
       const h = stack.pop();
-      if (seen.has(h)) continue;
-      seen.add(h);
-      if (h.live) return true;
-      for (const up of h.heldBy) stack.push(up);
+      if (visited.has(h)) continue;
+      visited.add(h);
+      if (h.refs > 0) return true;
+      if (h.heldBy) for (const up of h.heldBy) stack.push(up);
     }
     return false;
   }
 
-  // n died or lost a holder: if nothing live reaches it any more it is
-  // garbage. A garbage texture or buffer is destroyed; a garbage holder lets
-  // go of what it held, which may make those garbage in turn.
+  // n was released or lost a holder: if nothing live reaches it any more it
+  // is garbage. A garbage texture or buffer is queued for destroy; a garbage
+  // holder lets go of what it held, which may make those garbage in turn.
   function settle(start) {
     const work = [start];
     while (work.length) {
       const n = work.pop();
-      if (n.live || isHeld(n)) continue;
-      for (const h of n.heldBy) h.holds.delete(n);
-      n.heldBy.clear();
-      for (const child of n.holds) { child.heldBy.delete(n); work.push(child); }
-      n.holds.clear();
-      if (n.refs === 0 && !n.external && RESOURCES.includes(n.kind) && !n.destroyed) {
-        n.destroyed = true;
-        destroyed++;
-        try { n.obj.destroy(); } catch {}
+      if (n.refs > 0 || isHeld(n)) continue;
+      if (n.heldBy) { for (const h of n.heldBy) h.holds?.delete(n); n.heldBy = null; }
+      if (n.holds) { for (const c of n.holds) { c.heldBy?.delete(n); work.push(c); } n.holds = null; }
+      if (isResource(n.kind) && !n.external && !n.queued) {
+        n.queued = true;
+        doomed.push(n);
       }
+    }
+  }
+
+  // Run a tracked call: what it makes, and (lookups) what it looks up.
+  function tracked(call, lookups, after) {
+    const outerMade = made, outerUsed = used;
+    made = [];
+    used = [];
+    if (lookups) setRecorder(record);
+    try { return call(); } finally {
+      if (lookups) setRecorder(null);
+      const m = made, u = used;
+      made = outerMade;
+      used = outerUsed;
+      after(m, u);
     }
   }
 
   return {
     // the glue made a handle for obj
     made(obj) {
+      const kind = kindOf(obj);
+      if (!kind) return;
+      if (kind === 'GPUCommandEncoder') { openEncoders.add(obj); return; }
+      if (kind === 'GPUCommandBuffer') { unsubmitted.add(obj); return; }
       let n = nodes.get(obj);
-      if (!n) {
-        const kind = kindOf(obj);
-        if (!kind) return;
-        n = new Node(obj, kind);
-        nodes.set(obj, n);
-      }
+      if (!n) { n = new Node(obj, kind); nodes.set(obj, n); }
       n.refs++;
-      calls.at(-1)?.made.push(n);
-    },
-    // the glue looked obj up (returns it)
-    used(obj) {
-      const call = calls.at(-1);
-      if (call && obj) {
-        const n = nodes.get(obj);
-        if (n) call.used.add(n);
-      }
-      return obj;
+      made?.push(n);
     },
     // the cart released the glue's last reference to a handle for obj
     released(obj) {
-      const n = obj && nodes.get(obj);
-      if (!n) return;
+      if (!obj) return;
+      const n = nodes.get(obj);
+      if (!n) { openEncoders.delete(obj); unsubmitted.delete(obj); return; }
       n.refs--;
       if (n.refs <= 0) { n.refs = 0; settle(n); }
     },
-    // around every WebGPU import the cart calls
-    enter(name, firstArg) {
-      let receiver = null;
-      if (typeof firstArg === 'number' && firstArg) {
-        const n = nodes.get(lookup(firstArg));
-        if (n && ENCODERS[n.kind] && name.startsWith(ENCODERS[n.kind])) receiver = n;
-      }
-      calls.push({ name, receiver, used: new Set(), made: [] });
+
+    // The tracked calls; `call` runs the glue's function.
+    // wgpuTextureCreateView(texture, ...): the view holds its texture.
+    view(texPtr, call) {
+      const tex = nodes.get(lookup(texPtr));
+      return tracked(call, false, m => { if (tex) for (const v of m) hold(v, tex); });
     },
-    leave() {
-      const { name, receiver, used, made } = calls.pop();
-      const external = name === 'wgpuSurfaceGetCurrentTexture';
-      for (const m of made) {
-        if (external) { m.external = true; continue; }
-        if (RESOURCES.includes(m.kind)) continue;
-        for (const u of used) hold(m, u);
+    // wgpuDeviceCreateBindGroup: the group holds every buffer and view it names.
+    bindGroup(call) {
+      return tracked(call, true, (m, u) => { for (const g of m) for (const x of u) if (x.kind !== 'GPUBindGroup') hold(g, x); });
+    },
+    // wgpuRenderBundleEncoder*(encoder, ...): the bundle encoder holds what
+    // its calls name, and the bundle its Finish makes holds the encoder.
+    bundle(encPtr, call) {
+      const enc = nodes.get(lookup(encPtr));
+      return tracked(call, true, (m, u) => {
+        if (!enc) return;
+        for (const x of u) hold(enc, x);
+        for (const b of m) hold(b, enc);
+      });
+    },
+    // wgpuSurfaceGetCurrentTexture: the texture it hands out is the canvas's
+    surfaceTexture(call) {
+      return tracked(call, false, m => { for (const t of m) t.external = true; });
+    },
+    // wgpuCommandEncoderFinish(encoder, ...): no longer encoding
+    finish(encPtr) { openEncoders.delete(lookup(encPtr)); },
+    // wgpuQueueSubmit(queue, count, commands): those command buffers are submitted
+    submit(count, cbsPtr, heapU32) {
+      for (let i = 0; i < count; i++) unsubmitted.delete(lookup(heapU32[(cbsPtr >>> 2) + i]));
+    },
+
+    // After the frame's last submit (the host calls it when wc_render
+    // returns): destroy what was released and nothing uses, unless the cart
+    // is still encoding commands that may name it.
+    frameEnd() {
+      if (!doomed.length || openEncoders.size || unsubmitted.size) return;
+      const list = doomed;
+      doomed = [];
+      for (const n of list) {
+        n.queued = false;
+        if (n.refs > 0 || isHeld(n)) continue;
+        destroyed++;
+        try { n.obj.destroy(); } catch {}
       }
-      if (receiver) {
-        for (const u of used) hold(receiver, u);
-        for (const m of made) hold(receiver, m);
-      }
-      const finished = [];
-      if (name === 'wgpuQueueSubmit') {
-        for (const u of used) if (u.kind === 'GPUCommandBuffer') { u.done = true; finished.push(u); }
-      } else if (receiver && name.endsWith('EncoderFinish')) {
-        receiver.done = true;
-        finished.push(receiver);
-      }
-      for (const f of finished) settle(f);
     },
     /** For tests: how many textures and buffers this session destroyed. */
     stats: () => ({ destroyed }),

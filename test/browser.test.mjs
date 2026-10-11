@@ -25,6 +25,7 @@ import { createServer } from 'node:http';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, extname } from 'node:path';
+import { unzipSync, zipSync } from 'fflate';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
@@ -80,9 +81,23 @@ const LISTED_MANIFEST = JSON.stringify({
   files: ['hello.txt', 'data/key.txt', 'data/late.bin'],
 });
 
+// /test/split/: hello.wasc's wasm on its own (cart.wasm, application/wasm)
+// and the archive without it, as a web export ships a cart for
+// WebAssembly.compileStreaming (CartHostWeb load's `wasm` option).
+const helloParts = unzipSync(readFileSync(join(ROOT, 'test/fixtures/hello.wasc')));
+const SPLIT = {
+  '/test/split/cart.wasm': ['application/wasm', helloParts['cart.wasm']],
+  '/test/split/hello.wasc': ['application/octet-stream', zipSync({ 'manifest.json': helloParts['manifest.json'] })],
+};
+
 const http = createServer(async (req, res) => {
   let path = decodeURIComponent(req.url.split('?')[0]);
   requests.push(path);
+  if (SPLIT[path]) {
+    res.writeHead(200, { 'Content-Type': SPLIT[path][0], 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' });
+    res.end(Buffer.from(SPLIT[path][1]));
+    return;
+  }
   if (path.startsWith(DIRCART_LISTED)) {
     if (path === DIRCART_LISTED + 'manifest.json') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -136,6 +151,37 @@ const basic = await page.evaluate(async () => {
   return out;
 });
 check('cart loads and renders', basic, { w: 320, h: 240, bytes: 320 * 240 * 4 });
+
+// ─── 1b. a cart's wasm at a URL is compiled as it streams in ──────────────
+// (WebAssembly.compileStreaming: the browser caches its compiled code)
+const streamed = await page.evaluate(async () => {
+  const { CartHostWeb } = await import('/web.js');
+  const real = WebAssembly.compileStreaming;
+  let calls = 0;
+  WebAssembly.compileStreaming = (r) => { calls++; return real.call(WebAssembly, r); };
+  const pad = [{ connected: true, buttons: 0 }];
+  const out = {};
+  try {
+    const a = new CartHostWeb();
+    await a.load('/test/split/cart.wasm');
+    out.url = a.runFrame(pad).width;
+    a.destroy();
+    const split = new Uint8Array(await (await fetch('/test/split/hello.wasc')).arrayBuffer());
+    const b = new CartHostWeb();
+    await b.load(split, { wasm: '/test/split/cart.wasm' });
+    out.split = b.runFrame(pad).width;
+    b.destroy();
+    const c = new CartHostWeb();
+    await c.load(split, { wasm: fetch('/test/split/cart.wasm') }); // a fetch the page started early
+    out.early = c.runFrame(pad).width;
+    c.destroy();
+    try { await new CartHostWeb().load(split); out.refused = 'loaded'; } catch (e) { out.refused = /missing cart\.wasm/.test(e.message); }
+  } finally { WebAssembly.compileStreaming = real; }
+  out.calls = calls;
+  return out;
+});
+check('a .wasm URL, and a .wasc with options.wasm, compile with compileStreaming',
+      streamed, { url: 320, split: 320, early: 320, refused: true, calls: 3 });
 
 // ─── 2. standardized Wasm EH, through wasi-sdk's native SjLj ──────────────
 const sjlj = await page.evaluate(async () => {

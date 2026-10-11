@@ -48,3 +48,24 @@ test('CartHostWeb writes navigator.hardwareConcurrency, and nothing for a cart w
   assert.equal(legacy.readDebugValue('sentinel').value, SENTINEL);
   legacy.destroy();
 });
+
+// A cart thread that dies after it was spawned (test/fixtures/threaddie.c
+// traps in wasi_thread_start) is an error, not a log line: the cart's pool
+// would silently run a worker short. The next runFrame throws it.
+test('a cart thread that dies stops the cart with an error naming the thread (CartHost)', async () => {
+  const cart = new CartHost();
+  await cart.load(join(HERE, 'fixtures', 'threaddie.wasc'));
+  try {
+    assert.ok(cart.readDebugValue('spawned').value > 0, 'the thread was spawned');
+    let err = null;
+    for (let i = 0; i < 200 && !err; i++) {
+      try { cart.runFrame(); } catch (e) { err = e; }
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    assert.ok(err, 'runFrame threw');
+    assert.match(err.message, /cart thread \d+ died/);
+    assert.throws(() => cart.runFrame(), /cart thread \d+ died/, 'and keeps throwing');
+  } finally {
+    cart.destroy();
+  }
+});

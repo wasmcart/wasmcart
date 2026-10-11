@@ -73,11 +73,22 @@ export function createWebGLImports({ getMemory, ctx, allocator, getExports, nati
     };
     ctx.__wcCurrentWrapped = true;
   }
-  function u8() { return new Uint8Array(getMemory().buffer); }
-  function u16() { return new Uint16Array(getMemory().buffer); }
-  function u32() { return new Uint32Array(getMemory().buffer); }
-  function i32() { return new Int32Array(getMemory().buffer); }
-  function f32() { return new Float32Array(getMemory().buffer); }
+  // Views of cart memory, made again only when its buffer changes (memory
+  // growth): a new typed array on every GL call was measurable per frame.
+  let _viewBuf = null, _u8, _u16, _u32, _i32, _f32;
+  function _views() {
+    const buf = getMemory().buffer;
+    if (buf !== _viewBuf) {
+      _viewBuf = buf;
+      _u8 = new Uint8Array(buf); _u16 = new Uint16Array(buf); _u32 = new Uint32Array(buf);
+      _i32 = new Int32Array(buf); _f32 = new Float32Array(buf);
+    }
+  }
+  function u8() { _views(); return _u8; }
+  function u16() { _views(); return _u16; }
+  function u32() { _views(); return _u32; }
+  function i32() { _views(); return _i32; }
+  function f32() { _views(); return _f32; }
 
   // Enable WebGL2 extensions upfront
   const _extAniso = ctx.getExtension('EXT_texture_filter_anisotropic');
@@ -515,7 +526,7 @@ export function createWebGLImports({ getMemory, ctx, allocator, getExports, nati
   // few floats into a reused scratch array costs less than the view did.
   // Large arrays (bone palettes and the like) keep the view: the copy would
   // stop paying for itself.
-  const _scratchF = [], _scratchI = [];
+  const _scratchF = [], _scratchI = [], _scratchList = [];
   let _memF32 = null, _memI32 = null;
   function _uniformF32(ptr, n) {
     const buf = getMemory().buffer;
@@ -893,13 +904,11 @@ export function createWebGLImports({ getMemory, ctx, allocator, getExports, nati
     },
     glTexParameterfv: (target, pname, paramsPtr) => {
       if (pname >= 0x8E42 && pname <= 0x8E46) return;
-      const view = new Float32Array(getMemory().buffer, paramsPtr, 4);
-      ctx.texParameterf(target, pname, view[0]);
+      ctx.texParameterf(target, pname, f32()[paramsPtr >> 2]);
     },
     glTexParameteriv: (target, pname, paramsPtr) => {
       if (pname >= 0x8E42 && pname <= 0x8E46) return;
-      const view = new Int32Array(getMemory().buffer, paramsPtr, 4);
-      ctx.texParameteri(target, pname, view[0]);
+      ctx.texParameteri(target, pname, i32()[paramsPtr >> 2]);
     },
     glGenerateMipmap: (target) => ctx.generateMipmap(target),
     glCompressedTexImage2D: (target, level, internalformat, width, height, border, imageSize, dataPtr) => {
@@ -1351,11 +1360,11 @@ export function createWebGLImports({ getMemory, ctx, allocator, getExports, nati
     },
     glGetFloatv: (pname, dataPtr) => {
       const result = ctx.getParameter(pname);
-      const view = new Float32Array(getMemory().buffer, dataPtr, 16);
+      const view = f32(), base = dataPtr >> 2;
       if (typeof result === 'number') {
-        view[0] = result;
+        view[base] = result;
       } else if (result && result.length) {
-        for (let i = 0; i < result.length; i++) view[i] = result[i];
+        for (let i = 0; i < result.length && i < 16; i++) view[base + i] = result[i];
       }
     },
     glGetStringi: (name, index) => {
@@ -1380,7 +1389,7 @@ export function createWebGLImports({ getMemory, ctx, allocator, getExports, nati
     glVertexAttrib3f: (index, x, y, z) => ctx.vertexAttrib3f(index, x, y, z),
     glVertexAttrib4f: (index, x, y, z, w) => ctx.vertexAttrib4f(index, x, y, z, w),
     glVertexAttrib4fv: (index, vPtr) => {
-      ctx.vertexAttrib4fv(index, new Float32Array(getMemory().buffer, vPtr, 4));
+      ctx.vertexAttrib4fv(index, _uniformF32(vPtr, 4));
     },
     glVertexAttribIPointer: (index, size, type, stride, offset) => {
       if (_boundArrayBuffer === 0 && offset !== 0) {
@@ -1457,8 +1466,10 @@ export function createWebGLImports({ getMemory, ctx, allocator, getExports, nati
       _checkGL('glRenderbufferStorageMultisample', arguments);
     },
     glInvalidateFramebuffer: (target, numAttachments, attachmentsPtr) => {
-      const view = new Uint32Array(getMemory().buffer, attachmentsPtr, numAttachments);
-      ctx.invalidateFramebuffer(target, Array.from(view));
+      const view = u32(), base = attachmentsPtr >> 2;
+      const list = _scratchList[numAttachments] || (_scratchList[numAttachments] = new Array(numAttachments));
+      for (let i = 0; i < numAttachments; i++) list[i] = view[base + i];
+      ctx.invalidateFramebuffer(target, list);
     },
 
     // ─── Shader introspection ───────────────────────────────────────────
@@ -1596,7 +1607,7 @@ export function createWebGLImports({ getMemory, ctx, allocator, getExports, nati
     },
     glGetShaderPrecisionFormat: (shaderType, precisionType, rangePtr, precisionPtr) => {
       const result = ctx.getShaderPrecisionFormat(shaderType, precisionType);
-      const view = new Int32Array(getMemory().buffer);
+      const view = i32();
       if (result) {
         view[rangePtr >> 2] = result.rangeMin;
         view[(rangePtr >> 2) + 1] = result.rangeMax;
@@ -1604,17 +1615,14 @@ export function createWebGLImports({ getMemory, ctx, allocator, getExports, nati
       }
     },
     glGetBufferParameteriv: (target, pname, paramsPtr) => {
-      const view = new Int32Array(getMemory().buffer, paramsPtr, 1);
-      view[0] = ctx.getBufferParameter(target, pname) || 0;
+      i32()[paramsPtr >> 2] = ctx.getBufferParameter(target, pname) || 0;
     },
     glGetFramebufferAttachmentParameteriv: (target, attachment, pname, paramsPtr) => {
-      const view = new Int32Array(getMemory().buffer, paramsPtr, 1);
       const result = ctx.getFramebufferAttachmentParameter(target, attachment, pname);
-      view[0] = typeof result === 'number' ? result : 0;
+      i32()[paramsPtr >> 2] = typeof result === 'number' ? result : 0;
     },
     glGetRenderbufferParameteriv: (target, pname, paramsPtr) => {
-      const view = new Int32Array(getMemory().buffer, paramsPtr, 1);
-      view[0] = ctx.getRenderbufferParameter(target, pname) || 0;
+      i32()[paramsPtr >> 2] = ctx.getRenderbufferParameter(target, pname) || 0;
     },
     glIsEnabled: (cap) => ctx.isEnabled(cap) ? 1 : 0,
     glIsTexture: (id) => (id > 0 && _textures[id]) ? (ctx.isTexture(_textures[id]) ? 1 : 0) : 0,
@@ -1630,7 +1638,7 @@ export function createWebGLImports({ getMemory, ctx, allocator, getExports, nati
     },
     glGetVertexAttribfv: (index, pname, paramsPtr) => {
       const val = ctx.getVertexAttrib(index, pname);
-      new Float32Array(getMemory().buffer, paramsPtr, 1)[0] = val || 0;
+      f32()[paramsPtr >> 2] = val || 0;
     },
     glGetVertexAttribPointerv: (index, pname, pointerPtr) => {
       const val = ctx.getVertexAttribOffset(index, pname);
@@ -1659,7 +1667,7 @@ export function createWebGLImports({ getMemory, ctx, allocator, getExports, nati
     },
     glGetTexParameterfv: (target, pname, paramsPtr) => {
       const val = ctx.getTexParameter(target, pname);
-      new Float32Array(getMemory().buffer, paramsPtr, 1)[0] = val || 0;
+      f32()[paramsPtr >> 2] = val || 0;
     },
     glGetUniformiv: (prog, loc, paramsPtr) => {
       const l = _getUniformLoc(loc);
@@ -1669,9 +1677,9 @@ export function createWebGLImports({ getMemory, ctx, allocator, getExports, nati
     },
     glGetUniformfv: (prog, loc, paramsPtr) => {
       const l = _getUniformLoc(loc);
-      if (!l) { new Float32Array(getMemory().buffer, paramsPtr, 1)[0] = 0; return; }
+      if (!l) { f32()[paramsPtr >> 2] = 0; return; }
       const val = ctx.getUniform(_programs[prog], l);
-      new Float32Array(getMemory().buffer, paramsPtr, 1)[0] = val || 0;
+      f32()[paramsPtr >> 2] = val || 0;
     },
 
     // ─── 3D textures ────────────────────────────────────────────────────
@@ -1733,7 +1741,7 @@ export function createWebGLImports({ getMemory, ctx, allocator, getExports, nati
     glClearBufferfv: (buffer, drawbuffer, valuePtr) => {
       const GL_COLOR = 0x1800;
       const numFloats = (buffer === GL_COLOR) ? 4 : 1;
-      ctx.clearBufferfv(buffer, drawbuffer, new Float32Array(getMemory().buffer, valuePtr, numFloats));
+      ctx.clearBufferfv(buffer, drawbuffer, _uniformF32(valuePtr, numFloats));
     },
 
     // ─── Transform feedback ─────────────────────────────────────────────

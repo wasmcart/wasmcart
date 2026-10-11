@@ -11,7 +11,7 @@
 //
 // How: link a C file that takes the address of every function in webgpu.h,
 // so every JS function the port has is pulled in, then keep Emscripten's
-// generated JS and drop its wasm. Four edits make it hostable:
+// generated JS and drop its wasm. Five edits make it hostable and fast:
 //   - `navigator` and `document` become per-instance values the host passes
 //     in, so two carts in one process can hold different devices and canvases;
 //   - the WebGPU object table and the memory-view refresh are exported;
@@ -21,6 +21,8 @@
 //   - the object table reports every object made, looked up and released,
 //     so the host can destroy released textures and buffers nothing uses
 //     (wgpu/glue-release.mjs; docs/webgpu.md "GPU memory").
+//   - setBindGroup gets its dynamic offsets as a reused array rather than a
+//     HEAPU32 range (wgpu/glue-offsets.mjs).
 //
 // Needs emcc at the version pinned in wgpu/emdawnwebgpu.json (`glueEmcc`):
 // the transforms match that release's generated code, and another emcc
@@ -36,6 +38,7 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { routeGlueAllocation, ALLOCATOR_EXPORTS } from './wgpu/glue-alloc.mjs'
 import { hookGlueObjects } from './wgpu/glue-release.mjs'
+import { arrayDynamicOffsets } from './wgpu/glue-offsets.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const pin = JSON.parse(fs.readFileSync(path.join(root, 'scripts/wgpu/emdawnwebgpu.json'), 'utf8'))
@@ -119,6 +122,9 @@ try {
   js = routeGlueAllocation(js)
   // Released textures and buffers are destroyed once nothing uses them.
   js = hookGlueObjects(js)
+  // setBindGroup's dynamic offsets as a reused array (Dawn's Node binding
+  // takes the typed-array overload only after failing the array one).
+  js = arrayDynamicOffsets(js)
 
   // The functions a cart may import from this glue, read from the glue's own
   // import list so the host can name anything a cart wants that it lacks.

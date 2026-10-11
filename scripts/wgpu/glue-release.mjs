@@ -7,11 +7,15 @@
 // Three places touch it, and each gets a call on the Module object, which
 // src/wgpu/host.js fills in per cart:
 //   - every insertion (jsObjectInsert, and each importJs<Type>):
-//     wcGpuMade(object);
-//   - the one lookup, WebGPU.getJsObject: wcGpuUse(object), which returns it;
+//     wcGpuMade(object, handle);
+//   - the one lookup, WebGPU.getJsObject: WebGPU.wcRecord(object) while the
+//     host has one installed (only during the few calls it tracks; a plain
+//     property check otherwise);
 //   - _emwgpuDelete, which the cart's webgpu.cpp calls when the last
-//     reference to a handle is released: wcGpuRelease(object), after the
-//     entry is gone.
+//     reference to a handle is released: wcGpuRelease(object, handle), after
+//     the entry is gone.
+// (handle: the cart's pointer for the object, which an embedder calling
+// webgpu.h natively for the cart keys its own table by.)
 //
 // The edit is exact: the lookup and the delete must appear once, every write
 // to the table must be one of the insertions, and nothing else may read the
@@ -34,8 +38,8 @@ export function hookGlueObjects(js) {
   if (!inserts || touches !== inserts + 2) {
     throw new Error(`generated glue changed shape: ${touches} uses of the object table, expected ${inserts} insertions, one lookup and one delete`);
   }
-  js = js.replace(INSERT, (_, indent, v) => `${indent}WebGPU.Internals.jsObjects[ptr] = ${v};\n${indent}Module['wcGpuMade'](${v});\n`);
-  js = js.replace(LOOKUP, () => "        return Module['wcGpuUse'](WebGPU.Internals.jsObjects[ptr]);\n");
-  js = js.replace(DELETE, () => "      var obj = WebGPU.Internals.jsObjects[ptr];\n      delete WebGPU.Internals.jsObjects[ptr];\n      Module['wcGpuRelease'](obj);\n");
+  js = js.replace(INSERT, (_, indent, v) => `${indent}WebGPU.Internals.jsObjects[ptr] = ${v};\n${indent}Module['wcGpuMade'](${v}, ptr);\n`);
+  js = js.replace(LOOKUP, () => "        var obj = WebGPU.Internals.jsObjects[ptr];\n        if (WebGPU.wcRecord) WebGPU.wcRecord(obj);\n        return obj;\n");
+  js = js.replace(DELETE, () => "      var obj = WebGPU.Internals.jsObjects[ptr];\n      delete WebGPU.Internals.jsObjects[ptr];\n      Module['wcGpuRelease'](obj, ptr);\n");
   return js;
 }

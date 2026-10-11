@@ -210,6 +210,31 @@ const PREFETCH_CONCURRENCY = 6;
 
 /* A cart source that names a cart DIRECTORY served over HTTP: a URL whose path
  * does not end in .wasc or .wasm. Those two are still fetched whole. */
+// A cart's wasm from a fetch Response: compiled as it streams in
+// (WebAssembly.compileStreaming, which also lets the browser cache the
+// compiled code for the next load of the same URL), with its bytes, which a
+// threaded cart's shared-memory limits are read from. A server that does not
+// send application/wasm gets a plain compile of the bytes.
+async function compiledFrom(res) {
+  if (typeof WebAssembly.compileStreaming === 'function' && /^application\/wasm\b/i.test(res.headers.get('content-type') || '')) {
+    const [module, buf] = await Promise.all([WebAssembly.compileStreaming(res.clone()), res.arrayBuffer()]);
+    return { module, bytes: new Uint8Array(buf) };
+  }
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  return { module: await WebAssembly.compile(bytes), bytes };
+}
+// what: a URL, or a fetch Response (or a promise of one) the page started early
+async function fetchCompiled(what) {
+  const isUrl = typeof what === 'string' || what instanceof URL;
+  const res = await (isUrl ? fetch(what) : what);
+  if (!res.ok) throw new Error(`could not fetch ${isUrl ? what : res.url}: HTTP ${res.status}`);
+  return compiledFrom(res);
+}
+// a fetched cart that is a bare .wasm (by its type, or its name)
+function isWasmResponse(res, url) {
+  return /^application\/wasm\b/i.test(res.headers.get('content-type') || '') || /\.wasm(\?|#|$)/i.test(String(url));
+}
+
 function isDirectoryUrl(source) {
   const s = source instanceof URL ? source.href : source;
   const path = s.split(/[?#]/)[0];
@@ -257,6 +282,7 @@ export class CartHostWeb {
     this._sharedMemory = null;
     this._compiledModule = null;
     this._workers = new Map();
+    this._threadFatal = null; // a cart thread died (_threadDied): thrown from runFrame
     this._nextTid = 1;
 
     // GL state
@@ -347,6 +373,11 @@ export class CartHostWeb {
    * @param {number} [options.preferredWidth] - hint for cart resolution
    * @param {number} [options.preferredHeight] - hint for cart resolution
    * @param {number} [options.audioSampleRate] - host audio sample rate (default 48000)
+   * @param {string|URL|Response|Promise<Response>} [options.wasm] - the cart's wasm
+   *   at its own URL (or the fetch of it the page already started), in place of
+   *   the .wasc's entry (which the archive may then leave out): compiled while it
+   *   downloads, and its compiled code cached by the browser for the next load
+   *   (WebAssembly.compileStreaming; served as application/wasm)
    */
   // Draw a progress bar on the GL canvas during loading.
   // Uses simple scissor+clear - no shaders or buffers needed.
@@ -387,24 +418,34 @@ export class CartHostWeb {
     let glCtx = typeof options.glBackend === 'function' ? null : (options.glBackend || null);
     this._drawProgress(glCtx, 0);
 
+    // The cart's wasm at its own URL: compiled while it streams in, alongside
+    // whatever else downloads.
+    const separate = options.wasm ? fetchCompiled(options.wasm) : null;
+
     // A URL: a cart directory (assets fetched on demand), or a .wasc/.wasm
-    // fetched whole and then handled exactly like bytes.
+    // fetched whole and then handled like bytes (a .wasm compiled as it
+    // streams).
     if (typeof source === 'string' || source instanceof URL) {
       if (isDirectoryUrl(source)) {
-        return this._loadWasm(await this._loadFromDirectory(source), options, glCtx);
+        const dir = await this._loadFromDirectory(source, separate);
+        return this._loadWasm(dir.bytes, options, glCtx, dir.module);
       }
       const res = await fetch(source);
       if (!res.ok) throw new Error(`could not fetch ${source}: HTTP ${res.status}`);
+      if (!separate && isWasmResponse(res, source)) {
+        const w = await compiledFrom(res);
+        return this._loadWasm(w.bytes, options, glCtx, w.module);
+      }
       source = new Uint8Array(await res.arrayBuffer());
     }
 
     const u8 = source instanceof Uint8Array ? source : new Uint8Array(source);
-    let wasmBytes;
+    let wasmBytes, module = null;
 
     // Detect ZIP vs bare WASM
     if (u8.length >= 4 && u8[0] === 0x50 && u8[1] === 0x4b &&
         u8[2] === 0x03 && u8[3] === 0x04) {
-      wasmBytes = await this._loadFromWascBuffer(u8);
+      wasmBytes = await this._loadFromWascBuffer(u8, !!separate);
     } else if (u8.length >= 4 && u8[0] === 0x00 && u8[1] === 0x61 &&
                u8[2] === 0x73 && u8[3] === 0x6d) {
       // Bare .wasm (magic: \0asm)
@@ -412,17 +453,18 @@ export class CartHostWeb {
     } else {
       throw new Error('Invalid cart data: expected .wasc (ZIP) or .wasm bytes');
     }
+    if (separate) ({ bytes: wasmBytes, module } = await separate);
 
-    return this._loadWasm(wasmBytes, options, glCtx);
+    return this._loadWasm(wasmBytes, options, glCtx, module);
   }
 
-  async _loadWasm(wasmBytes, options, glCtx) {
+  async _loadWasm(wasmBytes, options, glCtx, compiled = null) {
     // Memory the host writes into the cart comes from the cart's allocator
     // (wc_alloc/wc_free; SPEC.md "Cart memory the host writes").
     this._alloc = createCartAllocator({ getExports: () => this.instance?.exports, getMemory: () => this.memory });
     // Compile and validate
     this._drawProgress(glCtx, 0.1);
-    const module = await WebAssembly.compile(wasmBytes);
+    const module = compiled || await WebAssembly.compile(wasmBytes);
     this._validateModule(module);
 
     // Detect thread usage
@@ -1107,6 +1149,8 @@ export class CartHostWeb {
     // failed) stops the cart here, with the allocator's error.
     const wgpuFatal = this._wgpu?.takeFatal();
     if (wgpuFatal) throw wgpuFatal;
+    // A cart thread that died stops the cart (_threadDied).
+    if (this._threadFatal) throw this._threadFatal;
     this._wgpu?.beginFrame();
     yield ['wc_render', []];
     if (this._asyncify.unwound) {
@@ -1115,6 +1159,7 @@ export class CartHostWeb {
       this._asyncify.unwound = false;
     }
     this._updateViews();
+    this._wgpu?.endFrame(); // after the frame's last submit: destroy what the cart released
 
     // Blit redirect FBO → canvas (GL carts render to redirect, not canvas directly)
     if (this._glFuncs?._blitToCanvas) {
@@ -1339,7 +1384,7 @@ export class CartHostWeb {
 
   // --- .wasc loading ---
 
-  async _loadFromWascBuffer(buf) {
+  async _loadFromWascBuffer(buf, wasmElsewhere = false) {
     const index = parseZipFromBuffer(buf);
 
     if (index.size > MAX_ARCHIVE_ENTRIES) {
@@ -1358,11 +1403,11 @@ export class CartHostWeb {
     }
     this._manifest = manifestEntry ? manifest : null;
 
-    // Read wasm
+    // Read wasm (unless it comes from its own URL: options.wasm)
     const wasmName = manifest.entry || 'cart.wasm';
     const wasmEntry = index.get(wasmName);
-    if (!wasmEntry) throw new Error(`.wasc archive missing ${wasmName}`);
-    const wasmBytes = await readZipEntryAsync(buf, wasmEntry);
+    if (!wasmEntry && !wasmElsewhere) throw new Error(`.wasc archive missing ${wasmName}`);
+    const wasmBytes = wasmElsewhere ? null : await readZipEntryAsync(buf, wasmEntry);
 
     // Build asset index
     const assetsPrefix = assetPrefixOf(manifest);
@@ -1411,7 +1456,7 @@ export class CartHostWeb {
    *   is downloaded before it starts; with no `files` either, there is no way
    *   to know what to fetch and the load fails with a message saying why.
    */
-  async _loadFromDirectory(source) {
+  async _loadFromDirectory(source, separate = null) {
     const pageBase = typeof location !== 'undefined' ? location.href : undefined;
     let base = new URL(source, pageBase);
     if (!base.pathname.endsWith('/')) base = new URL(base.pathname + '/' + base.search, base);
@@ -1427,9 +1472,8 @@ export class CartHostWeb {
 
     const wasmName = manifest.entry || 'cart.wasm';
     if (!validateAssetPath(wasmName)) throw new Error(`manifest entry is not a cart-relative path: ${wasmName}`);
-    const wres = await fetch(new URL(assetUrlPath(wasmName), base));
-    if (!wres.ok) throw new Error(`could not fetch ${new URL(wasmName, base)}: HTTP ${wres.status}`);
-    const wasmBytes = new Uint8Array(await wres.arrayBuffer());
+    // compiled as it streams (and cached by the browser), unless options.wasm names another
+    const wasm = await (separate || fetchCompiled(new URL(assetUrlPath(wasmName), base)));
 
     this._dirAssetBase = new URL(assetUrlPath(assetPrefixOf(manifest)), base);
     this._hasAssets = true;
@@ -1455,7 +1499,7 @@ export class CartHostWeb {
         'fetched on demand, and the manifest has no `files` list to download up front. ' +
         'Serve the cart as a .wasc, or add `files` (wasmcart index <dir>).');
     }
-    return wasmBytes;
+    return wasm;
   }
 
   // The no-JSPI fallback: download every listed file before the cart starts.
@@ -1606,6 +1650,19 @@ export class CartHostWeb {
 
   // --- Threading ---
 
+  /**
+   * A cart thread died after it was spawned (it trapped, or its worker failed
+   * or exited without returning). The cart's thread pool is then a worker
+   * short, and a pool waiting on it can hang, so this is an error, not a log
+   * line: logged at once, and thrown from the next runFrame(), which stops
+   * the cart with it.
+   */
+  _threadDied(tid, reason) {
+    const err = new Error(`wasmcart: cart thread ${tid} died (${reason}); the cart's thread pool is a worker short, so the cart is stopped`);
+    console.error(err.message);
+    this._threadFatal ??= err;
+  }
+
   _spawnThread(startArg) {
     if (!this.isThreaded || !this._compiledModule || !this._sharedMemory) return -1;
 
@@ -1640,12 +1697,13 @@ export class CartHostWeb {
         worker.postMessage({ type: 'spawned', tid: nestedTid, requestId: msg.requestId });
       } else if (msg.type === 'exit') {
         this._workers.delete(msg.tid);
+        if (msg.error) this._threadDied(tid, msg.error);
       }
     };
 
     worker.onerror = (err) => {
-      console.error(`[thread ${tid}] error:`, err.message);
       this._workers.delete(tid);
+      this._threadDied(tid, err?.message || 'the worker failed to load or threw');
     };
 
     worker.postMessage({
