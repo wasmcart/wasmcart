@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.34.0
+
+**WebGPU and GL host CPU**, and compiled code the browser keeps. No change to
+the ABI or to what a cart sees.
+
+- WebGPU imports: each glue function behind a wrapper of its own arity (a
+  rest-args wrapper allocated an array per call), and no per-call
+  bookkeeping. The release tracker (src/wgpu/release.js) follows only the
+  calls that make holders (texture views, bind groups, render bundles), the
+  surface texture and command encoder / buffer lifetimes, and destroys a
+  released texture or buffer nothing holds at the end of the frame, after its
+  last submit (the session's new `endFrame()`, which `CartHost` and
+  `CartHostWeb` call when `wc_render` returns). It used to walk an object
+  graph on every call: about 14% of a WebGPU cart's main-thread CPU.
+- The glue passes dynamic bind-group offsets to `setBindGroup` as a reused
+  array. Given `(HEAPU32, start, count)`, Dawn's Node binding tried the
+  sequence overload first, built the failure's error strings and converted
+  again: about 14% more. (scripts/wgpu/glue-offsets.mjs)
+- The host-owned cart canvas reuses its textures from a ring of three
+  (webgpu-node 2746769) instead of destroying and allocating a full-size one
+  every frame; `drawTo()` keeps its bind group per texture. `presentWgpuTo()`
+  into a window exactly the cart's size has the cart draw straight into the
+  window's texture from the next frame on (`wasmcart-play`'s window); any
+  other size is letterboxed with the copy.
+- `createWgpuSession` takes `onObject(handle, object)` and
+  `onRelease(handle, object)`: every WebGPU object the cart gets a handle to,
+  for an embedder that serves some of the cart's imports natively
+  (wasmcart-native calls Dawn's C API for a pass's draws).
+- GL imports reuse their views of cart memory, made again only when it grows,
+  and small scratch arrays, instead of a new typed array on every call.
+- A cart thread that traps, or whose worker fails or exits without returning,
+  stops the cart: the next `runFrame()` throws an error naming the thread. It
+  was logged, and the cart's pool ran a worker short.
+- `CartHostWeb` compiles a cart's wasm with `WebAssembly.compileStreaming`
+  when it comes from a URL (a `.wasm` URL, a cart directory, or the new load
+  option `wasm`: a URL, or a fetch the page already started, in place of the
+  `.wasc`'s entry), so the browser keeps the compiled code for the next load.
+
 ## 0.33.0
 
 **The host's hardware thread count** (SPEC.md, "wc_host_info_t"). Additive:

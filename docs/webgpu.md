@@ -239,13 +239,16 @@ between the frames of a stepped burst.
 
 ## GPU memory
 
-When a cart releases a texture or buffer, the host destroys it as soon as
-nothing the cart still holds uses it: no live view of the texture, bind group
-naming it, render bundle or unsubmitted command buffer or encoder that
-recorded it. A cart may release a texture right after making a view of it,
-or a buffer after binding it into a bind group, and keep using the view or
-group; the object is destroyed when the view or group is released. Work
-already submitted is unaffected: WebGPU's `destroy()` waits for it. Other
+When a cart releases a texture or buffer, the host destroys it at the end of
+the frame (after the frame's last submit) once nothing the cart still holds
+uses it: no live view of the texture, bind group naming it or render bundle
+that recorded it, and no command encoder the cart has not finished or command
+buffer it has not submitted (destroys wait for those). A cart may release a
+texture right after making a view of it, or a buffer after binding it into a
+bind group, and keep using the view or group; the object is destroyed after
+the view or group is released. Work already submitted is unaffected: WebGPU's
+`destroy()` waits for it. Only the calls that make views, bind groups and
+render bundles are tracked; every other call goes straight to the glue. Other
 released objects (views, bind groups, pipelines, samplers) are freed when the
 host's JavaScript engine collects them, as before; they hold little GPU
 memory. Measured with [`test/fixtures/wgpuvram.c`](../test/fixtures/wgpuvram.c),

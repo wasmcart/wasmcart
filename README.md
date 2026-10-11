@@ -423,8 +423,20 @@ await cart.load('game.wasc', {
   preferredWidth: 800,          // hint for resolution negotiation
   preferredHeight: 600,
   saveData: existingSaveBuffer,  // restore previous save
+  wasm: fetch('game.wasm'),     // CartHostWeb: the cart's wasm at its own URL (or a
+                                // fetch already started), compiled while it downloads
+                                // and kept compiled by the browser; the .wasc may then
+                                // leave its entry out
 });
 ```
+
+In the browser a cart's wasm fetched from a URL (a `.wasm` URL, a cart
+directory, or the `wasm` option) is compiled with
+`WebAssembly.compileStreaming` while it downloads, and the browser keeps the
+compiled code for the next load. Serve it as `application/wasm`. A `.wasc`'s
+own entry is in the archive, so it is compiled from the bytes each load: a
+page that loads the same game often (an exported game) ships the wasm beside
+the `.wasc` and passes `wasm`.
 
 ### WebGPU Carts
 
@@ -448,7 +460,9 @@ cart.presentWgpuTo(windowContext, { x: 0, y: 0, w: width, h: height });
 **Yield an event-loop turn between frames** (a `setImmediate` or
 `setTimeout`, or the next animation frame; a bare `await` is not enough):
 that is when async results the cart asked for (buffer maps, error scopes)
-reach it, and when GPU objects it released are freed. Options:
+reach it. Textures and buffers the cart released are destroyed when its
+frame ends (`runFrame` returns), once nothing it still holds uses them.
+Options:
 
 ```js
 await cart.load('game.wasc', {
