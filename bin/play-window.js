@@ -48,8 +48,29 @@ const CONTROLLER_BUTTONS = {
   start: 'START', back: 'SELECT', guide: 'SELECT',
 };
 
+/*
+ * Load SDL, choosing its video driver.
+ *
+ * On a Wayland desktop that also runs Xwayland (GNOME, KDE), SDL 2 opens X11
+ * windows. A WebGPU surface (Vulkan) on an Xwayland window presents through
+ * Xwayland's Present extension, which paced Rider at anything from 1 to 24
+ * fps with 100 ms stalls on a 30 Hz desktop (Mesa 26, Mutter), against a
+ * steady 30 on a Wayland window of the same session. So a WebGPU cart's window
+ * is a Wayland window when the session has one, X11 otherwise. GL carts stay
+ * on SDL's default: webgl-node draws into X11 windows only. An explicit
+ * SDL_VIDEODRIVER is never overridden.
+ */
+async function openSdl(wantWayland) {
+  if (wantWayland && process.platform === 'linux' && process.env.WAYLAND_DISPLAY && !process.env.SDL_VIDEODRIVER) {
+    process.env.SDL_VIDEODRIVER = 'wayland,x11';
+  }
+  return (await import('@kmamal/sdl')).default;
+}
+
 export async function runWindowed(cartPath, opt, { CartHost, toInt16, gpuLostMessage, saveIdentity = cartPath, cleanupSource }) {
-  const sdl = (await import('@kmamal/sdl')).default;
+  // SDL is loaded when the first window is made, because what kind of cart
+  // this is decides its video driver (see openSdl above).
+  let sdl = null;
 
   const host = new CartHost();
   const held = new Set();
@@ -85,6 +106,7 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, gpuLostMes
   // must NOT get an opengl window (separate-GL-context fights, see playtest).
   const makeGlWindow = async () => {
     const { createWebGL2Context } = await import('webgl-node');
+    sdl ??= await openSdl(false);
     // Size from the cart's own declaration, not a fixed 720p. The cart draws
     // at its declared resolution and wc_gl_blit's viewport is the context, so
     // a mismatch here puts the frame in a corner rather than scaling it.
@@ -119,6 +141,7 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, gpuLostMes
   // the window gets a WebGPU surface on the cart's device, and each frame is
   // drawn into it letterboxed, as the GL path does with its redirect FBO.
   let wgpuWindow = null;
+  sdl ??= await openSdl(host.usesWgpu);
   if (!window && host.usesWgpu) {
     const { createWebGPUContext } = await import('webgpu-node');
     window = sdl.video.createWindow({
@@ -411,7 +434,9 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, gpuLostMes
 
   // audio sink (SDL playback queue)
   const rate = info.audioSampleRate || 48000;
+  const AUDIO_QUEUE_MAX = rate * 4 * 0.08; // 80 ms of s16 stereo
   let audioDev = null;
+  let audioDropped = 0;
   try {
     audioDev = sdl.audio.openDevice({ type: 'playback' }, {
       channels: 2, frequency: rate, format: 's16lsb', buffered: 2048,
@@ -433,8 +458,8 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, gpuLostMes
     if (elapsed < 1000) return;
     const fps = (statsFrames * 1000) / elapsed;
     console.error(`wasmcart: ${fps.toFixed(1)} fps  (${statsFrames} frames in ${elapsed.toFixed(0)} ms, ` +
-      `${statsAudio} audio samples)`);
-    statsFrames = 0; statsAudio = 0; statsSince = now;
+      `${statsAudio} audio samples${audioDropped ? `, ${audioDropped} dropped behind the queue` : ''})`);
+    statsFrames = 0; statsAudio = 0; audioDropped = 0; statsSince = now;
   };
 
   const step = () => {
@@ -448,7 +473,12 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, gpuLostMes
     }
     if (audioDev && frame.audio && frame.audio.length) {
       const i16 = toInt16(frame.audio);
-      if (i16) audioDev.enqueue(Buffer.from(i16.buffer, i16.byteOffset, i16.byteLength));
+      // Audio more than AUDIO_QUEUE_MAX behind is dropped, a frame's worth at
+      // a time, until the queue is back under it. A long frame (loading, a
+      // hitch) hands over its whole dt of audio at once, and without this the
+      // queue kept that latency for the rest of the run: 150-200 ms here.
+      if (i16 && audioDev.queued <= AUDIO_QUEUE_MAX) audioDev.enqueue(Buffer.from(i16.buffer, i16.byteOffset, i16.byteLength));
+      else if (i16) audioDropped += i16.length;
     }
   };
 
@@ -570,20 +600,16 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, gpuLostMes
    * running slower than if it had been paced, so that path keeps a timer.
    */
   const paceWithVsync = !!swapBuffers || !!wgpuWindow;  // both present with fifo (vsync)
-  // Backstop. Vsync is what bounds the GL path, and it is not guaranteed: a
-  // driver may ignore the swap interval, a compositor may hand an unredirected
-  // window no sync at all. Free-running then produces audio far faster than the
-  // device drains it -- measured at 3 MB/s against a 188 KB/s drain -- and the
-  // queue grows without limit. When the cart is that far ahead, wait instead of
-  // stepping. This gates nothing in the normal case: a cart keeping pace never
-  // reaches the threshold.
-  const AUDIO_BACKLOG_LIMIT = rate * 4 * 0.25; // ~250 ms of s16 stereo
+  // Vsync is what bounds these paths, and it is not guaranteed: a driver may
+  // ignore the swap interval, a compositor stops pacing a window it is not
+  // showing (a locked screen, a minimized window). A frame that comes back
+  // from present well inside a refresh period waits out the rest of it, so the
+  // loop never runs faster than the display refreshes. When vsync blocks, the
+  // period has already passed and this waits for nothing.
+  const refreshMs = () => 1000 / (window.display?.frequency || 60);
   const tick = async () => {
     if (closing) return;
-    if (audioDev && audioDev.queued > AUDIO_BACKLOG_LIMIT) {
-      setTimeout(tick, 4);
-      return;
-    }
+    const t0 = performance.now();
     step();
     if (host.gpuLost) {
       console.error(gpuLostMessage(host.gpuLost));
@@ -592,8 +618,10 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, gpuLostMes
     }
     await present();
     if (opt.frames > 0 && ticks >= opt.frames) return quit();
-    if (paceWithVsync) setImmediate(tick);
-    else setTimeout(tick, 1000 / 60);
+    if (paceWithVsync) {
+      const wait = t0 + refreshMs() - 1 - performance.now();
+      if (wait > 1) setTimeout(tick, wait); else setImmediate(tick);
+    } else setTimeout(tick, 1000 / 60);
   };
   tick();
 }
