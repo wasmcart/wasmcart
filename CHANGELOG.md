@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.34.1
+
+- Reverts 0.34.0's direct presentation (`presentWgpuTo` configuring a window
+  the cart's size as the cart's own canvas). On a real window (Vulkan on
+  Wayland, AMD RADV) it lost the device in `GatherSurfaceInfo`, or submitted
+  a destroyed surface texture every frame, so `npx wasmcart` could not run a
+  WebGPU cart in a window. Windows get the frame by the blit again, as in
+  0.33.0.
+
 ## 0.34.0
 
 **WebGPU and GL host CPU**, and compiled code the browser keeps. No change to
