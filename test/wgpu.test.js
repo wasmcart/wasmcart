@@ -43,6 +43,16 @@ function assertGlueAllocs(ex) {
   assert.ok(ex.t_frees() >= 2, 'the mapped range (at unmap) and the callback message were freed with wc_free');
 }
 
+// The pass's calls went straight to Dawn (native-dawn's wasmImports), none
+// back to the glue: across memory growth (wgpucart) and in shared memory
+// (wasicart), the frame above is what they drew.
+function assertDirectCalls(host) {
+  const calls = host._wgpu.nativeImports;
+  assert.ok(calls, 'webgpu-node\'s GPU gets the direct imports');
+  assert.ok(calls.native > 0, 'pass calls were served directly');
+  assert.equal(calls.fallback, 0, 'none needed the glue');
+}
+
 function glPixel(host, x, y) {
   const gl = host.getGlContext();
   const out = new Uint8Array(4);
@@ -77,6 +87,7 @@ test('a WebGPU cart renders on the host device, gets async results between frame
     assert.equal(frame.height, 192);
     assert.deepEqual(pixel(frame, 128, 110), [255, 128, 64, 255], 'triangle');
     assert.deepEqual(pixel(frame, 2, 2), [42, 0, 255, 255], 'background carries the compute result');
+    assertDirectCalls(host);
   } finally {
     host.destroy();
   }
@@ -108,6 +119,7 @@ test('a wasi-sdk cart (wasip1-threads, workers that never call WebGPU) runs on W
     const frame = await host.readGpuFrame();
     assert.deepEqual(pixel(frame, 128, 110), [255, 128, 64, 255]);
     assert.deepEqual(pixel(frame, 2, 2), [42, 0, 255, 255]);
+    assertDirectCalls(host);
   } finally {
     host.destroy();
   }

@@ -190,7 +190,7 @@ const HOST_USAGE = 0x01 /* COPY_SRC */ | 0x04 /* TEXTURE_BINDING */;
  * @param {(handle:number, object:object)=>void} [o.onRelease] - the cart
  *   released its last reference to that handle
  */
-export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdapter, createCanvas = createTextureCanvas, width, height, adapterOptions, globals = globalThis, log = () => {}, onLost = () => {}, onObject = null, onRelease = null }) {
+export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdapter, createCanvas = createTextureCanvas, width, height, adapterOptions, globals = globalThis, log = () => {}, onLost = () => {}, onObject = null, onRelease = null, wasmImports = null }) {
   const { factory, manifest } = await gluePromise();
   // The WebGPU classes the glue names as globals (GPUValidationError, ...):
   // window's in a browser, the implementation's own (webgpu-node `globals`)
@@ -334,8 +334,11 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
   // them on the way into every glue function and after every call back into
   // the cart.
   const refresh = () => {
-    if (memory && Module.HEAPU8 && Module.HEAPU8.buffer !== memory.buffer) Module.wcUpdateMemoryViews();
+    if (memory && Module.HEAPU8 && Module.HEAPU8.buffer !== memory.buffer) updateViews();
   };
+  const updateViews = () => { Module.wcUpdateMemoryViews(); native?.memory(Module.HEAPU8); };
+  // native-dawn's direct calls for the hot imports (see `env` below), or null
+  let native = null;
 
   // Every allocation the glue makes in cart memory goes through the cart's
   // wc_alloc/wc_free (scripts/wgpu/glue-alloc.mjs; SPEC.md "Cart memory the
@@ -381,8 +384,8 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
   // holds uses them (release.js; the glue's hooks: scripts/wgpu/glue-release.mjs).
   const tracker = createReleaseTracker(globals, ptr => Module.WebGPU.Internals.jsObjects[ptr >>> 0],
     fn => { Module.WebGPU.wcRecord = fn; });
-  Module.wcGpuMade = onObject ? (obj, ptr) => { tracker.made(obj); onObject(ptr >>> 0, obj); } : tracker.made;
-  Module.wcGpuRelease = onRelease ? (obj, ptr) => { onRelease(ptr >>> 0, obj); tracker.released(obj); } : tracker.released;
+  Module.wcGpuMade = (obj, ptr) => { tracker.made(obj); native?.register(ptr >>> 0, obj); onObject?.(ptr >>> 0, obj); };
+  Module.wcGpuRelease = (obj, ptr) => { onRelease?.(ptr >>> 0, obj); native?.forget(ptr >>> 0); tracker.released(obj); };
 
   // The cart's imports: each glue function behind a wrapper of its own arity
   // (a rest-args wrapper allocated an array per call), refreshing the memory
@@ -390,6 +393,16 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
   // release tracker needs to see (release.js) get their own wrappers.
   const env = {};
   for (const { name } of wanted) env[name] = wrapImport(name, info.env[name]);
+  // A frame's pass encoding (state, draws, dispatches) and buffer writes are
+  // most of its calls. Through the glue each costs about 1.5 us: its handle
+  // lookups and BigInt conversions, then the binding's argument conversion.
+  // native-dawn's wasmImports serves them by calling Dawn's C API on the
+  // objects the glue made (it learns each object's handle from the hooks
+  // above), and hands any call it cannot serve to the glue's function.
+  if (wasmImports) {
+    native = wasmImports(env);
+    for (const [name, fn] of Object.entries(native.imports)) env[name] = fn;
+  }
 
   function wrapImport(name, fn) {
     const enter = () => { refresh(); const outer = inCall; inCall = name; return outer; };
@@ -480,7 +493,7 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
       giveInstance({ exports }, null);
       await ready;
       Module.WebGPU.wcRecord = null; // the release tracker's lookup recorder (none installed)
-      Module.wcUpdateMemoryViews();
+      updateViews();
     },
 
     /** Called before wc_render: ends the previous frame (a browser compositor
@@ -552,6 +565,10 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
     /** {reason, message} once the host's device was lost while the cart
      *  ran (not at teardown), else null. */
     get lost() { return lost; },
+
+    /** Calls the direct Dawn imports served, and handed to the glue
+     *  ({native, fallback, handles}); null without them. */
+    get nativeImports() { return native ? native.stats() : null; },
 
     /** Textures and buffers destroyed after the cart released them (tests). */
     get released() { return tracker.stats(); },

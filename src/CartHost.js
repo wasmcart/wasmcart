@@ -543,9 +543,9 @@ export class CartHost {
       // The canvas starts at the best guess of the cart's size, as the GL
       // context does; the cart's own wgpuSurfaceConfigure sets the real one.
       const m = this._manifest || {};
-      const { gpu, adapter, createCanvas, globals } = this._wgpuProvider;
+      const { gpu, adapter, createCanvas, globals, wasmImports } = this._wgpuProvider;
       this._wgpu = await createWgpuSession({
-        moduleImports, gpu, adapter, createCanvas, globals, adapterOptions: options.adapterOptions,
+        moduleImports, gpu, adapter, createCanvas, globals, wasmImports, adapterOptions: options.adapterOptions,
         width: m.width || options.preferredWidth || DEFAULT_GL_W,
         height: m.height || options.preferredHeight || DEFAULT_GL_H,
         log: msg => console.error(msg),
@@ -1353,12 +1353,18 @@ export class CartHost {
     let gpu = options.gpu || null;
     let globals = options.gpuGlobals || null;
     const createCanvas = options.createCanvas || undefined;
+    let wasmImports = null;
     if (!gpu || !globals) {
       let mod;
       try { mod = await import('webgpu-node'); } catch (e) {
         if (!gpu) return { ok: false, reason: `webgpu-node is not installed or failed to load (${e.message})` };
       }
-      gpu ||= mod.createGPU();
+      if (!gpu) {
+        gpu = mod.createGPU();
+        // The hot WebGPU imports as direct calls into Dawn, for objects of
+        // this GPU (native-dawn, the Dawn build under webgpu-node).
+        wasmImports = (await import('native-dawn')).default.wasmImports;
+      }
       // The WebGPU classes (GPUValidationError, ...) the glue checks errors
       // against; Node has none on globalThis.
       globals ||= mod?.globals || globalThis;
@@ -1368,7 +1374,7 @@ export class CartHost {
       return { ok: false, reason: `requesting a WebGPU adapter failed (${e.message})` };
     }
     if (!adapter) return { ok: false, reason: 'no WebGPU adapter is available (check the GPU driver)' };
-    return { ok: true, gpu, adapter, createCanvas, globals };
+    return { ok: true, gpu, adapter, createCanvas, globals, wasmImports };
   }
 
   getInfo() {
