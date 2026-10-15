@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.34.3
+
+**Four controllers in the windowed player.** No change to the ABI or to what a
+cart sees.
+
+- `wasmcart-play --window` opens up to four game controllers, each its own pad
+  (pad N is player N + 1). It opened one controller and reported pad 0 only,
+  so a second, third or fourth controller never reached a cart.
+  - A controller takes the first free slot when it appears and keeps it until
+    it goes away; one going away leaves the others in their slots.
+  - A pad's buttons and sticks are read from its controller every frame, so a
+    button already held when the controller is opened counts.
+  - Rumble goes to the controller in that pad's slot.
+  - @kmamal/sdl 0.11 reuses device objects by list position and its
+    deviceRemove event can name another controller than the one that went;
+    the slots keep their own copy of each device's id and go by what is
+    still plugged in.
+- `src/padSlots.js` holds the mapping; `test/pad-slots.test.js` covers it.
+
 ## 0.34.2
 
 **Node host CPU per WebGPU frame, and window pacing.** No change to the ABI or

@@ -12,14 +12,15 @@
  *
  * Pacing: audio-paced when the cart emits audio (keep the SDL queue topped
  * up, step frames as it drains — the anti-choppiness rule); 60fps timer
- * otherwise. Real keyDown/keyUp edges (no terminal hold emulation), plus the
- * first game controller if one is plugged in.
+ * otherwise. Real keyDown/keyUp edges (no terminal hold emulation), plus up
+ * to four game controllers, each its own pad (src/padSlots.js).
  */
 
 import { BUTTON, WHEEL_DELTA } from '../src/abi.js';
 import { IN, DEVICE, GLYPH, glyphId, padOrigin, padFamily } from '../src/actions.js';
 import { fitRect } from '../src/letterbox.js';
 import { savPathFor, loadSave, makeSaver } from '../src/save.js';
+import { createPadSlots } from '../src/padSlots.js';
 
 const KEYMAP = {
   up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT',
@@ -37,16 +38,7 @@ const KEY_ORIGINS = {
   [IN.LEFT]: ['Left', 0x50], [IN.RIGHT]: ['Right', 0x4f], [IN.DPAD]: ['Arrow keys', 0],
 };
 
-// SDL's trigger axes. Same width as the sticks (int16) as of ABI v4, but
-// unsigned: a trigger travels one way, so its float is taken as magnitude.
-const TRIGGER_AXES = new Set(['leftTrigger', 'rightTrigger']);
 
-const CONTROLLER_BUTTONS = {
-  dpadUp: 'UP', dpadDown: 'DOWN', dpadLeft: 'LEFT', dpadRight: 'RIGHT',
-  a: 'A', b: 'B', x: 'X', y: 'Y',
-  leftShoulder: 'L', rightShoulder: 'R',
-  start: 'START', back: 'SELECT', guide: 'SELECT',
-};
 
 /*
  * Load SDL, choosing its video driver.
@@ -74,7 +66,6 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, gpuLostMes
 
   const host = new CartHost();
   const held = new Set();
-  const analog = { leftX: 0, leftY: 0, rightX: 0, rightY: 0, leftTrigger: 0, rightTrigger: 0 };
   let window = null;
   let swapBuffers = null;
   // GL letterboxing: the viewport is only recomputed when the drawable size
@@ -355,81 +346,46 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, gpuLostMes
    * Listening also gets reconnects for free, which a startup-only read never
    * could: a Bluetooth pad that drops mid-session comes back.
    */
-  let ctrl = null;
-  let padFam = GLYPH.GAMEPAD;
-  // Input-action origins follow the device player 0 used last.
+  // Up to four controllers, each its own pad and player (src/padSlots.js);
+  // the keyboard plays pad 0 with the first controller.
+  const padFam = [GLYPH.GAMEPAD, GLYPH.GAMEPAD, GLYPH.GAMEPAD, GLYPH.GAMEPAD];
+  // Input-action origins follow the device each player used last.
   host.setInputDescriber((player, input, device) => {
+    if (device === DEVICE.GAMEPAD) return padOrigin(padFam[player] ?? GLYPH.GAMEPAD, input);
     if (player !== 0) return null;
-    if (device === DEVICE.GAMEPAD) return padOrigin(padFam, input);
     const k = KEY_ORIGINS[input];
     return k ? { label: k[0], glyph: k[1] ? glyphId(GLYPH.KEY, k[1]) : 0 } : null;
   });
   host.setInputDevice(0, DEVICE.KEYBOARD_MOUSE);
-  const usePad = () => host.setInputDevice(0, DEVICE.GAMEPAD);
-  const openController = (dev) => {
-    if (ctrl || !dev) return;                       // pad 0 only; see the rumble note below
-    try {
-      ctrl = sdl.controller.openDevice(dev);
-    } catch {
-      ctrl = null;                                  // unplugged between the event and here
-      return;
-    }
-    padFam = padFamily(`${dev.name ?? ''} ${dev.type ?? ''}`);
-    usePad();
-    host.inputChanged();
-    ctrl.on('buttonDown', (e) => { const n = CONTROLLER_BUTTONS[e.button]; if (n) { held.add(n); usePad(); } });
-    ctrl.on('buttonUp', (e) => { const n = CONTROLLER_BUTTONS[e.button]; if (n) held.delete(n); });
-    ctrl.on('axisMotion', (e) => {
-      if (!(e.axis in analog)) return;
-      // Every analog axis is int16 as of ABI v4, so sticks and triggers share
-      // one scale factor. Triggers are UNSIGNED (0..32767, one direction),
-      // which is the only thing separating them here: SDL hands both over as
-      // a float, and a pad whose trigger rests near 0.5 would otherwise
-      // report half-pressed as a negative stick value.
-      if (Math.abs(e.value ?? 0) > 0.5) usePad();
-      analog[e.axis] = TRIGGER_AXES.has(e.axis)
-        ? Math.max(0, Math.min(32767, Math.round(Math.abs(e.value ?? 0) * 32767)))
-        : Math.max(-32767, Math.min(32767, Math.round((e.value ?? 0) * 32767)));
-    });
-  };
+  const usePad = (slot = 0) => host.setInputDevice(slot, DEVICE.GAMEPAD);
+  let padSlots = null;
   try {
-    // Already listed (the Linux case), plus anything that arrives later (the
-    // macOS case, and any reconnect on either).
-    openController(sdl.controller.devices[0]);
-    sdl.controller.on('deviceAdd', (e) => openController(e.device ?? sdl.controller.devices[0]));
-    sdl.controller.on('deviceRemove', (e) => {
-      const gone = e.device;
-      if (!ctrl || (gone && ctrl.device && gone.id !== undefined && ctrl.device.id !== gone.id)) return;
-      try { ctrl.close(); } catch { /* already gone with the hardware */ }
-      ctrl = null;
-      host.setInputDevice(0, DEVICE.KEYBOARD_MOUSE);
-      // Drop held pad buttons: a cart must not keep walking because the
-      // controller was yanked mid-press.
-      for (const n of Object.values(CONTROLLER_BUTTONS)) held.delete(n);
-      for (const k of Object.keys(analog)) analog[k] = 0;
+    padSlots = createPadSlots(sdl.controller, {
+      added(slot, dev) {
+        padFam[slot] = padFamily(`${dev.name ?? ''} ${dev.type ?? ''}`);
+        usePad(slot);
+        host.inputChanged();
+      },
+      removed(slot) { host.setInputDevice(slot, slot === 0 ? DEVICE.KEYBOARD_MOUSE : DEVICE.UNKNOWN); },
+      used: usePad,
     });
   } catch { /* controllers are optional */ }
 
-  // Route cart rumble to the SDL device. Only pad 0 is wired, matching the
-  // single controller this player opens; other slots report no rumble, which
-  // is the honest answer rather than a silent no-op the cart cannot detect.
-  // `closed` is checked because SDL throws on a device unplugged mid-effect.
+  // Route cart rumble to the controller in that pad's slot. A slot with no
+  // controller reports no rumble, the honest answer rather than a silent
+  // no-op the cart cannot detect. `closed` is checked (in padSlots) because
+  // SDL throws on a device unplugged mid-effect.
+  const rumbler = (padId) => { const c = padSlots?.controller(padId); return c && c.hasRumble ? c : null; };
   host.setRumbleHandler({
-    hasRumble: (padId) => padId === 0 && !!ctrl && !ctrl.closed && ctrl.hasRumble,
-    rumble: (padId, low, high, ms) => {
-      if (padId !== 0 || !ctrl || ctrl.closed || !ctrl.hasRumble) return;
-      ctrl.rumble(low, high, ms);
-    },
-    stopRumble: (padId) => {
-      if (padId !== 0 || !ctrl || ctrl.closed || !ctrl.hasRumble) return;
-      ctrl.stopRumble();
-    },
+    hasRumble: (padId) => !!rumbler(padId),
+    rumble: (padId, low, high, ms) => rumbler(padId)?.rumble(low, high, ms),
+    stopRumble: (padId) => rumbler(padId)?.stopRumble(),
   });
 
   const pad = () => {
     let buttons = 0;
     for (const name of held) buttons |= BUTTON[name];
-    return [{ connected: true, buttons, ...analog }];
+    return padSlots ? padSlots.pads(buttons) : [{ connected: true, buttons }];
   };
 
   // audio sink (SDL playback queue)
