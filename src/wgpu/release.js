@@ -42,7 +42,7 @@ export function createReleaseTracker(globals, lookup, setRecorder) {
     const nop = () => {};
     const run = (...a) => a[a.length - 1]();
     return { made: nop, released: nop, frameEnd: nop, finish: nop, submit: nop,
-      view: run, bindGroup: run, bundle: run, surfaceTexture: run, stats: () => null };
+      view: run, bindGroup: run, bundle: run, surfaceTexture: run, stats: () => null, dispose: nop };
   }
   // Each object's kind by its constructor (one Map lookup per object made);
   // a subclass is matched with instanceof once and remembered.
@@ -58,7 +58,7 @@ export function createReleaseTracker(globals, lookup, setRecorder) {
   const isResource = k => k === 'GPUTexture' || k === 'GPUBuffer';
 
   /** @type {WeakMap<object, Node>} */
-  const nodes = new WeakMap();
+  let nodes = new WeakMap();
   // command encoders not yet finished, command buffers not yet submitted
   const openEncoders = new Set();
   const unsubmitted = new Set();
@@ -137,6 +137,19 @@ export function createReleaseTracker(globals, lookup, setRecorder) {
   }
 
   return {
+    // The session is gone: let go of every object and of the glue. Objects the
+    // WebGPU implementation itself still holds (Dawn's binding keeps some
+    // wrappers) were keys of `nodes`, and through Node's scope (lookup,
+    // setRecorder) they kept the cart's whole glue Module alive.
+    dispose() {
+      nodes = new WeakMap();
+      openEncoders.clear();
+      unsubmitted.clear();
+      doomed = [];
+      lookup = () => undefined;
+      setRecorder = () => {};
+    },
+
     // the glue made a handle for obj
     made(obj) {
       const kind = kindOf(obj);

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+**A destroyed WebGPU cart is freed.** No change to the ABI or to what a cart
+sees.
+
+- Every WebGPU cart a Node host destroyed stayed in memory with its GPU
+  instance, device, every object it made and four Dawn threads, about 240 MB a
+  load on a server that loads carts over and over (romdev's grew to 19 GB).
+  Native code held the session three ways: native-dawn's `wasmImports` kept
+  strong references to the glue functions it falls back to, Dawn kept the
+  device's error handler (the glue's), and object wrappers Dawn keeps were keys
+  of release-tracker entries that reached the glue's Module.
+  - The fallbacks are trampolines into a table `destroy()` empties, so this
+    works with native-dawn 0.1.5; `destroy()` also calls `dispose()` where
+    native-dawn has it.
+  - `destroy()` clears each device's error handler and leaves a no-op in its
+    place for the one the glue sets when `device.lost` settles.
+  - The release tracker has `dispose()`, which lets go of every object and of
+    the glue.
+- `test/wgpu.test.js`: four load/destroy cycles of `wgpucart.wasc` are all
+  collected and leave no Dawn threads (0 of 4 collected before).
+
 ## 0.34.3
 
 **Four controllers in the windowed player.** No change to the ABI or to what a

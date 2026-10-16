@@ -190,6 +190,24 @@ const HOST_USAGE = 0x01 /* COPY_SRC */ | 0x04 /* TEXTURE_BINDING */;
  * @param {(handle:number, object:object)=>void} [o.onRelease] - the cart
  *   released its last reference to that handle
  */
+// A call into t[name], for native-dawn's fallbacks (createWgpuSession). It is
+// declared out here so its closure holds only t and name: a function declared
+// inside the session shares the session's scope, cart Module and all.
+function trampoline(t, name, arity) {
+  switch (arity) {
+    case 0: return () => t[name]();
+    case 1: return (a) => t[name](a);
+    case 2: return (a, b) => t[name](a, b);
+    case 3: return (a, b, c) => t[name](a, b, c);
+    case 4: return (a, b, c, d) => t[name](a, b, c, d);
+    case 5: return (a, b, c, d, e) => t[name](a, b, c, d, e);
+    case 6: return (a, b, c, d, e, f) => t[name](a, b, c, d, e, f);
+    case 7: return (a, b, c, d, e, f, g) => t[name](a, b, c, d, e, f, g);
+    case 8: return (a, b, c, d, e, f, g, h) => t[name](a, b, c, d, e, f, g, h);
+    default: return (...args) => t[name](...args);
+  }
+}
+
 export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdapter, createCanvas = createTextureCanvas, width, height, adapterOptions, globals = globalThis, log = () => {}, onLost = () => {}, onObject = null, onRelease = null, wasmImports = null }) {
   const { factory, manifest } = await gluePromise();
   // The WebGPU classes the glue names as globals (GPUValidationError, ...):
@@ -339,6 +357,8 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
   const updateViews = () => { Module.wcUpdateMemoryViews(); native?.memory(Module.HEAPU8); };
   // native-dawn's direct calls for the hot imports (see `env` below), or null
   let native = null;
+  // The glue functions native-dawn falls back to, behind trampolines; destroy() empties it
+  let glue = null;
 
   // Every allocation the glue makes in cart memory goes through the cart's
   // wc_alloc/wc_free (scripts/wgpu/glue-alloc.mjs; SPEC.md "Cart memory the
@@ -399,8 +419,19 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
   // native-dawn's wasmImports serves them by calling Dawn's C API on the
   // objects the glue made (it learns each object's handle from the hooks
   // above), and hands any call it cannot serve to the glue's function.
+  //
+  // native-dawn holds each function it is given in a strong reference that it
+  // drops only once its import functions are collected. The glue functions
+  // reach this session, and the session holds those import functions: a cycle
+  // through a GC root, so no WebGPU session was ever freed (each load kept its
+  // GPU instance, device, every object it made and Dawn's threads; about
+  // 240 MB a load on a server). It gets trampolines into `glue` instead, and
+  // destroy() empties `glue`, which leaves the cycle nothing to hold.
   if (wasmImports) {
-    native = wasmImports(env);
+    glue = { ...env };
+    const fallbacks = {};
+    for (const name of Object.keys(glue)) fallbacks[name] = trampoline(glue, name, glue[name].length);
+    native = wasmImports(fallbacks);
     for (const [name, fn] of Object.entries(native.imports)) env[name] = fn;
   }
 
@@ -589,6 +620,21 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
       try { realContext.destroy?.(); } catch {}
       for (const d of extraDevices) d.destroy();
       device.destroy();
+      // Let go of everything a native handle could reach the cart through, so
+      // this session, its device and Dawn's instance can be collected: Dawn
+      // keeps each device's error handler (the glue's) and some object
+      // wrappers, and native-dawn its fallbacks (see `glue` above).
+      tracker.dispose();
+      try { native?.dispose?.(); } catch {}
+      if (glue) for (const name of Object.keys(glue)) delete glue[name];
+      // The glue sets a fresh error handler when device.lost settles; on these
+      // devices that assignment now lands on a no-op property instead.
+      for (const d of [device, ...extraDevices]) {
+        try {
+          d.onuncapturederror = null;
+          Object.defineProperty(d, 'onuncapturederror', { get: () => null, set() {}, configurable: true });
+        } catch {}
+      }
       return device.lost.then(() => {});
     },
   };

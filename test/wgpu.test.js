@@ -23,6 +23,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
+import v8 from 'node:v8';
+import vm from 'node:vm';
 import { CartHost } from '../index.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -91,6 +94,34 @@ test('a WebGPU cart renders on the host device, gets async results between frame
   } finally {
     host.destroy();
   }
+});
+
+test('a destroyed WebGPU cart is collected with its device, objects and Dawn threads', async () => {
+  // Native code held the session three ways: native-dawn's references to the
+  // glue functions it falls back to, Dawn's device error handler (the glue's),
+  // and object wrappers Dawn keeps whose release-tracker entries reached the
+  // glue's Module. Each load kept its GPU instance, device and four threads.
+  v8.setFlagsFromString('--expose-gc');
+  const gc = vm.runInNewContext('gc');
+  let collected = 0;
+  const registry = new FinalizationRegistry(() => { collected++; });
+  const threads = () => fs.readdirSync('/proc/self/task').length;
+  const cycle = async (i) => {
+    const host = new CartHost();
+    await host.load(fixture('wgpucart.wasc'), { adapterOptions: { powerPreference: 'low-power' } });
+    assert.ok(host.usesWgpu);
+    for (let f = 0; f < 3; f++) host.runFrame([]);
+    await host.destroy();
+    registry.register(host, i);
+  };
+  const settle = async () => { for (let i = 0; i < 10; i++) { gc(); await new Promise(r => setTimeout(r, 30)); } };
+  await cycle(0);
+  await settle();
+  const before = threads();
+  for (let i = 1; i < 4; i++) await cycle(i);
+  await settle();
+  assert.equal(collected, 4, 'every destroyed host was collected');
+  assert.equal(threads(), before, 'no Dawn threads were left behind');
 });
 
 test('a wasi-sdk cart (wasip1-threads, workers that never call WebGPU) runs on WebGPU', async () => {
