@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.34.4
 
 **A destroyed WebGPU cart is freed.** No change to the ABI or to what a cart
 sees.
@@ -21,6 +21,11 @@ sees.
     the glue.
 - `test/wgpu.test.js`: four load/destroy cycles of `wgpucart.wasc` are all
   collected and leave no Dawn threads (0 of 4 collected before).
+- native-dawn ^0.1.6, whose `wasmImports` no longer holds a program alive
+  through its glue and has `dispose()`.
+- Measured: 60 load/destroy cycles of `wgpucart.wasc` in one process hold RSS
+  at about 160 MB with a steady thread count; 0.34.3 grows about 33 MB and two
+  threads a cycle.
 
 ## 0.34.3
 
