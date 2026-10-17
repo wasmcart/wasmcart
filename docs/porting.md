@@ -52,7 +52,7 @@ See [gl-surface.md](gl-surface.md#gl4es-legacy-compatibility) for details.
 2. **Export ABI** - `wc_get_info`, `wc_init`, `wc_render`
 3. **Set gpu_api** - `wc_info_t.gpu_api = 1` for GL carts (0 = pure 2D framebuffer; hosts support both, but the `wc_gl_blit.h` display path is GL and sets 1 even for 2D-drawn carts)
 4. **Use ES 3.0 shaders** - `#version 100` or `#version 300 es`
-5. **Assets via .wasc** - Pack with `wasmcart-pack`, load via `wc_asset_size`/`wc_load_asset`
+5. **Assets via .wasc** - Pack with `wasmcart-pack`, load via `wc_asset_size`/`wc_load_asset`; a streamed world prefetches what it will read next with `wc_asset_prefetch` when the host sets `WC_HOST_FLAG_ASSET_PREFETCH` (SPEC.md, "Asset prefetch")
 6. **Audio** - Write to ring buffer, set sample rate + format flags
 7. **Input** - Read `wc_pad_t` array (Xbox/W3C button layout)
 8. **Invert the main loop** - if the engine owns its loop, see below

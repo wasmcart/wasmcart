@@ -52,6 +52,7 @@ addition can see the standard that was applied, and hold a new proposal to it.
 | **Lifecycle** (`wc_on_suspend`, …) | **Mixed.** Suspension itself is host-owned and needs no cart cooperation. The callbacks are a **convenience** -- pausing audio, dropping a netplay connection, flushing a save before a backgrounded app is killed. The clock rebase they enable is a refinement over the clamp, not a replacement for it. | Partly. A cart cannot detect suspension, but it also does not have to: the host simply stops calling it. |
 | **WebGPU tier** (optional) | **Necessity.** GL ES 3.0 has no compute and no storage buffers, and the engines moving past GL (Defold's WebGPU adapter, three.js WebGPURenderer) target WebGPU. | No. The GPU is reached only through the host. Kept to the import set Emscripten's own port already emits, plus one host-info bit for dual carts. |
 | **Rumble** (`wc_pad_rumble`) | **Additive.** Nothing is broken without it. Included because it is table stakes on every console, and maps 1:1 onto SDL and the W3C haptics API with no per-platform divergence. | No -- but nothing breaks in its absence either. |
+| **Asset prefetch** (`wc_asset_prefetch`) | **Necessity.** On the web an asset read is a download, and the asset ABI is synchronous: a streamed world stalls a frame on every cell it loads. JSPI hides the wait from the cart's code, not from the frame. | No. A cart cannot start a fetch; only the host reaches the network, and only the host can hold bytes the cart has not asked for yet. |
 
 Deliberately **not** added, as examples of what fails the bar: IME preedit state
 (large surface, every host must plumb composition through, cart must render it)
@@ -219,6 +220,9 @@ void wc_log(const char* ptr, uint32_t len);
 // Assets (v2+)
 int32_t wc_asset_size(const char* path, uint32_t path_len);
 int32_t wc_load_asset(const char* path, uint32_t path_len, void* dest, uint32_t max_size);
+// Asset prefetch (additive to v4; hosts that implement it set WC_HOST_FLAG_ASSET_PREFETCH)
+int32_t wc_asset_prefetch(const char* path, uint32_t path_len, int32_t priority);
+void    wc_asset_prefetch_cancel(const char* path, uint32_t path_len);
 
 // Rumble (v3) - see Rumble
 uint32_t wc_pad_has_rumble(uint32_t pad_id);
@@ -542,6 +546,7 @@ read by the cart ONCE at init — never per frame):
 #define WC_HOST_FLAG_DETERMINISTIC 0x01  // this run is a deterministic replay
 #define WC_HOST_FLAG_GPU_WGPU      0x02  // the host selected WebGPU for a cart
                                          // importing both GPU APIs (see WebGPU)
+#define WC_HOST_FLAG_ASSET_PREFETCH 0x04 // the host implements wc_asset_prefetch (see Asset prefetch)
 ```
 
 ### wc_host_info_t
@@ -1202,6 +1207,77 @@ native window and in a browser.
 - Rumble does not widen the security boundary: it is write-only to hardware the host
   already owns, and carries no data back to the cart beyond the capability bit.
 
+## Asset prefetch
+
+A cart streaming a world bigger than memory must never block a frame on a download. The asset
+ABI is synchronous, and on a web host a cart directory's assets are downloads: a read of an
+asset that has not arrived suspends the cart (see Cart directories), which hides the wait from
+the cart's code but not from the frame. `wc_asset_prefetch` lets the cart say which assets it
+will want, so the host can fetch them in the background, and tells the cart when the ordinary
+read has become a copy. Optional for carts: one that never calls it is unaffected. Optional for
+hosts, and advertised: a host that implements it writes `WC_HOST_FLAG_ASSET_PREFETCH` (`0x04`)
+into `wc_host_info_t.flags` before `wc_init`.
+
+```c
+int32_t wc_asset_prefetch(const char* path, uint32_t path_len, int32_t priority);
+void    wc_asset_prefetch_cancel(const char* path, uint32_t path_len);
+```
+
+`wc_asset_prefetch` starts fetching the whole asset at `path` into the host's own memory, and
+returns its state. Called again with the same path it starts nothing and returns the current
+state: it is also the poll. `path` is validated exactly as for `wc_asset_size`.
+
+| Return | Meaning |
+|---|---|
+| `0` `WC_PREFETCH_PENDING` | The host is fetching. |
+| `1` `WC_PREFETCH_READY` | The host holds the asset's bytes, decompressed. `wc_asset_size` and `wc_load_asset` for this path now answer from that copy: no disk, no network, no suspension. |
+| `-1` `WC_PREFETCH_MISSING` | No such asset, or an invalid path: exactly the paths for which `wc_asset_size` returns `-1`. |
+| `-2` `WC_PREFETCH_FAILED` | The fetch failed (a network error that is not a 404), or the host could not hold the bytes. Held until the cart cancels the path; cancel and prefetch again to retry. |
+| `-3` `WC_PREFETCH_REFUSED` | Nothing was started: too many prefetches pending, the host's cache is full, or the call came from a cart thread. Not a refusal of the asset; ask again later. |
+
+`priority` orders the start of pending fetches, higher first, `0` by default; a host with a
+concurrency limit starts the highest first. Asking again with a higher priority raises it; a
+lower one is ignored.
+
+**A prefetch ends** when the cart cancels it, or when `wc_load_asset` returns the asset's full
+size (the cart now has its own copy; the host drops its own and forgets the path, so a later
+prefetch of the same path fetches again). `wc_asset_prefetch_cancel` on a pending path lets the
+host drop the bytes when they arrive, or abort; on an unknown path it does nothing. A cart that
+reads what it asked for never needs to cancel.
+
+**Reading early.** `wc_asset_size` or `wc_load_asset` on a path whose prefetch is pending,
+failed or refused behaves as it does without a prefetch: a web host suspends on the fetch (and
+SHOULD wait for the fetch already in flight rather than start a second), a native host reads
+from the archive. A prefetch never makes a read fail that would otherwise succeed.
+
+**Rules for hosts.**
+
+- The flag is a promise about the state, not about threads: a host MAY complete a prefetch
+  synchronously, inside the call, when its assets are local. A host that sets the flag MUST
+  make `READY` mean a copy: it decompresses as part of the prefetch, not in the read.
+- State changes are observed between calls into the cart, never during one (as for every
+  asynchronous result in this ABI).
+- Limits: every host accepts at least 64 prefetches pending or ready at once, and holds at
+  least one asset of the maximum asset size; beyond its limits it answers `-3`, never drops a
+  request silently.
+- These are main-thread state, like the input-action imports: a cart thread's call answers
+  `-3`, and a cart thread's `wc_load_asset` reads the archive as before.
+- The imports widen nothing: they take the same validated paths as `wc_asset_size`, write
+  nothing into cart memory, and a host without them still stubs them as it does any unknown
+  `env` import (the cart detects the host through the flag, not through the stub's value).
+
+**Rules for carts.**
+
+- Read `WC_HOST_FLAG_ASSET_PREFETCH` once in `wc_init`. Without it, do not call these imports:
+  on a host built before them the stubs answer `-1` or `0` depending on the host, and both
+  are wrong. With the flag clear a cart reads synchronously, as it does today.
+- Prefetch state is not deterministic: when the bytes arrive depends on the network. A
+  `WC_FLAG_DETERMINISTIC` cart MUST NOT let the frame a prefetch completes change its state;
+  decide what to load from the simulation, and let a read that is not yet `READY` cost time,
+  not change the game.
+- A `.wasc`'s assets are local on every host but the web: a cart that prefetches on all hosts
+  loses nothing (a local host answers `READY` at once or soon), and gains the web.
+
 ## Runtime code generation
 
 For carts that compile code while they run: a language VM turning hot functions
@@ -1532,7 +1608,8 @@ Auditing a wasmcart host therefore means auditing one list, and that list is sho
 
 - **Cart services** - `wc_log`, `wc_debug_mark`, `wc_frame_yield`, `wc_pad_name`,
   `wc_pad_has_rumble`, `wc_pad_rumble`, `wc_pad_rumble_stop`
-- **Assets (read-only, path-validated)** - `wc_asset_size`, `wc_load_asset`
+- **Assets (read-only, path-validated)** - `wc_asset_size`, `wc_load_asset`,
+  `wc_asset_prefetch`, `wc_asset_prefetch_cancel`
 - **Network (opt-in, allowlisted)** - the `wc_peer_*` family
 - **Runtime code generation** - `wc_jit_link`, `wc_jit_unlink`, `wc_jit_config`: a
   linked module imports only the cart's own exports, never a host function
@@ -1618,6 +1695,9 @@ its assets are downloaded:
   Integration (JSPI). The cart sees an ordinary call that returns its bytes;
   ported engines that read files deep inside their own code need no change.
   A fetch inside `wc_render` stalls that frame, as a slow disk would.
+  A host that sets `WC_HOST_FLAG_ASSET_PREFETCH` lets a cart ask for the
+  files it will need before it reads them (see Asset prefetch); a lazily
+  loaded cart that does so never suspends on a read it predicted.
 - While a cart is suspended the host MUST NOT call into it again (a frame, an
   input callback, a lifecycle callback): its C stack is live in linear
   memory. Such a host's frame call is asynchronous, and calls queue.

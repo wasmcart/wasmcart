@@ -173,6 +173,17 @@ export const HOST_FLAG_DETERMINISTIC = 1 << 0; // this run is a deterministic re
 // The host selected WebGPU for a cart that imports both `gl` and WebGPU
 // functions. Zero means GL, so a host that never heard of WebGPU has said GL.
 export const HOST_FLAG_GPU_WGPU = 1 << 1;
+// The host implements wc_asset_prefetch / wc_asset_prefetch_cancel (SPEC.md,
+// "Asset prefetch"). A cart calls them only when this is set: an older host
+// stubs the imports, and the stubs' return values disagree between hosts.
+export const HOST_FLAG_ASSET_PREFETCH = 1 << 2;
+
+// ── Asset prefetch states (what wc_asset_prefetch returns) ───────────────
+export const PREFETCH_PENDING =  0; // the host is fetching
+export const PREFETCH_READY   =  1; // the bytes are in host memory: wc_load_asset is a copy
+export const PREFETCH_MISSING = -1; // no such asset, or an invalid path (as wc_asset_size)
+export const PREFETCH_FAILED  = -2; // the fetch failed, or the host could not hold the bytes
+export const PREFETCH_REFUSED = -3; // nothing started: too many pending, cache full, or a cart thread
 
 // ── Deterministic replay (OPT-IN, default OFF) ───────────────────────────
 // A cart that sets FLAG_DETERMINISTIC declares it honors deterministic mode:

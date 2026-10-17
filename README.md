@@ -171,6 +171,14 @@ a cart with `await host.runFrame(pads)`. A cart that enumerates its assets
 (`_filelist.txt`) needs the optional manifest `files` list there, since HTTP
 cannot list a directory: `npx wasmcart index <dir>` writes it.
 
+A cart that streams a world can ask for the files it will need before it reads
+them: `wc_asset_prefetch(path, len, priority)` starts a background fetch into
+the host's memory and, called again, reports its state; once it answers
+`WC_PREFETCH_READY` the ordinary `wc_load_asset` is a copy and the frame never
+waits. Both hosts implement it and say so with `WC_HOST_FLAG_ASSET_PREFETCH` in
+the host-info flags, which a cart reads once in `wc_init` (an older host stubs
+the import). See SPEC.md, "Asset prefetch".
+
 ## The ABI
 
 Every cart exports three functions:
@@ -389,6 +397,7 @@ A cart that doesn't use the GPU at all can write pixels directly to a shared-mem
 - **Data channels** - peer-to-peer communication via host-managed connections (opt-in)
 - **Save data** - persistent save blob (host manages storage)
 - **Asset loading** - `.wasc` carts load files at runtime via `wc_asset_size()` / `wc_load_asset()`
+- **Asset prefetch** - a cart says which assets it will want (`wc_asset_prefetch`), the host fetches them in the background, and the read that follows is a copy: a streamed world on the web never stalls a frame on a download. Advertised by `WC_HOST_FLAG_ASSET_PREFETCH`; a cart that never calls it is unaffected. See SPEC.md, "Asset prefetch"
 - **WASI threads** - carts compiled with wasi-sdk `-pthread` can spawn background threads via pthreads
 - **WebAssembly exceptions** - standardized Wasm EH, including wasi-sdk's native `setjmp`/`longjmp`
 - **Runtime code generation** - a cart that compiles code as it runs (a Lua or JavaScript VM) links the wasm it generates with `wc_jit_link`; the host compiles it and installs it in the cart's own function table, with nothing beyond the cart's own exports. Every host provides it; `jit: false` / `WASMCART_JIT=0` turns it off, loudly. See SPEC.md, "Runtime code generation"

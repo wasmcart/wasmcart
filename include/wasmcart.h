@@ -708,6 +708,41 @@ static inline int wc_load_asset(const char* path, unsigned int path_len,
 #define WC_ASSET_SIZE(s) wc_asset_size(s, sizeof(s) - 1)
 #define WC_LOAD_ASSET(s, dest, max) wc_load_asset(s, sizeof(s) - 1, dest, max)
 
+// Asset prefetch (additive to v4). Main-thread only. See SPEC "Asset prefetch".
+// Read WC_HOST_FLAG_ASSET_PREFETCH from wc_host_info_t.flags once in wc_init
+// and call these only when it is set: an older host stubs the imports, and the
+// stubs' return values disagree between hosts.
+#ifndef WC_HOST_FLAG_ASSET_PREFETCH
+#define WC_HOST_FLAG_ASSET_PREFETCH 0x04  // wc_host_info_t.flags: the host implements these
+#endif
+
+#define WC_PREFETCH_PENDING   0   // the host is fetching
+#define WC_PREFETCH_READY     1   // the bytes are in host memory: wc_load_asset is a copy
+#define WC_PREFETCH_MISSING  -1   // no such asset, or an invalid path (as wc_asset_size)
+#define WC_PREFETCH_FAILED   -2   // the fetch failed, or the host could not hold the bytes
+#define WC_PREFETCH_REFUSED  -3   // nothing started: too many pending, cache full, or a cart thread
+
+#ifdef __wasm__
+// Start fetching the whole asset into host memory (or poll it: a repeat call
+// with the same path starts nothing). Returns a WC_PREFETCH_* state.
+__attribute__((import_module("env"), import_name("wc_asset_prefetch")))
+extern int wc_asset_prefetch(const char* path, unsigned int path_len, int priority);
+
+// Drop a prefetch: abort or discard an in-flight one, free a READY one.
+__attribute__((import_module("env"), import_name("wc_asset_prefetch_cancel")))
+extern void wc_asset_prefetch_cancel(const char* path, unsigned int path_len);
+#else
+static inline int wc_asset_prefetch(const char* path, unsigned int path_len, int priority) {
+    (void)path; (void)path_len; (void)priority; return WC_PREFETCH_READY;
+}
+static inline void wc_asset_prefetch_cancel(const char* path, unsigned int path_len) {
+    (void)path; (void)path_len;
+}
+#endif
+
+#define WC_ASSET_PREFETCH(s, prio) wc_asset_prefetch(s, sizeof(s) - 1, prio)
+#define WC_ASSET_PREFETCH_CANCEL(s) wc_asset_prefetch_cancel(s, sizeof(s) - 1)
+
 // --- Networking API (ABI v3, optional) ---
 // One family: peer connections. A connection may be a WebSocket to a server, a
 // WebRTC data channel, direct TCP, a relay, MQTT, or a serial cable - whatever
