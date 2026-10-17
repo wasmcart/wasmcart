@@ -45,9 +45,10 @@ export class AssetMissingError extends Error {
 export class AssetPrefetcher {
   /**
    * @param {object} o
-   * @param {(path: string, signal: AbortSignal) => Promise<Uint8Array>} o.fetch
+   * @param {(path: string, signal: AbortSignal|undefined, priority: number) => Promise<Uint8Array>} o.fetch
    *   the asset's whole, decompressed bytes; rejects with AssetMissingError
-   *   for a path that does not exist.
+   *   for a path that does not exist. The priority is the cart's, for a host
+   *   that can pass it on (a fetch priority hint).
    * @param {(path: string) => number|undefined} [o.size] the asset's size when
    *   it is known before the fetch (an archive entry, a stat), -1 when the
    *   path is known missing, undefined when unknown.
@@ -187,7 +188,7 @@ export class AssetPrefetcher {
     e.controller = typeof AbortController === 'function' ? new AbortController() : null;
     let p;
     try {
-      p = Promise.resolve(this._fetch(e.path, e.controller?.signal));
+      p = Promise.resolve(this._fetch(e.path, e.controller?.signal, e.priority));
     } catch (err) {
       p = Promise.reject(err);
     }

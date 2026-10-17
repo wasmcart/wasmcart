@@ -30,8 +30,11 @@ import {
   clamp01,
   clampTrigger,
   HOST_FLAG_GPU_WGPU,
+  HOST_FLAG_ASSET_PREFETCH,
+  PREFETCH_MISSING,
   GPU_API_WEBGPU,
 } from './abi.js';
+import { AssetPrefetcher, AssetMissingError } from './assetPrefetch.js';
 import { createJitImports } from './jit.js';
 import { ActionTable, DEVICE, padOrigin, padFamily } from './actions.js';
 import { readDebugState, readDebugValue, writeDebugValue, pushDebugEvent, MAX_DEBUG_EVENTS } from './debugState.js';
@@ -312,6 +315,12 @@ export class CartHostWeb {
     this._dirAssets = new Map();
     this._dirSizes = new Map();
     this._dirListed = null;    // Set of manifest `files`, when there is one
+    // wc_asset_prefetch (SPEC.md, "Asset prefetch"): a priority fetch queue
+    // in front of _fetchDirAsset (and the inflate of a .wasc entry), whose
+    // READY bytes the reads answer from. A lazy read of a path not yet
+    // fetched also goes through it, so two reads of one path wait on one
+    // fetch. null until the first use.
+    this._prefetch = null;
     this._fileListWarned = false;
     this._inflight = null;     // the frame promise while a lazy frame runs
 
@@ -652,6 +661,14 @@ export class CartHostWeb {
         wc_load_asset: this._suspendable(this._dirAssetBase
           ? (pathPtr, pathLen, destPtr, maxSize) => this._dirLoadAsset(pathPtr, pathLen, destPtr, maxSize)
           : (pathPtr, pathLen, destPtr, maxSize) => this._loadAsset(pathPtr, pathLen, destPtr, maxSize)),
+        // Asset prefetch (SPEC.md, "Asset prefetch"): plain functions, never
+        // Suspending, since they never wait. Advertised through
+        // HOST_FLAG_ASSET_PREFETCH in the host info; load(..., {assetPrefetch:
+        // false}) leaves both out, as a host built before them would.
+        ...(options.assetPrefetch === false ? {} : {
+          wc_asset_prefetch: (pathPtr, pathLen, priority) => this._assetPrefetch(pathPtr, pathLen, priority),
+          wc_asset_prefetch_cancel: (pathPtr, pathLen) => this._assetPrefetchCancel(pathPtr, pathLen),
+        }),
         // Pad name query
         wc_pad_name: (padId, bufPtr, bufLen) => {
           return this._padName(padId, bufPtr, bufLen);
@@ -1364,6 +1381,8 @@ export class CartHostWeb {
     }
     this._workers.clear();
 
+    try { this._prefetch?.dispose(); } catch { /* teardown never throws */ }
+    this._prefetch = null;
     this._assetIndex = null;
     this._assetBuf = null;
     this._dirAssets.clear();
@@ -1542,9 +1561,25 @@ export class CartHostWeb {
    * fetched) a promise of one. A cached miss stays a miss. */
   _dirAsset(path) {
     if (this._dirAssets.has(path)) return this._dirAssets.get(path);
+    const ready = this._prefetch?.bytes(path);
+    if (ready) return ready;
     if (this._dirSizes.get(path) === -1) return null;
     if (!this._lazy) return null;  // prefetched: anything not fetched is not listed
     if (this._dirListed && !this._dirListed.has(path)) return null;
+    // Through the prefetch table: a read of a path whose fetch is in flight
+    // waits on that fetch (SPEC: "SHOULD wait for the fetch already in
+    // flight rather than start a second"), and a read of a path nobody asked
+    // for starts one there, so a second read of it meanwhile waits too. The
+    // whole read that follows takes the entry. Only when the table has no
+    // room (or holds a failed state) is the fetch a plain one, as before: a
+    // prefetch never makes a read fail.
+    const pre = this._prefetcher();
+    let pending = pre.pending(path);
+    if (!pending && !pre.has(path)) {
+      pre.request(path, 0);
+      pending = pre.pending(path);
+    }
+    if (pending) return pending.then((data) => data, () => null);
     return this._fetchDirAsset(path).then((data) => {
       this._dirSizes.set(path, data ? data.length : -1);
       // Kept only until the load that a size query almost always precedes;
@@ -1589,7 +1624,10 @@ export class CartHostWeb {
       // A lazy cart now holds its own copy, so a whole-file load releases ours
       // (a 100 MB pk3 should not live twice). The size stays cached, and a
       // later load of the same file refetches -- usually from the HTTP cache.
-      if (this._lazy && copyLen === data.length) this._dirAssets.delete(path);
+      if (this._lazy && copyLen === data.length) {
+        this._dirAssets.delete(path);
+        this._prefetch?.take(path);
+      }
       return copyLen;
     };
     if (path === '_filelist.txt') return copy(this._dirFileList());
@@ -1617,6 +1655,9 @@ export class CartHostWeb {
       return this._fileListBuf.length;
     }
 
+    const ready = this._prefetch?.bytes(path);
+    if (ready) return ready.length;
+
     const entry = this._assetIndex.get(path);
     if (!entry) return -1;
     return entry.uncompressedSize;
@@ -1631,6 +1672,8 @@ export class CartHostWeb {
 
     if (path === '_filelist.txt' && this._fileListBuf) {
       data = this._fileListBuf;
+    } else if ((data = this._prefetch?.bytes(path))) {
+      // the prefetched copy, already inflated (SPEC, "Asset prefetch")
     } else {
       const entry = this._assetIndex.get(path);
       if (!entry) return -1;
@@ -1645,7 +1688,96 @@ export class CartHostWeb {
     this._updateViews();
     this._u8.set(data.subarray ? data.subarray(0, copyLen) : new Uint8Array(data, 0, copyLen), destPtr);
 
+    // A whole read ends the prefetch: the cart has its own copy now.
+    if (copyLen === data.length && this._prefetch?.has(path)) this._prefetch.take(path);
+
     return copyLen;
+  }
+
+  // --- Asset prefetch (SPEC.md, "Asset prefetch") ---
+
+  _assetPrefetch(pathPtr, pathLen, priority) {
+    if (!this._hasAssets) return PREFETCH_MISSING;
+    const path = this._readPath(pathPtr, pathLen);
+    if (!path) return PREFETCH_MISSING;
+    return this._prefetcher().request(path, priority);
+  }
+
+  _assetPrefetchCancel(pathPtr, pathLen) {
+    if (!this._prefetch) return;
+    const path = this._readPath(pathPtr, pathLen);
+    if (path) this._prefetch.cancel(path);
+  }
+
+  _prefetcher() {
+    if (!this._prefetch) {
+      this._prefetch = new AssetPrefetcher({
+        concurrency: PREFETCH_CONCURRENCY,
+        size: (path) => this._prefetchSizeOf(path),
+        fetch: (path, signal, priority) => this._prefetchFetch(path, signal, priority),
+      });
+    }
+    return this._prefetch;
+  }
+
+  /* What the host knows of an asset's size before fetching it: a .wasc
+   * entry's uncompressed size, a directory cart's cached size or miss, -1 for
+   * a path off a manifest files list, undefined when only a fetch can tell. */
+  _prefetchSizeOf(path) {
+    if (path === '_filelist.txt') return this._dirAssetBase ? (this._dirFileList()?.length ?? -1) : (this._fileListBuf?.length ?? -1);
+    if (!this._dirAssetBase) return this._assetIndex?.get(path)?.uncompressedSize ?? -1;
+    const known = this._dirSizes.get(path);
+    if (known !== undefined) return known;
+    if (!this._lazy) return -1;   // prefetched up front: anything not fetched is not listed
+    if (this._dirListed && !this._dirListed.has(path)) return -1;
+    return undefined;
+  }
+
+  /* The prefetch of one asset: for a directory cart a fetch, with the cart's
+   * priority as the browser's priority hint; for a .wasc, the entry inflated
+   * off the main thread with DecompressionStream (a stored entry is a view of
+   * the archive, ready at once). */
+  async _prefetchFetch(path, signal, priority) {
+    if (path === '_filelist.txt') {
+      const list = this._dirAssetBase ? this._dirFileList() : this._fileListBuf;
+      if (!list) throw new AssetMissingError(path);
+      return list;
+    }
+    if (!this._dirAssetBase) {
+      const entry = this._assetIndex?.get(path);
+      if (!entry) throw new AssetMissingError(path);
+      const buf = this._assetBuf;
+      const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+      const dataOffset = entry.localHeaderOffset + 30
+        + view.getUint16(entry.localHeaderOffset + 26, true) + view.getUint16(entry.localHeaderOffset + 28, true);
+      const compressed = buf.subarray(dataOffset, dataOffset + entry.compressedSize);
+      if (entry.compressionMethod === 0) return compressed;
+      if (entry.compressionMethod !== 8) throw new Error(`Unsupported ZIP compression method: ${entry.compressionMethod}`);
+      if (typeof DecompressionStream === 'function') {
+        const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+        return new Uint8Array(await new Response(stream).arrayBuffer());
+      }
+      return new Promise((resolve, reject) =>
+        inflate(compressed, { size: entry.uncompressedSize }, (err, data) => (err ? reject(err) : resolve(data))));
+    }
+    const url = new URL(assetUrlPath(path), this._dirAssetBase);
+    const res = await fetch(url, { signal, priority: priority > 0 ? 'high' : priority < 0 ? 'low' : 'auto' });
+    if (res.status === 404) {
+      this._dirSizes.set(path, -1);
+      throw new AssetMissingError(path);
+    }
+    if (!res.ok) {
+      console.warn(`wasmcart: could not fetch asset ${path}: HTTP ${res.status}`);
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const data = new Uint8Array(await res.arrayBuffer());
+    if (data.length > MAX_ASSET_SIZE) {
+      console.warn(`wasmcart: asset ${path} is larger than the ${MAX_ASSET_SIZE}-byte limit; treating it as missing`);
+      this._dirSizes.set(path, -1);
+      throw new AssetMissingError(path);
+    }
+    this._dirSizes.set(path, data.length);
+    return data;
   }
 
   // --- Threading ---
@@ -2420,7 +2552,8 @@ export class CartHostWeb {
     u32[base + 1] = options.preferredHeight || 0;
     u32[base + 2] = 0; // reserved
     u32[base + 3] = options.audioSampleRate || 48000;
-    u32[base + 4] = options.flags || 0;
+    u32[base + 4] = (options.flags || 0)
+      | (options.assetPrefetch === false ? 0 : HOST_FLAG_ASSET_PREFETCH);
     // the machine's hardware threads, for a cart that sizes a thread pool (0: the browser does not say)
     if (this.info.wantsHostThreads) u32[base + 5] = (globalThis.navigator && navigator.hardwareConcurrency) >>> 0;
   }
