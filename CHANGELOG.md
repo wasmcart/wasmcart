@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.35.0
+
+**Asset prefetch.** An ADDITIVE ABI change (ABI 4, as hardware_threads was):
+a cart built before it is untouched, byte for byte, and a cart that never
+calls the new imports sees no change.
+
+A cart streaming a world bigger than memory must never block a frame on a
+download, and on a web host a cart directory's assets are downloads: the
+asset ABI is synchronous, so a read of a cell that has not arrived suspends
+the cart (JSPI), which hides the wait from the cart's code but not from the
+frame. A cart cannot start a fetch by itself. SPEC.md, "Asset prefetch".
+
+- `int32_t wc_asset_prefetch(const char* path, uint32_t path_len, int32_t priority)`
+  starts fetching the whole asset at `path` into the host's own memory and
+  returns its state; called again with the same path it starts nothing and
+  is the poll. `0` PENDING, `1` READY (the next `wc_load_asset` of that path
+  is a copy: no disk, no network, no suspension, already decompressed),
+  `-1` MISSING (exactly when `wc_asset_size` says `-1`), `-2` FAILED (sticky
+  until cancelled), `-3` REFUSED (too many pending, cache full, or a cart
+  thread: ask again later). `priority` orders the start of pending fetches,
+  higher first; a repeat call raises, never lowers.
+- `void wc_asset_prefetch_cancel(const char* path, uint32_t path_len)` drops
+  one. A whole read (`wc_load_asset` returning the asset's full size) ends a
+  prefetch too, so a cart that reads what it asked for never cleans up and
+  the host's cache is bounded by what the cart has not read yet.
+- Detection is a host-info flag, `WC_HOST_FLAG_ASSET_PREFETCH` (`0x04`),
+  written before `wc_init`; a cart reads it once and calls the imports only
+  with it set. A host built before them stubs the imports, and the stubs'
+  values disagree between hosts, so the flag is normative. No manifest field.
+- Limits every host meets: 64 prefetches pending or ready at once, one asset
+  of the maximum size held; both hosts allow 256 entries and 512 MiB.
+- Node host (`CartHost`): the entry's bytes with `fs.read` and a deflated
+  one through `zlib.inflateRaw`, a dev directory's file with `readFile`, all
+  on libuv's threadpool; the state flips on the event loop, between frames.
+- Web host (`CartHostWeb`): a priority fetch queue (six in flight) in front
+  of the directory fetch, with an `AbortController` for cancel and the cart's
+  priority as the browser's fetch priority hint; a `.wasc` entry inflates off
+  the main thread with `DecompressionStream('deflate-raw')`. A lazy read of a
+  path whose fetch is in flight now waits on that fetch instead of starting a
+  second one.
+- Cart threads answer `-3`: the imports are main-thread state, and a thread's
+  `wc_load_asset` reads the archive as before.
+- `include/wasmcart.h`: the two imports, `WC_PREFETCH_*`, the flag, and
+  `WC_ASSET_PREFETCH(s, prio)` / `WC_ASSET_PREFETCH_CANCEL(s)`; the non-wasm
+  inlines answer READY and do nothing. `src/abi.js` and both entry points
+  export `HOST_FLAG_ASSET_PREFETCH` and `PREFETCH_*`.
+- `load(cart, { assetPrefetch: false })` leaves the imports and the flag out,
+  which is what a host built before them looks like to a cart: the way to
+  test a cart's fallback.
+- Tests: `test/fixtures/prefetch.c` (8 MiB deflated asset, a stored one, a
+  missing one) on the Node host in all three source modes and on the web host
+  under Node and in a real browser over HTTP with JSPI, each with a control
+  on the old-host path that must fail the READY predicate and still read.
+
 ## 0.34.5
 
 - Fix both analog sticks in the windowed player: map SDL's `leftStickX/Y` and `rightStickX/Y` axis names to the cartridge pad fields, including input-device activity events. Controller regression tests now use SDL's documented names.

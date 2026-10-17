@@ -436,6 +436,9 @@ await cart.load('game.wasc', {
                                 // fetch already started), compiled while it downloads
                                 // and kept compiled by the browser; the .wasc may then
                                 // leave its entry out
+  assetPrefetch: false,         // leave wc_asset_prefetch out, as a host built before
+                                // 0.35 did: a cart then sees the flag clear and reads
+                                // synchronously (for testing that fallback)
 });
 ```
 
