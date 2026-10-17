@@ -1,8 +1,9 @@
 import { readFile, stat } from 'fs/promises';
-import { openSync, readSync, closeSync, statSync } from 'fs';
+import { openSync, readSync, closeSync, statSync, read as fsRead } from 'fs';
 import { join, extname } from 'path';
 import { open as yauzlOpen } from 'yauzl';
-import { inflateRawSync } from 'zlib';
+import { inflateRawSync, inflateRaw } from 'zlib';
+import { promisify } from 'util';
 import { Worker } from 'worker_threads';
 import { availableParallelism } from 'os';
 import {
@@ -26,6 +27,9 @@ import {
   FLAG_HOST_THREADS,
   HOST_FLAG_DETERMINISTIC,
   HOST_FLAG_GPU_WGPU,
+  HOST_FLAG_ASSET_PREFETCH,
+  PREFETCH_MISSING,
+  PREFETCH_REFUSED,
   GPU_API_WEBGPU,
   FLAG_AUDIO_F32,
   POINTER_SIZE,
@@ -43,6 +47,10 @@ import { createWebGLImports, noteGlCurrent } from './webgl_imports.js';
 import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap, wgpuAdapterOptions } from './wgpu/host.js';
 import { listDirRelative, diffFileList } from './assetFiles.js';
 import { createCartAllocator } from './cartMemory.js';
+import { AssetPrefetcher, AssetMissingError } from './assetPrefetch.js';
+
+const fsReadAsync = promisify(fsRead);
+const inflateRawAsync = promisify(inflateRaw);
 
 /* The manifest's asset root is stripped as a PATH PREFIX from packed entries,
  * so it needs its trailing slash: "app" turns "app/main.lua" into "/main.lua"
@@ -336,6 +344,9 @@ export class CartHost {
     this._assetBuf = null;     // in-memory zip buffer (for Uint8Array source)
     this._assetDir = null;     // directory path for dev-mode loading
     this._hasAssets = false;
+    // wc_asset_prefetch (SPEC.md, "Asset prefetch"): a cache in front of
+    // _assetSize/_loadAsset, filled off the main thread. null until load().
+    this._prefetch = null;
 
     // Networking (ABI v3)
     this._manifest = null;     // parsed manifest.json
@@ -634,6 +645,14 @@ export class CartHost {
         wc_load_asset: (pathPtr, pathLen, destPtr, maxSize) => {
           return this._loadAsset(pathPtr, pathLen, destPtr, maxSize);
         },
+        // Asset prefetch (SPEC.md, "Asset prefetch"): advertised through
+        // HOST_FLAG_ASSET_PREFETCH in the host info. load({assetPrefetch:
+        // false}) leaves both out, which is what a host built before them
+        // looks like to the cart (the stub below answers -1, the flag is 0).
+        ...(options.assetPrefetch === false ? {} : {
+          wc_asset_prefetch: (pathPtr, pathLen, priority) => this._assetPrefetch(pathPtr, pathLen, priority),
+          wc_asset_prefetch_cancel: (pathPtr, pathLen) => this._assetPrefetchCancel(pathPtr, pathLen),
+        }),
         // Pad name query - returns the device name for a given pad slot
         wc_pad_name: (padId, bufPtr, bufLen) => {
           return this._padName(padId, bufPtr, bufLen);
@@ -1574,6 +1593,8 @@ export class CartHost {
     // Clearing is what stops delivery: _deliverNetEvents() iterates this map.
     this._peers.clear();
 
+    try { this._prefetch?.dispose(); } catch { /* teardown never throws */ }
+    this._prefetch = null;
     if (this._assetFd !== null) {
       try { closeSync(this._assetFd); } catch {}
       this._assetFd = null;
@@ -1781,6 +1802,17 @@ export class CartHost {
       return this._fileListBuf.length;
     }
 
+    // A prefetched asset answers from the copy (SPEC, "Asset prefetch")
+    const ready = this._prefetch?.bytes(path);
+    if (ready) return ready.length;
+
+    return this._assetSizeOf(path);
+  }
+
+  // The asset's size from the archive or the directory, or -1: exactly the
+  // answer wc_asset_size gives without a prefetch, and the one the prefetcher
+  // asks for before it starts a fetch.
+  _assetSizeOf(path) {
     // Directory-based dev mode
     if (this._assetDir) {
       try {
@@ -1807,6 +1839,8 @@ export class CartHost {
     // Virtual _filelist.txt
     if (path === '_filelist.txt' && this._fileListBuf) {
       data = this._fileListBuf;
+    } else if ((data = this._prefetch?.bytes(path))) {
+      // The prefetched copy: no disk, no inflate (SPEC, "Asset prefetch")
     } else if (this._assetDir) {
       // Directory-based dev mode - read file directly
       try {
@@ -1848,7 +1882,77 @@ export class CartHost {
     this._updateViews();
     this._u8.set(data.subarray ? data.subarray(0, copyLen) : new Uint8Array(data.buffer || data, 0, copyLen), destPtr);
 
+    // A whole read ends the prefetch: the cart has its own copy now, and the
+    // host drops its own (a pending one is dropped too; the cart read the
+    // archive itself).
+    if (copyLen === data.length && this._prefetch?.has(path)) this._prefetch.take(path);
+
     return copyLen;
+  }
+
+  // --- Asset prefetch (SPEC.md, "Asset prefetch") ---
+
+  _assetPrefetch(pathPtr, pathLen, priority) {
+    if (!this._hasAssets) return PREFETCH_MISSING;
+    const path = this._readPath(pathPtr, pathLen);
+    if (!path) return PREFETCH_MISSING;
+    if (!this._prefetch) this._prefetch = this._makePrefetcher();
+    return this._prefetch.request(path, priority);
+  }
+
+  _assetPrefetchCancel(pathPtr, pathLen) {
+    if (!this._prefetch) return;
+    const path = this._readPath(pathPtr, pathLen);
+    if (path) this._prefetch.cancel(path);
+  }
+
+  /* The cache behind wc_asset_prefetch. Every read it does is asynchronous
+   * (libuv's threadpool): the entry's bytes off the archive with fs.read, the
+   * inflate with zlib.inflateRaw, a dev directory's file with readFile. The
+   * state flips when the completion lands on the event loop, which the SPEC
+   * already requires the embedder to run, so it is always between frames. */
+  _makePrefetcher() {
+    return new AssetPrefetcher({
+      size: (path) => (path === '_filelist.txt' && this._fileListBuf) ? this._fileListBuf.length : this._assetSizeOf(path),
+      fetch: (path, signal) => this._prefetchRead(path, signal),
+    });
+  }
+
+  async _prefetchRead(path, signal) {
+    if (path === '_filelist.txt' && this._fileListBuf) return this._fileListBuf;
+    if (this._assetDir) {
+      try {
+        const data = await readFile(join(this._assetDir, path), { signal });
+        if (data.length > MAX_ASSET_SIZE) throw new Error('asset larger than the limit');
+        return data;
+      } catch (e) {
+        if (e?.code === 'ENOENT' || e?.code === 'ENOTDIR') throw new AssetMissingError(path);
+        throw e;
+      }
+    }
+    const entry = this._assetIndex?.get(path);
+    if (!entry) throw new AssetMissingError(path);
+    let compressed;
+    if (this._assetFd !== null) {
+      const fd = this._assetFd;
+      const localBuf = Buffer.alloc(30);
+      await fsReadAsync(fd, localBuf, 0, 30, entry.localHeaderOffset);
+      const dataOffset = entry.localHeaderOffset + 30 + localBuf.readUInt16LE(26) + localBuf.readUInt16LE(28);
+      compressed = Buffer.alloc(entry.compressedSize);
+      const { bytesRead } = await fsReadAsync(fd, compressed, 0, entry.compressedSize, dataOffset);
+      if (bytesRead !== entry.compressedSize) throw new Error('short read of archive entry');
+    } else if (this._assetBuf) {
+      const buf = this._assetBuf;
+      const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+      const dataOffset = entry.localHeaderOffset + 30
+        + view.getUint16(entry.localHeaderOffset + 26, true) + view.getUint16(entry.localHeaderOffset + 28, true);
+      compressed = buf.subarray(dataOffset, dataOffset + entry.compressedSize);
+    } else {
+      throw new AssetMissingError(path);
+    }
+    if (entry.compressionMethod === 0) return compressed;
+    if (entry.compressionMethod === 8) return inflateRawAsync(compressed);
+    throw new Error(`Unsupported ZIP compression method: ${entry.compressionMethod}`);
   }
 
   // --- Private ---
@@ -2580,7 +2684,8 @@ export class CartHost {
     u32[base + 1] = options.preferredHeight || m.height || 0;
     u32[base + 2] = 0; // reserved (was hostFps - unused, carts use delta_ms)
     u32[base + 3] = options.audioSampleRate || 48000;
-    u32[base + 4] = options.flags || 0;
+    u32[base + 4] = (options.flags || 0)
+      | (options.assetPrefetch === false ? 0 : HOST_FLAG_ASSET_PREFETCH);
     // the machine's hardware threads, for a cart that sizes a thread pool
     if (this.info.wantsHostThreads) u32[base + 5] = availableParallelism();
   }

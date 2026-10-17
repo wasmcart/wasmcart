@@ -107,6 +107,10 @@ const imports = {
     },
     wc_asset_size: assetSize,
     wc_load_asset: loadAsset,
+    // Asset prefetch is main-thread state (SPEC.md, "Asset prefetch"): a cart
+    // thread's call is REFUSED (-3) and its reads go to the archive as before.
+    wc_asset_prefetch: () => -3,
+    wc_asset_prefetch_cancel: () => {},
     wc_debug_mark: () => {}, // debug-ABI annotation — main-thread host captures; workers no-op
     // Loop inversion is a MAIN-THREAD protocol: only the thread inside
     // wc_render can unwind out of it. A spawned pthread never yields, so
