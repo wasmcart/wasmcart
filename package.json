@@ -1,6 +1,6 @@
 {
   "name": "wasmcart",
-  "version": "0.34.4",
+  "version": "0.34.5",
   "description": "WASM cartridge host - load and run sandboxed .wasm and .wasc game carts",
   "type": "module",
   "main": "index.js",

@@ -40,7 +40,7 @@ test('four controllers: each its own pad, the keyboard on pad 0', () => {
   const slots = createPadSlots(sdl);
   sdl.plug(12); sdl.plug(13);
   ctl(sdl, 10).press('a'); ctl(sdl, 11).press('b'); ctl(sdl, 12).press('x'); ctl(sdl, 13).press('y');
-  ctl(sdl, 12).stick('leftX', -1);
+  ctl(sdl, 12).stick('leftStickX', -1);
   const pads = slots.pads(BUTTON.START);
   assert.equal(view(pads), [BUTTON.A | BUTTON.START, BUTTON.B, BUTTON.X, BUTTON.Y].join(' '));
   assert.equal(pads[2].leftX, -32767);
@@ -82,4 +82,20 @@ test('with no controller pad 0 is the keyboard and pads 1-3 are empty', () => {
   const slots = createPadSlots(fakeSdl([]));
   assert.equal(view(slots.pads(BUTTON.A)), `${BUTTON.A} - - -`);
   assert.equal(slots.controller(0), null);
+});
+
+// Use SDL's documented axis keys, not the cartridge ABI's different names.
+test('SDL stick axes reach the cartridge and report the active input device', () => {
+  const sdl = fakeSdl([10]), used = [];
+  const slots = createPadSlots(sdl, { used: (slot) => used.push(slot) });
+  for (const [axis, value] of Object.entries({
+    leftStickX: 0.75, leftStickY: -0.5, rightStickX: -1, rightStickY: 0.25,
+    leftTrigger: 0.8, rightTrigger: 0.6,
+  })) ctl(sdl, 10).stick(axis, value);
+  const [p] = slots.pads();
+  assert.deepEqual([p.leftX, p.leftY, p.rightX, p.rightY, p.leftTrigger, p.rightTrigger],
+    [24575, -16383, -32767, 8192, 26214, 19660]);
+  assert.equal(used.length, 4); // two sticks plus both triggers exceed .5
+  assert(used.every((slot) => slot === 0));
+  slots.close();
 });

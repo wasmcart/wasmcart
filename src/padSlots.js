@@ -29,7 +29,13 @@ export const CONTROLLER_BUTTONS = {
 // SDL's trigger axes. Same width as the sticks (int16) as of ABI v4, but
 // unsigned: a trigger travels one way, so its float is taken as magnitude.
 const TRIGGER_AXES = new Set(['leftTrigger', 'rightTrigger']);
-const AXES = ['leftX', 'leftY', 'rightX', 'rightY', 'leftTrigger', 'rightTrigger'];
+// @kmamal/sdl calls the stick axes leftStickX/Y and rightStickX/Y.
+// The cartridge ABI uses leftX/Y and rightX/Y; keep that conversion explicit.
+const AXES = {
+  leftStickX: 'leftX', leftStickY: 'leftY',
+  rightStickX: 'rightX', rightStickY: 'rightY',
+  leftTrigger: 'leftTrigger', rightTrigger: 'rightTrigger',
+};
 
 export const MAX_PADS = 4;
 
@@ -52,7 +58,7 @@ export function createPadSlots(controller, on = {}) {
     try { ctrl = controller.openDevice(dev); } catch { return -1; } // unplugged between the event and here
     slots[slot] = { id: dev.id, name: dev.name || '', dev: { ...dev }, ctrl };
     ctrl.on('buttonDown', (e) => { if (CONTROLLER_BUTTONS[e.button]) on.used?.(slot); });
-    ctrl.on('axisMotion', (e) => { if (AXES.includes(e.axis) && Math.abs(e.value ?? 0) > 0.5) on.used?.(slot); });
+    ctrl.on('axisMotion', (e) => { if (Object.hasOwn(AXES, e.axis) && Math.abs(e.value ?? 0) > 0.5) on.used?.(slot); });
     on.added?.(slot, dev);
     return slot;
   }
@@ -94,8 +100,8 @@ export function createPadSlots(controller, on = {}) {
         // which is the only thing separating them here: SDL hands both over as
         // a float, and a pad whose trigger rests near 0.5 would otherwise
         // report half-pressed as a negative stick value.
-        for (const a of AXES) {
-          const v = ax[a] ?? 0;
+        for (const [sdlAxis, a] of Object.entries(AXES)) {
+          const v = ax[sdlAxis] ?? 0;
           pad[a] = TRIGGER_AXES.has(a) ? Math.max(0, Math.min(32767, Math.round(Math.abs(v) * 32767)))
             : Math.max(-32767, Math.min(32767, Math.round(v * 32767)));
         }

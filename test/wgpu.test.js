@@ -24,6 +24,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import v8 from 'node:v8';
 import vm from 'node:vm';
 import { CartHost } from '../index.js';
@@ -105,7 +106,11 @@ test('a destroyed WebGPU cart is collected with its device, objects and Dawn thr
   const gc = vm.runInNewContext('gc');
   let collected = 0;
   const registry = new FinalizationRegistry(() => { collected++; });
-  const threads = () => fs.readdirSync('/proc/self/task').length;
+  // Linux exposes threads through procfs; macOS's ps lists one row per
+  // thread with -M. Keep the leak assertion active on both release hosts.
+  const threads = () => process.platform === 'darwin'
+    ? execFileSync('/bin/ps', ['-M', '-p', String(process.pid), '-o', 'pid='], { encoding: 'utf8' }).trim().split('\n').length
+    : fs.readdirSync('/proc/self/task').length;
   const cycle = async (i) => {
     const host = new CartHost();
     await host.load(fixture('wgpucart.wasc'), { adapterOptions: { powerPreference: 'low-power' } });

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.34.5
+
+- Fix both analog sticks in the windowed player: map SDL's `leftStickX/Y` and `rightStickX/Y` axis names to the cartridge pad fields, including input-device activity events. Controller regression tests now use SDL's documented names.
+- Keep the WebGPU thread-leak check working on macOS as well as Linux, so the full npm publish preflight runs on both.
+
 ## 0.34.4
 
 **A destroyed WebGPU cart is freed.** No change to the ABI or to what a cart
