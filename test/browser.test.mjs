@@ -90,9 +90,27 @@ const SPLIT = {
   '/test/split/hello.wasc': ['application/octet-stream', zipSync({ 'manifest.json': helloParts['manifest.json'] })],
 };
 
+// /test/fixtures/prefetch-dir/: prefetch.wasc (fixtures/prefetch.c) as a cart
+// directory, straight from the archive. Its assets are delayed so a prefetch
+// really runs in the background, and a read that was not prefetched really
+// suspends. The asset prefetch checks assert on both.
+const prefetchParts = unzipSync(readFileSync(join(ROOT, 'test/fixtures/prefetch.wasc')));
+const PREFETCH_DIR = '/test/fixtures/prefetch-dir/';
+const PREFETCH_DELAY_MS = 60;
+
 const http = createServer(async (req, res) => {
   let path = decodeURIComponent(req.url.split('?')[0]);
   requests.push(path);
+  if (path.startsWith(PREFETCH_DIR)) {
+    const name = path.slice(PREFETCH_DIR.length);
+    const bytes = prefetchParts[name];
+    if (!bytes) { res.writeHead(404); res.end(); return; }
+    if (name.startsWith('assets/')) await new Promise((r) => setTimeout(r, PREFETCH_DELAY_MS));
+    res.writeHead(200, { 'Content-Type': MIME[extname(name)] ?? 'application/octet-stream',
+      'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' });
+    res.end(Buffer.from(bytes));
+    return;
+  }
   if (SPLIT[path]) {
     res.writeHead(200, { 'Content-Type': SPLIT[path][0], 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' });
     res.end(Buffer.from(SPLIT[path][1]));
@@ -384,6 +402,107 @@ check('no JSPI + files: every listed file fetched before start',
 check('no JSPI + files: assets load from the prefetch', [r.init_loaded, r.late_loaded, r.late_sum], [22, 3000, 382428]);
 check('no JSPI, no files: refused with the reason', /no WebAssembly JSPI/.test(noJspi.refused ?? ''), true);
 await page.evaluate(() => { window.__dirHost.destroy(); window.__dirHost = null; });
+
+// ─── 7b. asset prefetch (SPEC.md, "Asset prefetch") ─────────────────────
+// fixtures/prefetch.c on the directory form over HTTP: with the flag the cart
+// prefetches big.bin (8 MiB), small.bin and a missing path on frame 1, polls,
+// and reads big.bin on the frame it sees READY. The page wraps fetch to count
+// the requests each frame starts, and races each runFrame against a
+// setTimeout(0): a frame that suspended on a fetch (JSPI) loses that race, a
+// frame that answered from the host's copy resolves in the same macrotask.
+//
+//   throttle: extra delay the wrapper adds before every asset fetch
+//   old: load with {assetPrefetch: false}, a host built before the imports
+const runPrefetchCart = (source, opts) => page.evaluate(async ([source, { throttle = 0, old = false }]) => {
+  const { CartHostWeb } = await import('/web.js');
+  const real = globalThis.fetch;
+  const fetches = [];
+  globalThis.fetch = async (url, init) => {
+    const u = String(url instanceof Request ? url.url : url);
+    if (u.includes('/assets/')) {
+      fetches.push({ url: u.split('/assets/')[1], priority: init?.priority ?? null, frame: window.__pfFrame ?? 0 });
+      if (throttle) await new Promise((r) => setTimeout(r, throttle));
+    }
+    return real(url, init);
+  };
+  const FIELDS = ['has_flag', 'calls', 'frame', 'state_big', 'state_missing', 'frames_to_ready', 'read_frame',
+    'read_bytes', 'hash', 'hash_ok', 'cancel_ok', 'small_ok', 'phase'];
+  try {
+    const host = new CartHostWeb();
+    const src = source.endsWith('.wasc') ? new Uint8Array(await (await real(source)).arrayBuffer()) : source;
+    await host.load(src, old ? { assetPrefetch: false } : {});
+    const frames = [];
+    let sawReady = false;
+    for (let i = 1; i <= 600; i++) {
+      window.__pfFrame = i;
+      const before = fetches.length;
+      let late = false;
+      const timer = setTimeout(() => { late = true; }, 0);
+      const t0 = performance.now();
+      await host.runFrame([]);
+      const ms = performance.now() - t0;
+      clearTimeout(timer);
+      const d = Object.fromEntries(FIELDS.map((k) => [k, host.readDebugValue(k).value]));
+      if (d.state_big === 1) sawReady = true;
+      frames.push({ i, ms, late, fetched: fetches.length - before, read: d.read_frame === d.frame, phase: d.phase });
+      if (d.phase === 4) break;
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    const d = Object.fromEntries(FIELDS.map((k) => [k, host.readDebugValue(k).value]));
+    const held = host._prefetch ? host._prefetch.heldBytes : 0;
+    host.destroy();
+    const readFrame = frames.find((f) => f.read);
+    return { ...d, sawReady, held, lazy: host._lazy, frameCount: frames.length,
+      readFrame: readFrame && { late: readFrame.late, fetched: readFrame.fetched, ms: readFrame.ms },
+      anyLate: frames.some((f) => f.late), maxMs: Math.max(...frames.map((f) => f.ms)),
+      firstFrameFetched: frames[0].fetched, fetches };
+  } finally {
+    globalThis.fetch = real;
+  }
+}, [source, opts]);
+
+const EXPECTED_HASH = (() => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < (8 << 20); i++) h = Math.imul(h ^ ((i * 31 + 7) & 255), 0x01000193) >>> 0;
+  return h >>> 0;
+})();
+
+requests.length = 0;
+const pf = await runPrefetchCart(PREFETCH_DIR, {});
+check('prefetch: directory cart loads lazily with the flag', [pf.lazy, pf.has_flag], [true, 1]);
+check('prefetch: frame 1 started the fetches, missing is -1 without a request',
+      [pf.firstFrameFetched, pf.state_missing, pf.fetches.map((f) => f.url).sort()],
+      [2, -1, ['big.bin', 'small.bin', 'small.bin']]);
+check('prefetch: priority 2 became the browser\'s high hint', pf.fetches.find((f) => f.url === 'big.bin')?.priority, 'high');
+check('prefetch: big.bin went PENDING then READY over several frames', [pf.sawReady, pf.frames_to_ready > 1], [true, true]);
+check('prefetch: the READY read made no fetch and did not suspend',
+      [pf.readFrame?.fetched, pf.readFrame?.late, pf.read_frame === pf.frames_to_ready], [0, false, true]);
+check('prefetch: no frame suspended at all', pf.anyLate, false);
+check('prefetch: 8 MiB read whole and correct (FNV-1a known answer)', [pf.read_bytes, pf.hash_ok, pf.hash], [8 << 20, 1, EXPECTED_HASH]);
+check('prefetch: cancel, prefetch again, READY, small.bin correct; the host holds nothing after', [pf.cancel_ok, pf.small_ok, pf.phase, pf.held], [1, 1, 4, 0]);
+check('prefetch: missing.bin was never requested from the server', requests.some((p) => p.includes('missing.bin')), false);
+
+// Control 1: the same cart on a host without the imports must see the flag
+// clear, never call them, never see READY, and its reading frame (frame 1)
+// must suspend on the fetches it did not predict.
+const pfOld = await runPrefetchCart(PREFETCH_DIR, { old: true });
+check('prefetch control (old host): flag clear, no calls, never READY, still reads correctly',
+      [pfOld.has_flag, pfOld.calls, pfOld.sawReady, pfOld.hash_ok, pfOld.hash, pfOld.small_ok, pfOld.read_frame],
+      [0, 0, false, 1, EXPECTED_HASH, 1, 1]);
+check('prefetch control (old host): the reading frame suspended on its fetches',
+      [pfOld.readFrame?.late, pfOld.readFrame?.fetched >= 2], [true, true]);
+
+// Control 2: a throttled fetch stretches frames_to_ready, not the frame.
+const pfSlow = await runPrefetchCart(PREFETCH_DIR, { throttle: 250 });
+check('prefetch control (throttled): more frames to READY, none of them late',
+      [pfSlow.frames_to_ready > pf.frames_to_ready, pfSlow.anyLate, pfSlow.hash_ok], [true, false, 1]);
+console.log(`  (frames to READY: ${pf.frames_to_ready} plain, ${pfSlow.frames_to_ready} throttled; max frame ${pfSlow.maxMs.toFixed(1)} ms; READY read ${pf.readFrame?.ms.toFixed(1)} ms)`);
+
+// A .wasc in the browser: the prefetch inflates with DecompressionStream.
+const pfWasc = await runPrefetchCart('/test/fixtures/prefetch.wasc', {});
+check('prefetch: a .wasc inflates in the background and reads from the copy',
+      [pfWasc.has_flag, pfWasc.sawReady, pfWasc.hash_ok, pfWasc.hash, pfWasc.cancel_ok, pfWasc.small_ok, pfWasc.held],
+      [1, true, 1, EXPECTED_HASH, 1, 1, 0]);
 
 // ─── 8. direct present: draw straight into a matching canvas, no blit ─────
 // gltri (256x192) paints a red top bar, a green left bar and a white
