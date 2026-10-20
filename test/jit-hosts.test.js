@@ -47,7 +47,7 @@ test('CartHost: a cart links, calls, unlinks and re-links into the freed slot', 
   const host = new CartHost();
   const r = await run(host, () => host.load(CART, { jit: {} }));
   assert.equal(r.off, -1);
-  assert.equal(r.max, 4 * 1024 * 1024);
+  assert.equal(r.max, 256 * 1024 * 1024);
   assert.ok(r.link >= 1, `link ${r.link}`);
   assert.equal(r.cell, r.link);
   assert.equal(r.call, 12, 'f(5) = jit_add1(5) * 2, through call_indirect');

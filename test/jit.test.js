@@ -356,7 +356,7 @@ test('wc_jit_config reports the knobs and the spec-minimum limits', async () => 
   const { ex } = await boot({ threshold: 0, tierUp: 4 });
   assert.equal(ex.cfg(0), 0);
   assert.equal(ex.cfg(2), 4);
-  assert.equal(ex.cfg(3), 4 * 1024 * 1024);
+  assert.equal(ex.cfg(3), 256 * 1024 * 1024);
   assert.equal(ex.cfg(4), 256 * 1024 * 1024);
   assert.equal(ex.cfg(5), 65536);
   assert.equal(ex.cfg(6), 32);
@@ -366,7 +366,7 @@ test('wc_jit_config reports the knobs and the spec-minimum limits', async () => 
   assert.equal(plain.ex.cfg(0), -1);
   assert.equal(plain.ex.cfg(1), -1);
   assert.equal(plain.ex.cfg(2), -1);
-  assert.deepEqual({ ...JIT_LIMITS }, { maxModuleBytes: 4194304, maxTotalBytes: 268435456, maxFunctions: 65536, maxPending: 32 });
+  assert.deepEqual({ ...JIT_LIMITS }, { maxModuleBytes: 268435456, maxTotalBytes: 268435456, maxFunctions: 65536, maxPending: 32 });
 });
 
 test('environment knobs', () => {

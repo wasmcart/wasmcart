@@ -1345,7 +1345,8 @@ Host advice; `-1` means no opinion.
   result for an instance that no longer exists is dropped, never installed into
   or written into another cart.
 - **Limits.** Every host accepts at least these per instance (keys 3-6 report
-  the host's actual values, never lower): one module 4 MiB; 256 MiB linked at
+  the host's actual values, never lower): one module 256 MiB (the whole total: a
+  module may be as large as everything linked at once); 256 MiB linked at
   once; 65536 functions linked at once; 32 compiles in flight. Unlinking gives
   bytes and functions back.
 - **Save states and rewind.** Slots are not carried across a restore. Right

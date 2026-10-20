@@ -77,7 +77,7 @@ export function restoreGeneration(memory, current) {
 
 /** Spec minimums: every host accepts at least this much per cart instance. */
 export const JIT_LIMITS = Object.freeze({
-  maxModuleBytes: 4 * 1024 * 1024,
+  maxModuleBytes: 256 * 1024 * 1024, // one module may use the whole total (engines allow 1 GiB per module)
   maxTotalBytes: 256 * 1024 * 1024,
   maxFunctions: 65536,
   maxPending: 32,

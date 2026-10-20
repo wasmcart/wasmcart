@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.35.1
+
+**Runtime code generation: one module may be as large as the whole linked total.** The per-module minimum every host accepts
+(`wc_jit_config` key 3) goes from 4 MiB to 256 MiB, the same as the total linked at once (key 4). The 4 MiB figure was a default
+carried over from the first runtime-JIT engines, which link modules of a few kilobytes; nothing depended on it, and engines allow far
+more (V8 and JavaScriptCore: 1 GiB per module). A cart that links a module between 4 MiB and 256 MiB (a static recompiler's guest
+code) is no longer refused. Additive: a cart that worked before is untouched; the total, function and in-flight limits are unchanged.
+SPEC.md, "Runtime code generation", Limits.
+
 ## 0.35.0
 
 **Asset prefetch.** An ADDITIVE ABI change (ABI 4, as hardware_threads was):
