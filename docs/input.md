@@ -28,6 +28,18 @@ This means:
 
 The cart never needs to know what controller is physically connected.
 
+### Checking a host: the test cart
+
+`npx wasmcart test` (and RetroArch's Start Core with the wasmcart libretro core)
+runs [`testcart/`](../testcart/): every pad drawn with all 21 button bits,
+sticks, triggers and raw values, every pointer slot, the wheel and the
+keyboard, a note per face button with L/R channel panning, and a save checked
+byte for byte at every start. A host's mapping bug shows at a glance: a button
+lighting the wrong control, a stick click or trigger that never arrives, a
+trigger that rests above zero. Each value is also a debug field, so a host's
+tests can assert on it. Any host runs it as a normal cart, e.g.
+`wasmcart-run node_modules/wasmcart/testcart/testcart.wasc`.
+
 ### wc_pad_t Layout (20 bytes per pad)
 
 ```c
