@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.36.1
+
+**The windowed player's controllers, three fixes found with the test cart.**
+- Guide was mapped to SELECT, so on an X360 pad the Guide button lit Select. It is now `WC_BTN_GUIDE`.
+- L3 and R3 (the stick clicks) and the four paddles never reached a cart. They do now.
+- A released trigger read half pressed. @kmamal/sdl 0.11 maps a trigger a second time against its raw axis's starting
+  value, so an X360 pad's triggers rest at 0.5. Each trigger now travels from its rest (the lowest value it reads) to full,
+  and a pad whose triggers rest at 0 is unchanged.
+
+The native player (wasmcart-native) reads SDL directly and had none of these. MISC1 and the touchpad click still never come
+from the windowed player: @kmamal/sdl does not report them.
+
 ## 0.36.0
 
 **The test cart: `wasmcart test`.** A cart for checking a host by eye, in `testcart/` (C source, build script and the

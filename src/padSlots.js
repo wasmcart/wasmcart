@@ -18,12 +18,15 @@
  */
 import { BUTTON } from './abi.js';
 
-/** SDL's controller button names -> wasmcart BUTTON names */
+/** SDL's controller button names -> wasmcart BUTTON names. @kmamal/sdl 0.11
+ * reports these (it has no misc1 or touchpad, so MISC1 and TOUCHPAD never
+ * come from the windowed player). */
 export const CONTROLLER_BUTTONS = {
   dpadUp: 'UP', dpadDown: 'DOWN', dpadLeft: 'LEFT', dpadRight: 'RIGHT',
   a: 'A', b: 'B', x: 'X', y: 'Y',
-  leftShoulder: 'L', rightShoulder: 'R',
-  start: 'START', back: 'SELECT', guide: 'SELECT',
+  leftShoulder: 'L', rightShoulder: 'R', leftStick: 'L3', rightStick: 'R3',
+  start: 'START', back: 'SELECT', guide: 'GUIDE',
+  paddle1: 'PADDLE1', paddle2: 'PADDLE2', paddle3: 'PADDLE3', paddle4: 'PADDLE4',
 };
 
 // SDL's trigger axes. Same width as the sticks (int16) as of ABI v4, but
@@ -39,11 +42,25 @@ const AXES = {
 
 export const MAX_PADS = 4;
 
+// @kmamal/sdl 0.11 maps a controller axis that is bound to a joystick axis a
+// second time, against that joystick axis's initial value (mapAxisValue in
+// its controller.cpp). SDL has already made a trigger 0..32767, and a raw
+// trigger axis starts at -32768, so a released trigger reads 0.5 and a full
+// press 1 (an X360 pad on Linux: both triggers 0.50001 at rest). A released
+// trigger is the lowest value it can read (SDL's trigger is never below 0),
+// so a trigger's rest is the lowest value seen and its travel runs from there
+// to 1; a driver that reports triggers correctly rests at 0 and is unchanged.
+// What a trigger reads in its first TRIGGER_SETTLE_MS is not taken as its
+// rest, and reads 0: some SDL drivers set the initial value from the first
+// events, which moves the rest from 0 to 0.5.
+const TRIGGER_SETTLE_MS = 500;
+
 /**
  * @param {object} controller  sdl.controller (or a stand-in with the same shape)
  * @param {object} [on]  callbacks: added(slot, dev), removed(slot, dev), used(slot) (a button, or a stick past half)
+ * @param {object} [opts]  now(): milliseconds (tests drive the trigger settle time with it)
  */
-export function createPadSlots(controller, on = {}) {
+export function createPadSlots(controller, on = {}, { now = () => performance.now() } = {}) {
   // A slot keeps a copy of its device's id and name: @kmamal/sdl 0.11 reuses
   // device objects by list position, so when one goes away the object a slot
   // was opened from can turn into another device's.
@@ -56,7 +73,7 @@ export function createPadSlots(controller, on = {}) {
     if (slot < 0) return -1; // four players already
     let ctrl;
     try { ctrl = controller.openDevice(dev); } catch { return -1; } // unplugged between the event and here
-    slots[slot] = { id: dev.id, name: dev.name || '', dev: { ...dev }, ctrl };
+    slots[slot] = { id: dev.id, name: dev.name || '', dev: { ...dev }, ctrl, opened: now(), rest: {} };
     ctrl.on('buttonDown', (e) => { if (CONTROLLER_BUTTONS[e.button]) on.used?.(slot); });
     ctrl.on('axisMotion', (e) => { if (Object.hasOwn(AXES, e.axis) && Math.abs(e.value ?? 0) > 0.5) on.used?.(slot); });
     on.added?.(slot, dev);
@@ -96,14 +113,21 @@ export function createPadSlots(controller, on = {}) {
         for (const [b, n] of Object.entries(CONTROLLER_BUTTONS)) if (held[b]) buttons |= BUTTON[n];
         const pad = { connected: true, name: s.name, buttons };
         // Every analog axis is int16 as of ABI v4, so sticks and triggers share
-        // one scale factor. Triggers are UNSIGNED (0..32767, one direction),
-        // which is the only thing separating them here: SDL hands both over as
-        // a float, and a pad whose trigger rests near 0.5 would otherwise
-        // report half-pressed as a negative stick value.
+        // one scale factor. Triggers are UNSIGNED (0..32767, one direction)
+        // and travel from their rest (TRIGGER_SETTLE_MS above).
+        const settled = now() - s.opened >= TRIGGER_SETTLE_MS;
         for (const [sdlAxis, a] of Object.entries(AXES)) {
-          const v = ax[sdlAxis] ?? 0;
-          pad[a] = TRIGGER_AXES.has(a) ? Math.max(0, Math.min(32767, Math.round(Math.abs(v) * 32767)))
-            : Math.max(-32767, Math.min(32767, Math.round(v * 32767)));
+          let v = ax[sdlAxis] ?? 0;
+          if (TRIGGER_AXES.has(a)) {
+            if (!settled) v = 0;
+            else {
+              const rest = s.rest[sdlAxis] = Math.min(s.rest[sdlAxis] ?? v, v);
+              v = rest < 1 ? (v - rest) / (1 - rest) : 0;
+            }
+            pad[a] = Math.max(0, Math.min(32767, Math.round(v * 32767)));
+          } else {
+            pad[a] = Math.max(-32767, Math.min(32767, Math.round(v * 32767)));
+          }
         }
         return pad;
       });
