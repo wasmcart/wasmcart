@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.36.0
+
+**The test cart: `wasmcart test`.** A cart for checking a host by eye, in `testcart/` (C source, build script and the
+`.wasc`, shipped in the package). Four pads drawn with every button lit while held (Guide, Misc, the paddles and the
+touchpad click included), sticks, triggers, raw values, the pad name, the device the host reports and the host's names for
+the face buttons; every pointer slot as a numbered circle with a trail, the pointer event counts and the wheel; the
+keyboard. Sound: A, B, X and Y each play their own note in a waveform that names the pad, holding L plays them on the left
+channel only and R on the right only, and the triggers bend the pitch. Saves: each start checks its 32 KB save byte for
+byte and says FRESH, OK (with the start count and how far the last session's save got), TRUNCATED or CORRUPT, and
+SELECT+START held for 3 seconds clears it. L3 and R3 run the rumble motors. Every panel is also a debug field, so a host's
+tests can drive it (test/testcart.test.js does). Its save goes under `$XDG_DATA_HOME/wasmcart/saves/`, not into the
+installed package. No ABI change.
+
 ## 0.35.1
 
 **Runtime code generation: one module may be as large as the whole linked total.** The per-module minimum every host accepts
