@@ -6,14 +6,22 @@
 
 import { readFileSync, writeFileSync, statSync, existsSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+// The package's own test cart (`wasmcart test`). It lives inside the installed
+// package, which may be read-only (a global install) and is no place for a
+// save, so its save goes below the user's data directory like a remote cart's.
+const TESTCART = fileURLToPath(new URL('../testcart/testcart.wasc', import.meta.url));
+const dataHome = () => process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share');
 
 /**
  * Local carts store saves alongside the cart, with `.sav` appended. A
  * directory-mode cart gets the trailing slash trimmed first so `game/` and
  * `game` do not produce different files. Remote carts use a stable URL hash
- * below the user's data directory.
+ * below the user's data directory, and the package's test cart a fixed name
+ * there.
  */
 export function savPathFor(cartPath) {
   try {
@@ -22,10 +30,10 @@ export function savPathFor(cartPath) {
       const stem = basename(url.pathname).replace(/\.wasc$/i, '') || 'cart';
       const safeStem = stem.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80) || 'cart';
       const hash = createHash('sha256').update(url.href).digest('hex').slice(0, 16);
-      const dataHome = process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share');
-      return join(dataHome, 'wasmcart', 'saves', `${safeStem}-${hash}.sav`);
+      return join(dataHome(), 'wasmcart', 'saves', `${safeStem}-${hash}.sav`);
     }
   } catch { /* local path */ }
+  if (resolve(cartPath) === TESTCART) return join(dataHome(), 'wasmcart', 'saves', 'testcart.sav');
   try {
     return statSync(cartPath).isDirectory()
       ? cartPath.replace(/\/+$/, '') + '.sav'

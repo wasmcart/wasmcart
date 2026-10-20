@@ -24,6 +24,7 @@
     "include/",
     "wgpu-wasi/",
     "docs/",
+    "testcart/",
     "SPEC.md",
     "README.md",
     "LICENSE",

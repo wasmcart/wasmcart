@@ -74,12 +74,37 @@ npx wasmcart game.wasc --seed 7 --frames 60 --shot a.png           # determinist
 npx wasmcart game.wasc --no-resize  # pin the window to the cart's declared size
 npx wasmcart game.wasc --stretch    # fill the window, distorting the aspect ratio
 npx wasmcart pack --wasm cart.wasm -o game.wasc                    # packing, same front door
+npx wasmcart test                   # the test cart: pads, touch, keyboard, sound and saves
 ```
 
 HTTP and HTTPS carts are streamed to a temporary file so packed assets remain
 lazy-loaded instead of occupying memory for the whole session. Redirects are
 followed. Save data for a remote cart is keyed by its URL and stored under
 `$XDG_DATA_HOME/wasmcart/saves` (or `~/.local/share/wasmcart/saves`).
+
+### The test cart
+
+`npx wasmcart test` plays [`testcart/testcart.wasc`](testcart/), a cart for
+checking a host's input, sound and saves by eye. The wasmcart libretro core runs
+the same cart when RetroArch starts it with no content.
+
+- **Pads:** four controller drawings, every button lit while held (Guide, Misc,
+  the four paddles and the touchpad click too), sticks, triggers and raw values,
+  the pad's name, the device the host reports, and the host's names for the face
+  buttons. L3 and R3 run the rumble motors.
+- **Touch and mouse:** every pointer slot as a numbered circle with a trail, the
+  pointer event counts, and the scroll wheel totals. **Keyboard:** keys held,
+  modifiers and the last keys pressed.
+- **Sound:** A, B, X and Y each play their own note, in a waveform that names the
+  pad (P1 sine, P2 square, P3 triangle, P4 saw). Holding L plays every note on the
+  left channel only and R on the right only; the triggers bend the pitch.
+- **Saves:** each start reads the 32 KB save back and checks every byte: FRESH, OK
+  (with the start count and how far the last session's save got), TRUNCATED or
+  CORRUPT. Holding SELECT+START for 3 seconds clears it, and the next start must
+  say FRESH. Its save lives in `$XDG_DATA_HOME/wasmcart/saves/testcart.sav`.
+
+Everything it shows is also a debug field (`--frames` lists them), so a host's
+tests can drive it too. Rebuild it with `node testcart/build.mjs`.
 
 ### Window sizing
 
