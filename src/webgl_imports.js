@@ -1974,10 +1974,12 @@ const GL_DEPTH_COMPONENT = 0x1902;
 function _bytesPerPixel(format, type) {
   let channels;
   switch (format) {
-    case GL_ALPHA: case GL_LUMINANCE: case GL_RED: case GL_DEPTH_COMPONENT: channels = 1; break;
-    case GL_LUMINANCE_ALPHA: case GL_RG: channels = 2; break;
-    case GL_RGB: case 0x80E0: channels = 3; break; // GL_RGB, GL_BGR
-    case GL_RGBA: case 0x80E1: channels = 4; break; // GL_RGBA, GL_BGRA
+    case GL_ALPHA: case GL_LUMINANCE: case GL_RED: case GL_DEPTH_COMPONENT:
+    case 0x8D94: channels = 1; break; // GL_RED_INTEGER
+    case GL_LUMINANCE_ALPHA: case GL_RG:
+    case 0x8228: channels = 2; break; // GL_RG_INTEGER
+    case GL_RGB: case 0x80E0: case 0x8D98: channels = 3; break; // RGB, BGR, RGB_INTEGER
+    case GL_RGBA: case 0x80E1: case 0x8D99: channels = 4; break; // RGBA, BGRA, RGBA_INTEGER
     default: channels = 4; break;
   }
 

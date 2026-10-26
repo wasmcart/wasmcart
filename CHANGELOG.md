@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.36.2
+
+**Integer textures upload the right number of bytes.** `glTexImage2D` and `glTexSubImage2D` counted `GL_RED_INTEGER`,
+`GL_RG_INTEGER` and `GL_RGB_INTEGER` as four channels, so a single-channel `R32UI` texture (cartwheel's light grid)
+read four times its size from the cart's memory. Usually that was unrelated heap data; when the texture sat near the end
+of memory it threw `RangeError: Invalid typed array length` and the cart stopped. Each integer format now has its own
+channel count.
+
 ## 0.36.1
 
 **The windowed player's controllers, three fixes found with the test cart.**
