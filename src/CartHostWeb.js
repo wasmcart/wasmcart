@@ -40,7 +40,7 @@ import { ActionTable, DEVICE, padOrigin, padFamily } from './actions.js';
 import { readDebugState, readDebugValue, writeDebugValue, pushDebugEvent, MAX_DEBUG_EVENTS } from './debugState.js';
 import { createWebGLImports } from './webgl_imports.js';
 import { createCartAllocator } from './cartMemory.js';
-import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap, wgpuAdapterOptions } from './wgpu/host.js';
+import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap, requestWgpuAdapter } from './wgpu/host.js';
 
 /**
  * Whether a cart of w x h can draw straight into this context's default
@@ -521,9 +521,9 @@ export class CartHostWeb {
     this._cartImportsWgpu = cartImportsWgpu;
     this.usesGL = gpuSelect === 'gl';
     if (gpuSelect === 'wgpu') {
-      const { gpu, adapter, createCanvas } = wgpuProvider;
+      const { gpu, adapter, adapterOptions, createCanvas } = wgpuProvider;
       this._wgpu = await createWgpuSession({
-        moduleImports, gpu, adapter, createCanvas, adapterOptions: options.adapterOptions,
+        moduleImports, gpu, adapter, createCanvas, adapterOptions,
         width: options.preferredWidth || 640,
         height: options.preferredHeight || 480,
         log: msg => console.warn(msg),
@@ -1288,13 +1288,13 @@ export class CartHostWeb {
     if (options.wgpu === false) return { ok: false, reason: 'the page disabled it (wgpu: false)' };
     const gpu = options.gpu || globalThis.navigator?.gpu;
     if (!gpu) return { ok: false, reason: 'this browser has no WebGPU (navigator.gpu is missing)' };
-    let adapter = null;
-    try { adapter = await gpu.requestAdapter(wgpuAdapterOptions(options.adapterOptions)); } catch (e) {
+    let adapter = null, adapterOptions = null;
+    try { ({ adapter, adapterOptions } = await requestWgpuAdapter(gpu, options.adapterOptions)); } catch (e) {
       return { ok: false, reason: `requesting a WebGPU adapter failed (${e.message})` };
     }
     if (!adapter) return { ok: false, reason: 'the browser offers no WebGPU adapter (blocklisted GPU or driver)' };
     const createCanvas = options.wgpuCanvas ? () => options.wgpuCanvas : undefined;
-    return { ok: true, gpu, adapter, createCanvas };
+    return { ok: true, gpu, adapter, adapterOptions, createCanvas };
   }
 
   getInfo() {

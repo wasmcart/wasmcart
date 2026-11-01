@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.37.0
+
+**WebGPU carts get a core device where the GPU has one.** `CartHost` and `CartHostWeb` now ask for a core adapter and fall
+back to compatibility mode, as wasmcart-native and romdev already do, so a cart gets the same feature level on every host.
+On a core device an HDR scene can multisample and a depth texture can be read directly. No import, export or struct changed:
+a cart reads the level with `wgpuDeviceHasFeature(device, WGPUFeatureName_CoreFeaturesAndLimits)`, and compatibility mode is
+still the floor every cart that does not request core must run on. A core device does not enforce that floor, so test a cart
+with `WASMCART_WGPU_FEATURE_LEVEL=compatibility` (new, Node hosts) or `adapterOptions: { featureLevel: 'compatibility' }`,
+where Dawn does. SPEC.md, "Feature level", says all of this.
+
+**Docs.** The README's ABI references, manifest example and minimal cart said v3, which every host refuses; they say v4 now. The
+README and `docs/webgpu.md` no longer say the libretro core lacks WebGPU: its Linux builds have it.
+
 ## 0.36.2
 
 **Integer textures upload the right number of bytes.** `glTexImage2D` and `glTexSubImage2D` counted `GL_RED_INTEGER`,

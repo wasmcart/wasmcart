@@ -77,7 +77,9 @@ test('a WebGPU cart renders on the host device, gets async results between frame
     assert.equal(ex.wgpucart_host_flags() & 0x02, 0x02, 'host-info flags carry WC_HOST_FLAG_GPU_WGPU');
 
     const before = host.memory.buffer.byteLength;
-    for (let i = 0; i < 20 && ex.wgpucart_result() < 0; i++) { host.runFrame(); await tick(); }
+    // (a time limit, not a frame count: the result arrives when the GPU finishes, and a busy GPU takes more frames)
+    const mapDeadline = Date.now() + 10000;
+    while (ex.wgpucart_result() < 0 && Date.now() < mapDeadline) { host.runFrame(); await tick(); }
     assert.equal(ex.wgpucart_result(), 42, 'the compute shader result arrived through mapAsync');
     assert.equal(ex.wgpucart_mapped_during_render(), 0, 'no callback ran inside wc_render');
     for (let i = 0; i < 10 && ex.wgpucart_scope_error() < 0; i++) { host.runFrame(); await tick(); }
@@ -240,7 +242,6 @@ test('the embedder or WASMCART_WGPU_POWER picks the GPU, and the host says which
   try {
     const a = host.getGpuAdapterInfo();
     assert.equal(a.powerPreference, 'low-power');
-    assert.equal(a.featureLevel, 'compatibility');
     assert.ok(a.vendor || a.device || a.description, 'the adapter names itself');
   } finally {
     host.destroy();
@@ -258,6 +259,38 @@ test('the embedder or WASMCART_WGPU_POWER picks the GPU, and the host says which
   } finally {
     delete process.env.WASMCART_WGPU_POWER;
   }
+});
+
+test('a host device is core WebGPU where the adapter has it, compatibility mode where it does not or when forced', async () => {
+  const isCore = host => host.getGpuDevice().features.has('core-features-and-limits');
+  const run = async (options) => {
+    const host = new CartHost();
+    await host.load(fixture('wgpucart.wasc'), options);
+    try { return { level: host.getGpuAdapterInfo().featureLevel, core: isCore(host) }; } finally { host.destroy(); }
+  };
+  assert.deepEqual(await run({}), { level: 'core', core: true });
+
+  // The controls: on each of these a core device would be wrong.
+  assert.deepEqual(await run({ adapterOptions: { featureLevel: 'compatibility' } }), { level: 'compatibility', core: false });
+  process.env.WASMCART_WGPU_FEATURE_LEVEL = 'compatibility';
+  try {
+    assert.deepEqual(await run({}), { level: 'compatibility', core: false });
+    process.env.WASMCART_WGPU_FEATURE_LEVEL = 'best';
+    await assert.rejects(new CartHost().load(fixture('wgpucart.wasc')), /WASMCART_WGPU_FEATURE_LEVEL=best: expected core or compatibility/);
+  } finally {
+    delete process.env.WASMCART_WGPU_FEATURE_LEVEL;
+  }
+
+  // A GPU with no core adapter: the host asks again, and the cart runs.
+  const { createGPU, globals } = await import('webgpu-node');
+  const real = createGPU();
+  const asked = [];
+  const noCore = { requestAdapter: o => { asked.push(o?.featureLevel); return o?.featureLevel === 'core' ? Promise.resolve(null) : real.requestAdapter(o); },
+    getPreferredCanvasFormat: () => real.getPreferredCanvasFormat(), get wgslLanguageFeatures() { return real.wgslLanguageFeatures; } };
+  assert.deepEqual(await run({ gpu: noCore, gpuGlobals: globals }), { level: 'compatibility', core: false });
+  assert.deepEqual(asked.slice(0, 2), ['core', 'compatibility']);
+  // Forced to core, there is no such adapter: refused, not quietly downgraded.
+  await assert.rejects(new CartHost().load(fixture('wgpucart.wasc'), { gpu: noCore, gpuGlobals: globals, adapterOptions: { featureLevel: 'core' } }), /no WebGPU adapter/);
 });
 
 test('a WebGPU cart with malloc but no wc_alloc stops with the clear error, its malloc never used', async () => {

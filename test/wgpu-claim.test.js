@@ -188,8 +188,11 @@ test('GPU memory levels off over thousands of frames when the loop yields betwee
 });
 
 test('edges: a second device with its own callbacks, uncaptured errors, device loss, a resized surface', async (t) => {
+  // The floor: the cart asks for 8192-texel textures to get a device above the
+  // host's, and a core host device already has them, so it would be handed the
+  // host's device (as the SPEC says) and destroy it.
   const host = new CartHost();
-  await host.load(fixture('wgpuedges.wasc'));
+  await host.load(fixture('wgpuedges.wasc'), { adapterOptions: { featureLevel: 'compatibility' } });
   try {
     const v = (name) => { const r = host.readDebugValue(name); return r.values ?? r.value; };
     for (let i = 0; i < 9; i++) { host.runFrame(); await tick(); }

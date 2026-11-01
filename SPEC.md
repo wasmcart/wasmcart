@@ -392,10 +392,9 @@ which also exports the functions the glue calls back into, listed in
 - **Device.** The host creates the adapter and device. `emscripten_webgpu_get_device()`
   returns that device synchronously, from `wc_init` on. It is made with no
   required features and the default limits of its adapter's feature level:
-  the compatibility-mode defaults where the implementation offers
-  compatibility mode, which is the tier's floor (below). (An implementation
-  without it, such as Firefox, gives a core device, whose defaults are
-  higher; a cart must not depend on that.) The device has no uncaptured-error
+  core where the adapter has it, else compatibility mode, the tier's floor
+  (below). A cart must not depend on the higher level unless it checks for
+  it. The device has no uncaptured-error
   or device-lost callback the cart can see: see
   [docs/webgpu.md](docs/webgpu.md), "Errors and device loss", for what each
   host does today. A host whose device is lost while the cart runs stops
@@ -419,17 +418,29 @@ which also exports the functions the glue calls back into, listed in
 - **Adapter choice** is the host's. A cart can read which adapter it got
   (`wgpuAdapterGetInfo`, `wgpuDeviceGetAdapterInfo`).
 
-### Feature level: compatibility mode is the floor
+### Feature level: core where offered, compatibility mode is the floor
 
-Hosts request a **compatibility-mode** adapter (`featureLevel:
-"compatibility"`, the GLES 3.1 / D3D11 class) by default, so a cart is held
-to the floor that reaches GLES-class devices even when it runs on a desktop
-GPU. Dawn enforces the restrictions on every backend, including one texture
-binding view dimension per texture, no cube-array views, no layer-subset
-bindings, identical blend state across colour attachments, no `sample_mask`,
-no storage buffers in the vertex stage, 4 colour attachments and 4096-texel
-textures. A cart that needs core WebGPU requests the
+Hosts SHOULD give a cart a **core** device where the adapter offers one, and
+MUST otherwise offer a **compatibility-mode** device (`featureLevel:
+"compatibility"`, the GLES 3.1 / D3D11 class), if the GPU has one, rather than
+refuse the cart or drop a dual cart to GL. A core device lets an HDR scene
+multisample and a depth texture be read directly.
+
+**A cart reads the level** with
+`wgpuDeviceHasFeature(device, WGPUFeatureName_CoreFeaturesAndLimits)`, once in
+`wc_init`, and does not use what compatibility mode lacks unless that says yes.
+A cart that cannot run without core WebGPU requests the
 `core-features-and-limits` feature, and runs only where that is available.
+
+**Every cart that does not request core must run in compatibility mode**, which
+restricts, among others: one texture binding view dimension per texture, no
+cube-array views, no layer-subset bindings, identical blend state across colour
+attachments, no `sample_mask`, no storage buffers in the vertex stage, 4 colour
+attachments and 4096-texel textures. A core device does not enforce these, so a
+cart is tested against them by forcing the floor: a host SHOULD offer a way to
+(the reference hosts: `adapterOptions: { featureLevel: 'compatibility' }`, and
+`WASMCART_WGPU_FEATURE_LEVEL=compatibility` on Node hosts), and Dawn then
+enforces them on every backend.
 
 ### Asynchronous results
 

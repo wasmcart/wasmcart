@@ -44,7 +44,7 @@ import { createJitImports, jitOptionsFromEnv } from './jit.js';
 import { ActionTable } from './actions.js';
 import { readDebugState, readDebugValue, writeDebugValue, pushDebugEvent, MAX_DEBUG_EVENTS } from './debugState.js';
 import { createWebGLImports, noteGlCurrent } from './webgl_imports.js';
-import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap, wgpuAdapterOptions } from './wgpu/host.js';
+import { importsWgpu, isWgpuImportName, createWgpuSession, gpuImportTrap, requestWgpuAdapter } from './wgpu/host.js';
 import { listDirRelative, diffFileList } from './assetFiles.js';
 import { createCartAllocator } from './cartMemory.js';
 import { AssetPrefetcher, AssetMissingError } from './assetPrefetch.js';
@@ -554,9 +554,9 @@ export class CartHost {
       // The canvas starts at the best guess of the cart's size, as the GL
       // context does; the cart's own wgpuSurfaceConfigure sets the real one.
       const m = this._manifest || {};
-      const { gpu, adapter, createCanvas, globals, wasmImports } = this._wgpuProvider;
+      const { gpu, adapter, adapterOptions, createCanvas, globals, wasmImports } = this._wgpuProvider;
       this._wgpu = await createWgpuSession({
-        moduleImports, gpu, adapter, createCanvas, globals, wasmImports, adapterOptions: options.adapterOptions,
+        moduleImports, gpu, adapter, createCanvas, globals, wasmImports, adapterOptions,
         width: m.width || options.preferredWidth || DEFAULT_GL_W,
         height: m.height || options.preferredHeight || DEFAULT_GL_H,
         log: msg => console.error(msg),
@@ -1388,12 +1388,12 @@ export class CartHost {
       // against; Node has none on globalThis.
       globals ||= mod?.globals || globalThis;
     }
-    let adapter = null;
-    try { adapter = await gpu.requestAdapter(wgpuAdapterOptions(options.adapterOptions)); } catch (e) {
+    let adapter = null, adapterOptions = null;
+    try { ({ adapter, adapterOptions } = await requestWgpuAdapter(gpu, options.adapterOptions)); } catch (e) {
       return { ok: false, reason: `requesting a WebGPU adapter failed (${e.message})` };
     }
     if (!adapter) return { ok: false, reason: 'no WebGPU adapter is available (check the GPU driver)' };
-    return { ok: true, gpu, adapter, createCanvas, globals, wasmImports };
+    return { ok: true, gpu, adapter, adapterOptions, createCanvas, globals, wasmImports };
   }
 
   getInfo() {

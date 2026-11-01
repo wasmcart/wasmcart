@@ -203,9 +203,10 @@ shader, pipeline and bind group follow in [`hello.c`](../examples/webgpu-hello/h
   `WGPUCallbackMode_AllowSpontaneous` (or `AllowProcessEvents`), start the work
   in one frame and use the result in a later one, and do not assume "the next
   frame": a software adapter can take several.
-- **Compatibility mode is the floor.** Hosts run you on a compatibility-mode
-  device where they can (see "Limits and features"), and Dawn validates its
-  restrictions even on a desktop GPU, so violations show up where you develop.
+- **Compatibility mode is the floor.** Hosts run you on a core device where
+  the GPU has one (see "Limits and features"), which does not enforce the
+  floor's restrictions. Test with `WASMCART_WGPU_FEATURE_LEVEL=compatibility`:
+  Dawn then validates them even on a desktop GPU.
 - **Set a finite `depthClearValue`.** `WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT`
   leaves it NaN, and implementations reject NaN even when the depth load op is
   `Load`.
@@ -322,15 +323,19 @@ What a cart can see today:
 ## Limits and features
 
 The host's device is made with **no required features and default limits**,
-from a **compatibility-mode** adapter (`featureLevel: "compatibility"`) where
-the implementation supports one. A cart can assume the compatibility-mode
-defaults, among them: `maxTextureDimension2D` 4096, `maxColorAttachments` 4,
+from a **core** adapter where the GPU has one, else a **compatibility-mode**
+adapter (`featureLevel: "compatibility"`). Read which with
+`wgpuDeviceHasFeature(device, WGPUFeatureName_CoreFeaturesAndLimits)`. Unless
+that says core, a cart can assume only the compatibility-mode defaults, among
+them: `maxTextureDimension2D` 4096, `maxColorAttachments` 4,
 no storage buffers or storage textures in the vertex stage, one view
 dimension per texture, no cube-array views, the same blend state on every
 colour attachment, and no `sample_mask`. Read the device's actual limits with
-`wgpuDeviceGetLimits`. An implementation without compatibility mode (Firefox,
-for one) gives a core device, whose defaults are higher (8192, 8), but a cart
-must not depend on that.
+`wgpuDeviceGetLimits`. A core device's defaults are higher (8192, 8).
+
+An embedder forces a level with `adapterOptions: { featureLevel }`, and a Node
+host takes `WASMCART_WGPU_FEATURE_LEVEL=core|compatibility`; a forced level
+with no such adapter is refused rather than replaced.
 
 To use more, ask for it (as under "A device the cart requests itself"):
 request the `core-features-and-limits` feature for core WebGPU, or specific
@@ -354,9 +359,10 @@ complete one.
 | `CartHostWeb` (browser, `wasmcart/web`): Chrome / Chromium | the browser's `navigator.gpu` | supported. Tested: Chromium on Linux, RX 7600 |
 | `CartHostWeb`: Firefox | the browser's `navigator.gpu` | **not by default on Linux**: Firefox 157 on Linux has no `navigator.gpu`, so a WebGPU-only cart is refused there with the reason. With `dom.webgpu.enabled` set, the example renders correctly (Firefox 157, Linux, RX 7600). Not tested on Windows, where Firefox ships WebGPU |
 | `CartHostWeb`: Safari | the browser's `navigator.gpu` | **not tested** (Safari 26 ships WebGPU; nobody has run a cart on it yet) |
-| wasmcart-native | native-dawn's `dawn.node` in its embedded Node, when built with `WASMCART_WGPU_JS_DIR` and `NATIVE_DAWN_DIR` | Linux. Tested, RX 7600 |
+| wasmcart-native | native-dawn's `dawn.node` in its embedded Node, when built with `WASMCART_WGPU_JS_DIR` and `NATIVE_DAWN_DIR` | release builds on Linux, macOS and Windows. Tested on Linux, RX 7600 |
 | romdev | wasmcart's `CartHost` | frames, screenshots and debug state; yields between the frames of a stepped burst |
-| wasmcart-android, wasmcart-libretro | built without WebGPU | refuse WebGPU-only carts with the reason; dual carts run on GL |
+| wasmcart-libretro | native-dawn's `dawn.node`, on its own device beside RetroArch's GL context, each frame drawn into RetroArch's framebuffer | Linux release builds (x86_64, aarch64). Its macOS, Windows and Android builds have no WebGPU: they refuse WebGPU-only carts with the reason, and dual carts run on GL |
+| wasmcart-android | built without WebGPU | refuses WebGPU-only carts with the reason; dual carts run on GL |
 
 In Chromium on Linux, WebGPU without `--enable-features=Vulkan` (plus
 `--enable-unsafe-webgpu` where WebGPU is not on by default) silently runs on
@@ -425,7 +431,7 @@ on these hosts):
   should not rely on frame hashes for determinism (SPEC.md, "WebGPU",
   "Determinism").
 - Hosts: Firefox on Linux needs a preference set, Safari is untested, and the
-  Android and libretro hosts have no WebGPU yet.
+  Android host and the libretro core outside Linux have no WebGPU yet.
 
 ## Regenerating the host glue
 

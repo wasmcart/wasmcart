@@ -23,24 +23,33 @@ import { createCartAllocator } from '../cartMemory.js';
 import { createReleaseTracker } from './release.js';
 
 /**
- * The adapter request every host makes for a WebGPU cart. The tier's floor is
- * WebGPU compatibility mode (GLES 3.1 / D3D11 class), so carts run on a
- * compatibility device everywhere: Dawn enforces the restrictions even on a
- * Vulkan adapter (measured), so a cart developed on a desktop GPU cannot
- * quietly depend on core features a GLES-class host lacks. Defold's adapter,
- * three.js WebGPURenderer and the test carts render identically at both
- * levels. An embedder may override it with `adapterOptions`.
+ * The adapter request every host makes for a WebGPU cart: core WebGPU, where
+ * an HDR scene can multisample and a depth texture can be read directly.
+ * requestWgpuAdapter falls back to compatibility mode (GLES 3.1 / D3D11 class),
+ * the tier's floor, when the GPU has no core adapter. A cart must still run on
+ * that floor, so WASMCART_WGPU_FEATURE_LEVEL=compatibility (or the embedder's
+ * `adapterOptions`) forces it: Dawn then enforces the restrictions even on a
+ * Vulkan adapter, which is how a cart is tested against them.
  */
-export const WGPU_ADAPTER_OPTIONS = Object.freeze({ featureLevel: 'compatibility' });
+export const WGPU_ADAPTER_OPTIONS = Object.freeze({ featureLevel: 'core' });
 
 const POWER_PREFERENCES = ['low-power', 'high-performance'];
+const FEATURE_LEVELS = ['core', 'compatibility'];
+
+function featureLevelEnv() {
+  const env = typeof process !== 'undefined' ? process.env?.WASMCART_WGPU_FEATURE_LEVEL : undefined;
+  if (env && !FEATURE_LEVELS.includes(env)) {
+    throw new Error(`WASMCART_WGPU_FEATURE_LEVEL=${env}: expected ${FEATURE_LEVELS.join(' or ')}`);
+  }
+  return env || null;
+}
 
 /**
  * The adapter request for one cart: WGPU_ADAPTER_OPTIONS, then the
- * WASMCART_WGPU_POWER environment variable where there is one (Node hosts:
- * 'low-power' or 'high-performance', which picks the GPU on a machine with
- * two), then the embedder's `adapterOptions`. Host configuration only: a
- * cart cannot see or change it.
+ * WASMCART_WGPU_FEATURE_LEVEL and WASMCART_WGPU_POWER environment variables
+ * where there are any (Node hosts: 'low-power' or 'high-performance' picks the
+ * GPU on a machine with two), then the embedder's `adapterOptions`. Host
+ * configuration only: a cart cannot change it.
  * @param {object} [extra] - the embedder's adapterOptions
  */
 export function wgpuAdapterOptions(extra) {
@@ -48,7 +57,26 @@ export function wgpuAdapterOptions(extra) {
   if (env && !POWER_PREFERENCES.includes(env)) {
     throw new Error(`WASMCART_WGPU_POWER=${env}: expected ${POWER_PREFERENCES.join(' or ')}`);
   }
-  return { ...WGPU_ADAPTER_OPTIONS, ...(env ? { powerPreference: env } : {}), ...extra };
+  const level = featureLevelEnv();
+  return { ...WGPU_ADAPTER_OPTIONS, ...(level ? { featureLevel: level } : {}), ...(env ? { powerPreference: env } : {}), ...extra };
+}
+
+/**
+ * The adapter for one cart and the options that got it: core WebGPU, else
+ * compatibility mode when nobody forced a level (a dual cart would otherwise
+ * fall back to GL, and a WebGPU-only cart be refused, on a GPU that can run it).
+ * @param {object} gpu - navigator.gpu or webgpu-node's GPU
+ * @param {object} [extra] - the embedder's adapterOptions
+ * @returns {Promise<{adapter: object|null, adapterOptions: object}>}
+ */
+export async function requestWgpuAdapter(gpu, extra) {
+  let adapterOptions = wgpuAdapterOptions(extra);
+  let adapter = await gpu.requestAdapter(adapterOptions);
+  if (!adapter && !extra?.featureLevel && !featureLevelEnv()) {
+    adapterOptions = { ...adapterOptions, featureLevel: 'compatibility' };
+    adapter = await gpu.requestAdapter(adapterOptions);
+  }
+  return { adapter, adapterOptions };
 }
 
 /**
@@ -228,8 +256,10 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
     throw new Error(`WebGPU cart imports ${missing.length} function(s) this host's glue (emdawnwebgpu ${manifest.release}) does not provide: ${missing.join(', ')}. Build the cart against emdawnwebgpu ${manifest.release}.`);
   }
 
-  const adapterOpts = wgpuAdapterOptions(adapterOptions);
-  const adapter = givenAdapter || await gpu.requestAdapter(adapterOpts);
+  const requested = givenAdapter ? { adapter: givenAdapter, adapterOptions: wgpuAdapterOptions(adapterOptions) }
+    : await requestWgpuAdapter(gpu, adapterOptions);
+  const adapter = requested.adapter;
+  const adapterOpts = requested.adapterOptions;
   if (!adapter) throw new Error('This host has no WebGPU adapter (check the GPU driver), so it cannot run a WebGPU cart');
   // The host's device has the default features and limits: the tier's
   // floor, which is what emscripten_webgpu_get_device() hands a cart. A cart

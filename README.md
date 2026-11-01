@@ -14,7 +14,7 @@ game once; it runs on all of them, sandboxed.
 
 This repository is the **specification** and its **reference implementations**.
 
-- 📄 **[SPEC.md](SPEC.md)** - the normative host↔cart contract (current ABI: v3)
+- 📄 **[SPEC.md](SPEC.md)** - the normative host↔cart contract (current ABI: v4)
 - 🧩 **[`src/abi.js`](src/abi.js)** - the machine-readable contract (constants, layouts)
 - 🖥️ **[`include/wasmcart.h`](include/wasmcart.h)** - the C ABI header (structs, flags, GL + host imports)
 - 🧰 **[`include/wc_cart.h`](include/wc_cart.h)** - cart boilerplate macros on top of it
@@ -337,7 +337,7 @@ The `manifest.json` inside a `.wasc` archive describes the cart:
 {
   "name": "My Game",
   "version": "1.0.0",
-  "abi": 3,
+  "abi": 4,
   "entry": "cart.wasm",
   "width": 640,
   "height": 480,
@@ -372,9 +372,9 @@ Declare it whenever the cart's resolution is not the host's default, and
 always for a cart whose script picks the resolution at init time.
 `wasmcart pack --width W --height H` writes these fields.
 
-### ABI v3: Networking & Extended Input
+### Networking & Extended Input
 
-ABI v3 adds opt-in features beyond the core framebuffer/audio/gamepad loop:
+Opt-in features beyond the core framebuffer/audio/gamepad loop:
 
 - **Pointer input** (`WC_FLAG_POINTER`) - host writes `wc_pointer_t[10]` state (unified mouse + multitouch) and optionally calls `wc_ptr_on_down`, `wc_ptr_on_move`, `wc_ptr_on_up` exports
 - **Keyboard input** (`WC_FLAG_KEYBOARD`) - host writes `uint8_t[32]` key state bitmask (USB HID scancodes) and optionally calls `wc_kb_on_down`, `wc_kb_on_up` exports
@@ -385,7 +385,9 @@ ABI v3 adds opt-in features beyond the core framebuffer/audio/gamepad loop:
 - **Peer connections** (`"net": {"domains": [...]}`) - cart calls `wc_peer_open`/`send`/`close`; the host delivers events via `wc_peer_on_open`/`on_message`/`on_close`. Only connections the CART opens are allowlisted
 - **Host-supplied peers** (no manifest grant needed) - the host may hand the cart a peer it established itself (data channel, LAN socket, serial link). The cart sees it through the same `wc_peer_*` family and cannot tell which transport it is
 
-All v3 exports are optional - the host silently skips events if the cart doesn't export the callbacks. Existing v2 carts work unchanged.
+All of these exports are optional - the host silently skips events if the cart doesn't export the callbacks.
+
+Hosts refuse a cart whose `wc_info_t.version` is older than ABI v4: v4 moved every field of `wc_pad_t` after `buttons`, so an older cart cannot be read correctly. Rebuild it against the current `wasmcart.h`.
 
 ## GPU ABI
 
@@ -413,7 +415,7 @@ A cart that doesn't use the GPU at all can write pixels directly to a shared-mem
 
 - **2D framebuffer** - ARGB8888 pixel buffer for software-rendered carts (no GL)
 - **WebGL2 GPU** - one GL ABI everywhere. Cart imports WebGL2 functions, host provides them (native GLES3 on Node.js, WebGL2 in browser). Emscripten's GL output works directly.
-- **WebGPU (optional tier)** - `webgpu.h` through Dawn's emdawnwebgpu port, built with Emscripten or with wasi-sdk (threads included, through [`wgpu-wasi/`](wgpu-wasi/README.md)); Node (webgpu-node), browser (Chrome / Chromium; Firefox on Linux only with `dom.webgpu.enabled`; Safari untested) and wasmcart-native (Linux) hosts. libretro and Android hosts refuse WebGPU-only carts for now. A cart importing both GPU APIs runs everywhere.
+- **WebGPU (optional tier)** - `webgpu.h` through Dawn's emdawnwebgpu port, built with Emscripten or with wasi-sdk (threads included, through [`wgpu-wasi/`](wgpu-wasi/README.md)); Node (webgpu-node), browser (Chrome / Chromium; Firefox on Linux only with `dom.webgpu.enabled`; Safari untested), wasmcart-native and, on Linux, wasmcart-libretro hosts. Other libretro builds and the Android host refuse WebGPU-only carts for now. A cart importing both GPU APIs runs everywhere.
 - **Stereo audio** - Float32 or Int16 ring buffer, cart-declared sample rate
 - **Gamepad input** - 4 pads with buttons, analog sticks, triggers (always available)
 - **Pointer input** - unified mouse + touch via shared memory state + event callbacks (opt-in)
@@ -507,7 +509,9 @@ await cart.load('game.wasc', {
                                   // load with the reason; a dual cart runs on GL
   gpu: navigatorGpuLike,          // your own WebGPU implementation (Node)
   gpuGlobals: webgpuGlobals,      // its classes: GPUValidationError, GPUOutOfMemoryError, ... (Node)
-  adapterOptions: { featureLevel: 'core' }, // default is 'compatibility'
+  adapterOptions: { featureLevel: 'compatibility' }, // force a level; WASMCART_WGPU_FEATURE_LEVEL too.
+  // By default a host takes core WebGPU where the GPU has it, else compatibility
+  // mode. A cart must also run on compatibility mode: test it with this.
   // adapterOptions: { powerPreference: 'low-power' } picks the GPU on a
   // two-GPU machine; WASMCART_WGPU_POWER=low-power|high-performance sets the
   // default for every load. cart.getGpuAdapterInfo() says which GPU it got.
@@ -668,7 +672,7 @@ static wc_info_t info;
 
 __attribute__((export_name("wc_get_info")))
 wc_info_t* wc_get_info(void) {
-    info.version = 3;
+    info.version = WC_ABI_VERSION;
     info.width = WIDTH;
     info.height = HEIGHT;
     info.fb_ptr = (uint32_t)(uintptr_t)framebuffer;

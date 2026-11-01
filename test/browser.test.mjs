@@ -837,7 +837,7 @@ const wgpu2 = await page.evaluate(async () => {
   host.destroy();
 
   host = new CartHostWeb();
-  await host.load('/test/fixtures/wgpuedges.wasc');
+  await host.load('/test/fixtures/wgpuedges.wasc', { adapterOptions: { featureLevel: 'compatibility' } }); // the floor: it asks for a device above the host's
   for (let i = 0; i < 8; i++) { host.runFrame([]); await tick(); }
   host.runFrame([]); // frame 9, read in the task that drew it
   const g = await host.readGpuFrame();
