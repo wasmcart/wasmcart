@@ -359,6 +359,16 @@ and `WC_FLAG_KEYBOARD` in the cart's own `wc_info_t` — there are no `"pointer"
 could only ever disagree with it, and the failure was silent: input simply
 stopped arriving. Gamepad input is always available regardless.
 
+A host ignores every field it does not know, so a cart carrying a field from a
+later revision of the SPEC runs on an older host as if the field were absent.
+
+`description`, `author` and `art` are for launchers: what the game is, who
+made it, and its pictures (an icon, box art, key art with no text, a
+transparent logo, the title screen, labelled screenshots), PNG or JPEG files
+the archive carries under `art/`. A launcher can show them without running the
+cart, and none of them changes how the cart runs. Shapes, sizes and how they map
+onto libretro's and ES-DE's art folders: [docs/art.md](docs/art.md).
+
 `net` is the exception, and deliberately so. It is not a restatement of a cart
 flag, it is a *permission* the cart cannot grant itself, so it fails closed: no
 manifest, or no `net` entry, means no network access.
@@ -603,6 +613,10 @@ npx wasmcart-pack --wasm cart.wasm --assets assets/ -o game.wasc --name "My Game
 # Manifest extras: multiplayer, a network grant, an on-screen-controls hint
 npx wasmcart-pack --wasm cart.wasm -o game.wasc --players 4 --ws api.mygame.com
 npx wasmcart-pack --wasm cart.wasm -o game.wasc --controls dpad,a,b,start
+
+# The cart's pictures for launchers (icon, cover, screenshots...), and who made it
+npx wasmcart-pack --wasm cart.wasm --assets assets/ -o game.wasc --art art/ \
+  --description "Sail, trade and fight across a sunlit archipelago." --author "Me"
 # (pointer/keyboard need NO flag: the cart declares WC_FLAG_POINTER /
 #  WC_FLAG_KEYBOARD in its own wc_info_t, and that is the only gate)
 ```
@@ -623,7 +637,8 @@ with no flag). `--source` resolves the wasm through the manifest's own
 All flags: `--wasm`, `--assets`, `--source`, `--output`/`-o`, `--name`,
 `--version` (flag form only; a `--source` manifest's own version wins),
 `--width`/`--height`, `--players`, `--controls` (comma-separated or
-repeatable), `--ws`/`--websocket` (repeatable). Bare positional arguments are
+repeatable), `--art <dir>`, `--description`, `--author`, `--files`,
+`--ws`/`--websocket` (repeatable). Bare positional arguments are
 taken as the wasm path, then the output path. `--pointer`, `--keyboard`, and
 `--data-channel` are accepted, warning no-ops from the double-gate era.
 
@@ -769,7 +784,7 @@ shipping its `.wasc` as a Release artifact:
 ## Documentation
 
 - **[SPEC.md](SPEC.md)** - the normative specification
-- **[`docs/`](docs/)** - per-subsystem guides: [input](docs/input.md), [networking](docs/networking.md), [GL surface](docs/gl-surface.md), [framebuffer](docs/bind_framebuffer.md), [fetch](docs/fetch.md), [porting](docs/porting.md)
+- **[`docs/`](docs/)** - per-subsystem guides: [input](docs/input.md), [networking](docs/networking.md), [GL surface](docs/gl-surface.md), [framebuffer](docs/bind_framebuffer.md), [fetch](docs/fetch.md), [porting](docs/porting.md), [art](docs/art.md)
 - **[`include/`](include/)** - C headers for cart authors (`wc_cart.h` is the contract; `wc_fb.h`/`wc_gl.h`/math/mixer are a lightweight SDK)
 
 ## Vendored headers

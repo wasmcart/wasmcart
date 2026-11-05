@@ -16,6 +16,10 @@
  *     manifest instead, which cannot express a cart whose manifest already
  *     says something specific.
  *
+ *   --art <dir>  add the cart's pictures for launchers (SPEC: manifest 'art'):
+ *     icon, cover, background, logo, title and screenshots, by file name or by
+ *     the dir's art.json. They go in the archive under art/, outside the assets.
+ *
  *   --files  also record the asset list in the manifest (optional `files`), so
  *     the archive can be unzipped and served as a cart DIRECTORY on the web,
  *     where _filelist.txt has no other source. A .wasc itself never needs it.
@@ -23,6 +27,7 @@
 
 import { createWriteStream, readFileSync, statSync, readdirSync } from 'fs';
 import { resolve, relative, join, basename, extname } from 'path';
+import { readArtDir, describeArtProblems } from '../src/cartArt.js';
 import { ZipFile } from 'yazl';
 import { ABI_VERSION } from '../src/abi.js';
 
@@ -43,6 +48,9 @@ let usePointer = false;
 let useKeyboard = false;
 let controls = null;   // array of pad-subset tokens (SPEC: manifest 'controls')
 let writeFiles = false; // --files: record the asset list (SPEC: manifest 'files')
+let artDir = null;      // --art: the cart's pictures (SPEC: manifest 'art')
+let description = null;
+let author = null;
 
 for (let i = 0; i < args.length; i++) {
   switch (args[i]) {
@@ -94,6 +102,15 @@ for (let i = 0; i < args.length; i++) {
       break;
     case '--files':
       writeFiles = true;
+      break;
+    case '--art':
+      artDir = resolve(args[++i]);
+      break;
+    case '--description':
+      description = args[++i];
+      break;
+    case '--author':
+      author = args[++i];
       break;
     case '--help':
     case '-h':
@@ -264,6 +281,27 @@ if (!sourceManifest && assetsDir) {
   manifest.assets = 'assets/';
 }
 
+if (description !== null) {
+  if (description.length > 300) console.warn(`wasmcart-pack: --description is ${description.length} characters; hosts may cut it after 300`);
+  manifest.description = description;
+}
+if (author !== null) manifest.author = author;
+
+// --art: the pictures a launcher shows (SPEC: manifest 'art'). Advisory: a
+// file that is not a PNG or JPEG is an error (it can only be a mistake), a
+// picture of the wrong shape or size only warns.
+let art = null;
+if (artDir) {
+  try {
+    art = readArtDir(artDir);
+  } catch (e) {
+    console.error(`Error: --art ${artDir}: ${e.message}`);
+    process.exit(1);
+  }
+  for (const w of art.warnings) console.warn(`wasmcart-pack: ${w}`);
+  manifest.art = art.manifest;
+}
+
 // A cart's own resolution, declared up front. A host sizes its window -- and
 // a self-provisioned GL context -- before the cart runs, so without this a
 // 1600x900 game gets a 640x480 context and renders into a corner of it.
@@ -335,6 +373,16 @@ zipfile.addFile(wasmPath, 'cart.wasm', {
   compress: wasmSize > WASM_COMPRESS_THRESHOLD,
 });
 
+// Add the art, under art/ (outside the asset prefix: the cart never loads it)
+if (art) {
+  for (const { fullPath, zipPath } of art.files) zipfile.addFile(fullPath, zipPath, { compress: false });
+} else if (sourceManifest && sourceManifest.art) {
+  // a --source tree's own art: the files pack with the tree below; say which are missing
+  for (const w of describeArtProblems(sourceManifest.art, (p) => { try { return readFileSync(join(sourceDir, p)); } catch { return null; } })) {
+    console.warn(`wasmcart-pack: ${w}`);
+  }
+}
+
 // Add asset files
 let assetCount = 0;
 let assetBytes = 0;
@@ -383,6 +431,10 @@ outputStream.on('close', () => {
   if (assetCount > 0) {
     console.log(`  Assets: ${assetCount} files, ${formatSize(assetBytes)} (uncompressed)`);
   }
+  if (art) {
+    const bytes = art.files.reduce((n, f) => n + statSync(f.fullPath).size, 0);
+    console.log(`  Art:    ${art.files.length} files, ${formatSize(bytes)}`);
+  }
   console.log(`  Total:  ${formatSize(outSize)}`);
 });
 
@@ -412,6 +464,11 @@ function printUsage() {
   console.log(`  --controls <list>  Comma-separated pad subset the game reads (advisory`);
   console.log(`                     hint for hosts drawing on-screen touch controls, e.g.`);
   console.log(`                     dpad,a,b,start; repeatable; omit for the retro default)`);
+  console.log(`  --art <dir>        The cart's pictures for launchers: icon, cover, background,`);
+  console.log(`                     logo, title (.png/.jpg) and screenshot*.png, or the dir's`);
+  console.log(`                     art.json naming them, with screenshot labels`);
+  console.log(`  --description <t>  What the game is, a sentence or two (under 300 characters)`);
+  console.log(`  --author <name>    Who made it, as it should be credited`);
   console.log(`  --files            Record the asset list in the manifest (optional; lets the`);
   console.log(`                     unzipped cart be served as a directory on the web)`);
   console.log(`  --ws <domain>      Allow WebSocket to domain (repeatable)`);
@@ -424,6 +481,7 @@ function printUsage() {
   console.log(`  manifest.json    Metadata (name, version, ABI, entry point)`);
   console.log(`  cart.wasm        The compiled cart (code only)`);
   console.log(`  assets/          Game assets (textures, levels, audio, etc.)`);
+  console.log(`  art/             The cart's pictures for launchers (optional)`);
   console.log(``);
   console.log(`Examples:`);
   console.log(`  wasmcart-pack --wasm build/cart.wasm --assets assets/ -o game.wasc`);

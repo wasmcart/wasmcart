@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.38.0
+
+**Carts can carry their own art.** Three new optional manifest fields, for launchers: `description`, `author` and `art`,
+the cart's pictures (an icon, box art, key art with no text, a transparent logo, the title screen and labelled
+screenshots), PNG or JPEG files the archive carries under `art/`. A launcher can show them without running the cart, and
+none of them changes how the cart runs: a host never refuses or alters a cart over its art. `wasmcart-pack --art <dir>`
+packs them (files named for their key, or an `art.json` naming them and labelling screenshots), with `--description` and
+`--author`; it stops on a file that is not a PNG or JPEG and warns about a picture of the wrong shape. SPEC.md,
+"Manifest", defines the fields; [docs/art.md](docs/art.md) has the shapes, sizes and the mapping onto libretro's and
+ES-DE's art folders. `src/cartArt.js` holds the checks for hosts.
+
+**Hosts ignore manifest fields they do not know.** The SPEC now requires it of every field (it said so only for
+`controls` tokens), so a cart with a field from a later revision runs on an older host as if the field were absent. Every
+host already behaved this way; nothing changes for an existing cart.
+
 ## 0.37.0
 
 **WebGPU carts get a core device where the GPU has one.** `CartHost` and `CartHostWeb` now ask for a core adapter and fall

@@ -86,7 +86,16 @@ So the manifest carries only what the cart cannot state for itself:
   would defeat the point of having one.
 - **Presentation hints** a launcher wants before instantiation, like
   `width`/`height` (see Resolution) — advisory, never binding.
-- **Human metadata**: `name`, `version`.
+- **Human metadata**: `name`, `version`, `description`, `author`, and
+  the cart's `art` (its icon, cover, screenshots: see below) for a launcher
+  to show before the cart runs.
+
+**A host MUST ignore any manifest field it does not know, and any unknown key
+inside an object it does know** (`net`, `art`, a screenshot entry). Every
+field is optional, so a cart that carries a field from a later revision runs on
+an earlier host exactly as if the field were absent, and a cart without it runs
+on a later host unchanged. A packer MAY warn about a field it does not know
+(likely a typo) but MUST NOT refuse to pack it.
 
 ```json
 {
@@ -147,6 +156,60 @@ So the manifest carries only what the cart cannot state for itself:
   loading a local directory whose `files` disagrees with the directory SHOULD
   warn, naming the files: a stale list only fails once deployed, as files that
   load by name but are missing from the listing.
+
+**`description`** (string, optional)
+- What the game is, in a sentence or two of plain text, for a launcher's
+  details pane. Keep it under 300 characters; a host MAY cut a longer one.
+
+**`author`** (string, optional)
+- Who made the cart: a person, a team or a studio, as it should be credited.
+
+**`art`** (object, optional)
+- Pictures of the cart for a launcher, a library or a frontend to show before
+  or without running it: the icon on a home screen, the cover in a grid, the
+  screenshots in a details pane. A **presentation hint** in the same class as
+  `width`/`height` and `controls`: advisory, never binding, never gating.
+- Each value is a path relative to the archive's root, validated like
+  `entry` (no absolute path, no `..`), to a **PNG or JPEG** file in the
+  archive. Put them under `art/`, outside the asset prefix: the cart never
+  loads them, and they stay out of `_filelist.txt`.
+- A host MUST NOT refuse, delay or change a cart because its art is missing,
+  unreadable or the wrong size; it SHOULD fall back to what it shows without
+  art (the name). A host that shows art reads it from the archive without
+  instantiating the cart.
+- Keys (all optional; unknown keys are ignored):
+
+| key | what it is | shape | at least |
+|---|---|---|---|
+| `icon` | the app icon on a home screen or in a list | square; PNG may be transparent; keep the subject inside the centred circle of 80% of the width, since a host may mask it to a circle or a rounded square | 256 x 256 (512 recommended) |
+| `cover` | box art: the game's picture with its name on it | portrait 2:3 | 600 x 900 |
+| `background` | key art with **no text**, for a launcher to draw the name or the `logo` over | landscape 16:9 | 1920 x 1080 |
+| `logo` | the game's name as the game draws it, on a **transparent** background | PNG, wider than tall | 1280 wide or 720 tall |
+| `title` | the title screen, as the game shows it | the cart's own aspect, usually 16:9 | the cart's resolution |
+| `screenshots` | an array of `{ "path": ..., "label": ... }`: play as the game shows it; the first is the one to show when there is room for only one; `label` is a short description for screen readers and captions | the cart's own aspect | the cart's resolution |
+
+```json
+"art": {
+  "icon": "art/icon.png",
+  "cover": "art/cover.jpg",
+  "background": "art/background.jpg",
+  "logo": "art/logo.png",
+  "title": "art/title.png",
+  "screenshots": [
+    { "path": "art/shot-1.png", "label": "Three ships trading broadsides at dusk" }
+  ]
+}
+```
+
+- JPEG suits the large, painted pictures (`cover`, `background`); PNG suits
+  the icon, the logo (it needs transparency) and screenshots of flat art.
+- Frontends that keep art in folders by game name map onto these keys:
+  libretro's thumbnails take `cover` as `Named_Boxarts`, the first
+  screenshot as `Named_Snaps` and `title` as `Named_Titles`; ES-DE's media
+  folders take `cover` as `covers`, `screenshots` as `screenshots`,
+  `title` as `titlescreens`, `logo` as `marquees` and `background` as
+  `fanart`.
+- `wasmcart-pack --art <dir>` writes it (see the README).
 
 **`pointer`** / **`keyboard`** — **REMOVED.** These were the double gate
 described above: the cart set `WC_FLAG_POINTER`/`WC_FLAG_KEYBOARD` and the
