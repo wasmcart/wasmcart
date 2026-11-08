@@ -608,7 +608,7 @@ Create `.wasc` archives from a `.wasm` file and an assets directory:
 
 ```bash
 npx wasmcart-pack --wasm cart.wasm --assets assets/ -o game.wasc
-npx wasmcart-pack --wasm cart.wasm --assets assets/ -o game.wasc --name "My Game" --version "1.0"
+npx wasmcart-pack --wasm cart.wasm --assets assets/ -o game.wasc --name "My Game" --version 1.2.0
 
 # Manifest extras: multiplayer, a network grant, an on-screen-controls hint
 npx wasmcart-pack --wasm cart.wasm -o game.wasc --players 4 --ws api.mygame.com
@@ -632,10 +632,40 @@ The flag form above *generates* a manifest, so it cannot express a cart whose
 manifest already says something specific (a custom `assets` root, a field
 with no flag). `--source` resolves the wasm through the manifest's own
 `entry`, packs every other file at its original path, and rewrites only
-`entry` to the archive's `cart.wasm`.
+`entry` to the archive's `cart.wasm` and `version` to the cart's version
+(below).
+
+#### The version
+
+Every cart's manifest carries a `version`, and without `--version` the packer
+works it out from the git checkout the cart is packed from (the `--source`
+directory, else the wasm's directory, the assets directory, then the working
+directory), by the same rule as cartwheel's build:
+
+| The checkout | The cart's `version` |
+|---|---|
+| at a `v1.4.2` tag, no changes to tracked files | `1.4.2` |
+| at that tag with a tracked file changed | `1.4.2-dev.g1a2b3c4` |
+| any commit after the last tag | `1.4.2-dev.g1a2b3c4` (the commit) |
+| no tag yet | `0.0.0-dev.g1a2b3c4` |
+| not a git checkout | a `--source` manifest's own `version`, else `0.1.0` |
+
+So a build at a release tag is the release, and any other build says it is a
+dev build. Tags are `v` plus semver (`v1.4.2`, `v2.0.0-rc.1`); a tag of another
+shape is ignored. `--version` wins over all of it, `--source` included (a
+`--source` manifest's `version` is only a placeholder while git can say
+better). Every version must be semver (`MAJOR.MINOR.PATCH`, optionally
+`-prerelease` and `+build`): the packer stops on `1.0` or `v1.0.0` rather
+than pack it. A project with its own version file (`package.json`,
+`Cargo.toml`) passes that with `--version`.
+
+A CI checkout must have the tags: a tag push checks the tag out, but a shallow
+clone of a branch has none, so its carts say `0.0.0-dev.g<commit>` unless the
+checkout fetches them (`fetch-depth: 0` in `actions/checkout`). A release job
+can check the result by reading `version` from the `.wasc`'s `manifest.json`.
 
 All flags: `--wasm`, `--assets`, `--source`, `--output`/`-o`, `--name`,
-`--version` (flag form only; a `--source` manifest's own version wins),
+`--version` (wins in both forms; default from git, above),
 `--width`/`--height`, `--players`, `--controls` (comma-separated or
 repeatable), `--art <dir>`, `--description`, `--author`, `--files`,
 `--ws`/`--websocket` (repeatable). Bare positional arguments are

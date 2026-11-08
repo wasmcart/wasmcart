@@ -69,11 +69,11 @@ test('--source packs a dev directory, keeping its manifest verbatim', async () =
     }));
 
     const out = join(tmp, 'out.wasc');
-    execFileSync(process.execPath, [PACK, '--source', dir, '--output', out]);
+    execFileSync(process.execPath, [PACK, '--source', dir, '--output', out], { cwd: tmp });
 
     const packed = unzipSync(new Uint8Array(readFileSync(out)));
     const m = JSON.parse(new TextDecoder().decode(packed['manifest.json']));
-    assert.equal(m.version, '2.0.0', 'version kept');
+    assert.equal(m.version, '2.0.0', 'outside git, the manifest\'s own version is kept');
     assert.equal(m.assets, 'app/', 'assets root kept');
     assert.equal(m.pointer, true, 'flagless field kept');
     assert.equal(m.entry, 'cart.wasm', 'entry renamed to the archive name');
@@ -119,6 +119,124 @@ test('an assets root without a trailing slash still resolves', async () => {
     assert.ok(host._assetIndex.has('note.txt'),
       `asset prefix not stripped: index has ${[...host._assetIndex.keys()].join(', ')}`);
     host.destroy();
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---- the cart's version (src/cartVersion.js) ----
+//
+// Without --version the version comes from the git checkout the cart is
+// packed from, by the same rule as cartwheel's cw_add_app: a clean v<semver>
+// tag gives the tag, anything else <last tag>-dev.g<commit>.
+
+function git(dir, ...a) {
+  return execFileSync('git', ['-C', dir, '-c', 'user.email=t@example.com', '-c', 'user.name=t',
+    '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...a], { encoding: 'utf8' }).trim();
+}
+
+/** a git repo holding a cart.wasm and a --source tree whose manifest says 1.0.0 */
+function cartRepo(tmp) {
+  const repo = join(tmp, 'repo');
+  mkdirSync(join(repo, 'src'), { recursive: true });
+  const wasm = unzipSync(new Uint8Array(readFileSync(HELLO_WASC)))['cart.wasm'];
+  writeFileSync(join(repo, 'cart.wasm'), Buffer.from(wasm));
+  writeFileSync(join(repo, 'src', 'main.wasm'), Buffer.from(wasm));
+  writeFileSync(join(repo, 'src', 'manifest.json'), JSON.stringify({ name: 'g', version: '1.0.0', abi: 4, entry: 'main.wasm' }));
+  writeFileSync(join(repo, 'notes.txt'), 'a');
+  git(repo, 'init', '-q');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-q', '-m', 'one');
+  return repo;
+}
+
+function packVersion(tmp, args) {
+  const out = join(tmp, 'v.wasc');
+  rmSync(out, { force: true });
+  execFileSync(process.execPath, [PACK, ...args, '--output', out], { cwd: tmp, stdio: 'pipe' });
+  return JSON.parse(new TextDecoder().decode(unzipSync(new Uint8Array(readFileSync(out)))['manifest.json'])).version;
+}
+
+function packFails(tmp, args) {
+  try {
+    execFileSync(process.execPath, [PACK, ...args, '--output', join(tmp, 'bad.wasc')], { cwd: tmp, stdio: 'pipe' });
+  } catch (e) {
+    return String(e.stderr);
+  }
+  assert.fail(`packed with ${args.join(' ')}; expected it to refuse`);
+}
+
+test('no --version: the git rule (untagged, tagged, dirty, past the tag)', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'wc-ver-'));
+  try {
+    const repo = cartRepo(tmp);
+    const wasm = join(repo, 'cart.wasm');
+    const sha = () => git(repo, 'rev-parse', '--short=7', 'HEAD');
+
+    assert.equal(packVersion(tmp, ['--wasm', wasm]), `0.0.0-dev.g${sha()}`, 'no tag yet');
+
+    git(repo, 'tag', 'v1.4.2');
+    assert.equal(packVersion(tmp, ['--wasm', wasm]), '1.4.2', 'clean at the tag');
+
+    git(repo, 'tag', 'release-candidate');            // not v<semver>: ignored
+    git(repo, 'tag', 'v1.4');                         // not semver: ignored
+    assert.equal(packVersion(tmp, ['--wasm', wasm]), '1.4.2', 'other tags ignored');
+
+    writeFileSync(join(repo, 'untracked.txt'), 'x');  // untracked files do not count
+    assert.equal(packVersion(tmp, ['--wasm', wasm]), '1.4.2', 'untracked file ignored');
+
+    writeFileSync(join(repo, 'notes.txt'), 'b');      // a tracked change does
+    assert.equal(packVersion(tmp, ['--wasm', wasm]), `1.4.2-dev.g${sha()}`, 'tracked change at the tag');
+
+    git(repo, 'commit', '-q', '-am', 'two');
+    assert.equal(packVersion(tmp, ['--wasm', wasm]), `1.4.2-dev.g${sha()}`, 'a commit past the tag');
+
+    assert.equal(packVersion(tmp, ['--wasm', wasm, '--version', '3.0.0-rc.1']), '3.0.0-rc.1', '--version wins');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('no --version outside git: 0.1.0, not the 1.0.0 every cart used to claim', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'wc-ver-'));
+  try {
+    const wasm = join(tmp, 'cart.wasm');
+    writeFileSync(wasm, Buffer.from(unzipSync(new Uint8Array(readFileSync(HELLO_WASC)))['cart.wasm']));
+    assert.equal(packVersion(tmp, ['--wasm', wasm]), '0.1.0');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('--source: --version wins over the manifest, and git over a placeholder', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'wc-ver-'));
+  try {
+    const repo = cartRepo(tmp);
+    const src = join(repo, 'src');
+    git(repo, 'tag', 'v2.3.4');
+    // The tree's manifest says 1.0.0; that was copied verbatim, so every
+    // build of the tree, release or not, called itself 1.0.0.
+    assert.equal(packVersion(tmp, ['--source', src]), '2.3.4', 'git over the manifest');
+    assert.equal(packVersion(tmp, ['--source', src, '--version', '5.0.0']), '5.0.0', '--version over both');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('a version that is not semver stops the pack', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'wc-ver-'));
+  try {
+    const wasm = join(tmp, 'cart.wasm');
+    writeFileSync(wasm, Buffer.from(unzipSync(new Uint8Array(readFileSync(HELLO_WASC)))['cart.wasm']));
+    for (const v of ['1.0', 'v1.0.0', '1.0.0-01', 'latest', '']) {
+      assert.match(packFails(tmp, ['--wasm', wasm, '--version', v]), /is not semver/, `--version "${v}"`);
+    }
+    // a --source manifest's own version is checked too (outside git it is the one used)
+    const dir = join(tmp, 'game');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'cart.wasm'), readFileSync(wasm));
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ name: 'g', version: '1.0', abi: 4 }));
+    assert.match(packFails(tmp, ['--source', dir]), /"1\.0" \(fallback\) is not semver/);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

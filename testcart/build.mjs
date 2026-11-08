@@ -6,12 +6,14 @@
 // loops back into strlen/memset calls, and bulk memory makes the block clears
 // memory.fill.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+// The test cart ships in the npm package, so it carries the package's version.
+const { version } = JSON.parse(readFileSync(join(HERE, '..', 'package.json'), 'utf8'));
 const work = mkdtempSync(join(tmpdir(), 'testcart-build-'));
 const wasm = join(work, 'cart.wasm');
 try {
@@ -20,7 +22,7 @@ try {
     '-Wl,--no-entry', '-Wl,--export=__indirect_function_table', join(HERE, 'testcart.c'), '-o', wasm],
     { stdio: 'inherit' });
   execFileSync(process.execPath, [join(HERE, '..', 'bin', 'wasmcart-pack.js'), '--wasm', wasm,
-    '--name', 'wasmcart test cart', '--width', '640', '--height', '360', '--players', '4',
+    '--name', 'wasmcart test cart', '--version', version, '--width', '640', '--height', '360', '--players', '4',
     '--controls', 'dpad,a,b,x,y,l,r,start,select,left_stick,right_stick,left_trigger,right_trigger,l3,r3',
     '-o', join(HERE, 'testcart.wasc')], { stdio: 'inherit' });
 } finally {

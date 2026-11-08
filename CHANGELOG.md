@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.39.0
+
+**Every packed cart carries its real version.** `wasmcart-pack` without `--version` used to write `1.0.0` into every
+manifest; it now takes the version from the git checkout the cart is packed from, by the same rule as cartwheel's build:
+at a clean `v<semver>` tag the tag (`v1.4.2` gives `1.4.2`), anywhere else `<last tag>-dev.g<commit>`, and
+`0.0.0-dev.g<commit>` before the first tag, so a dev build is never taken for a release. Outside git it is a `--source`
+manifest's own version, else `0.1.0`. The README's "The version" section has the table, and what a CI checkout needs
+(`fetch-depth: 0`).
+
+**`--version` wins in `--source` mode too.** `--source` copied the tree's manifest verbatim, version included, and
+ignored `--version`, so a tree that committed `"version": "1.0.0"` packed as `1.0.0` whatever was asked. The explicit
+flag now wins, and without it the git version replaces the tree's placeholder.
+
+**A version that is not semver stops the pack** (`1.0`, `v1.0.0`, `1.0.0-01`), from `--version` or from a `--source`
+manifest, instead of reaching launchers that compare versions as semver.
+
+`resolveCartVersion`, `gitVersion` and `semverProblem` are exported (Node entry) for build tools that want the same rule.
+The test cart carries the package's version (0.39.0), and `examples/webgpu-hello` its checkout's; their code is
+unchanged.
+
 ## 0.38.0
 
 **Carts can carry their own art.** Three new optional manifest fields, for launchers: `description`, `author` and `art`,

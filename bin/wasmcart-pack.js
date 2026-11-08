@@ -20,14 +20,23 @@
  *     icon, cover, background, logo, title and screenshots, by file name or by
  *     the dir's art.json. They go in the archive under art/, outside the assets.
  *
+ *   --version <semver>  the cart's version. Without it the version comes from
+ *     the git checkout holding the source (the --source dir, else the wasm's
+ *     dir, the assets dir, then the working directory): the tag at a clean
+ *     v<semver> tag, else <last tag>-dev.g<commit> (0.0.0-dev.g<commit> before
+ *     the first tag); outside git, a --source manifest's own version, else
+ *     0.1.0. A version that is not semver stops the pack. Same rule as
+ *     cartwheel's cw_add_app.
+ *
  *   --files  also record the asset list in the manifest (optional `files`), so
  *     the archive can be unzipped and served as a cart DIRECTORY on the web,
  *     where _filelist.txt has no other source. A .wasc itself never needs it.
  */
 
 import { createWriteStream, readFileSync, statSync, readdirSync } from 'fs';
-import { resolve, relative, join, basename, extname } from 'path';
+import { resolve, relative, join, basename, extname, dirname } from 'path';
 import { readArtDir, describeArtProblems } from '../src/cartArt.js';
+import { resolveCartVersion } from '../src/cartVersion.js';
 import { ZipFile } from 'yazl';
 import { ABI_VERSION } from '../src/abi.js';
 
@@ -40,7 +49,7 @@ let cartWidth = 0;
 let cartHeight = 0;
 let outputPath = null;
 let gameName = null;
-let gameVersion = '1.0.0';
+let gameVersion = null;  // --version; else the git rule (src/cartVersion.js)
 let players = null;
 let netWebsocket = null;  // array of domain strings
 let netDataChannel = false;
@@ -220,12 +229,29 @@ if (netWebsocket) {
   }
 }
 
-// Build manifest. In --source mode the cart's own manifest wins outright:
-// rewriting it would defeat the purpose, and it may carry fields this CLI has
-// no flag for.
+// The version: --version, else the git checkout the cart is packed from, else
+// (outside git) a --source manifest's own version, else 0.1.0. A --source
+// manifest's version is a placeholder as soon as git can say better: a tree
+// that commits "1.0.0" would otherwise pack every build, release or not, as
+// 1.0.0. Anything that is not semver stops here rather than reaching a
+// launcher that compares versions.
+const versionInfo = resolveCartVersion({
+  set: gameVersion,
+  dirs: [sourceDir, dirname(wasmPath), assetsDir, process.cwd()],
+  fallback: sourceManifest ? sourceManifest.version : null,
+});
+if (versionInfo.error) {
+  console.error(`Error: ${versionInfo.error}`);
+  process.exit(1);
+}
+
+// Build manifest. In --source mode the cart's own manifest is kept, except
+// for the version (above), the entry and the fields a flag sets: rewriting
+// the rest would defeat the purpose, and it may carry fields this CLI has no
+// flag for.
 const manifest = sourceManifest ? { ...sourceManifest } : {
   name: gameName,
-  version: gameVersion,
+  version: versionInfo.version,
   // From the constant, not a literal: this was pinned at 3 and kept emitting
   // 3 after the ABI moved to 4, so freshly packed carts described themselves
   // with the previous version.
@@ -234,6 +260,7 @@ const manifest = sourceManifest ? { ...sourceManifest } : {
 };
 if (sourceManifest) {
   if (gameName) manifest.name = gameName;
+  manifest.version = versionInfo.version;
   manifest.entry = 'cart.wasm';   // the entry is renamed inside the archive
 }
 
@@ -427,6 +454,7 @@ outputStream.on('close', () => {
   const wasmSize = statSync(wasmPath).size;
 
   console.log(`Created: ${outputPath}`);
+  console.log(`  Version: ${versionInfo.version}${versionInfo.from === 'set' ? '' : ` (${versionInfo.from.replace(/^git .*/, 'git')})`}`);
   console.log(`  WASM:   ${formatSize(wasmSize)}`);
   if (assetCount > 0) {
     console.log(`  Assets: ${assetCount} files, ${formatSize(assetBytes)} (uncompressed)`);
@@ -457,7 +485,9 @@ function printUsage() {
   console.log(`  --assets <dir>     Directory of assets to include`);
   console.log(`  --output, -o       Output .wasc file path (default: <name>.wasc)`);
   console.log(`  --name <name>      Game name for manifest (default: wasm filename)`);
-  console.log(`  --version <ver>    Game version for manifest (default: 1.0.0)`);
+  console.log(`  --version <semver> Cart version for the manifest (default: from git: the tag`);
+  console.log(`                     at a clean v<semver> tag, else <last tag>-dev.g<commit>;`);
+  console.log(`                     outside git a --source manifest's version, else 0.1.0)`);
   console.log(`  --width <px>       Cart resolution width (hosts size their window to it)`);
   console.log(`  --height <px>      Cart resolution height`);
   console.log(`  --players <n>      Number of local players (1-4, default: 1)`);
