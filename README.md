@@ -657,7 +657,9 @@ shape is ignored. `--version` wins over all of it, `--source` included (a
 better). Every version must be semver (`MAJOR.MINOR.PATCH`, optionally
 `-prerelease` and `+build`): the packer stops on `1.0` or `v1.0.0` rather
 than pack it. A project with its own version file (`package.json`,
-`Cargo.toml`) passes that with `--version`.
+`Cargo.toml`) passes that with `--version`. An SDK that packs a game from a
+staging copy, with its own runtime as the wasm, passes
+`--version-from <game dir>` so the version is the game's, not the SDK's.
 
 A CI checkout must have the tags: a tag push checks the tag out, but a shallow
 clone of a branch has none, so its carts say `0.0.0-dev.g<commit>` unless the
@@ -665,7 +667,7 @@ checkout fetches them (`fetch-depth: 0` in `actions/checkout`). A release job
 can check the result by reading `version` from the `.wasc`'s `manifest.json`.
 
 All flags: `--wasm`, `--assets`, `--source`, `--output`/`-o`, `--name`,
-`--version` (wins in both forms; default from git, above),
+`--version` (wins in both forms; default from git, above), `--version-from`,
 `--width`/`--height`, `--players`, `--controls` (comma-separated or
 repeatable), `--art <dir>`, `--description`, `--author`, `--files`,
 `--ws`/`--websocket` (repeatable). Bare positional arguments are

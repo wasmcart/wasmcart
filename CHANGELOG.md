@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.40.0
+
+**`wasmcart-pack --version-from <dir>`** reads the cart's git version from that directory's checkout and no other. A
+language SDK packs its own runtime wasm with a staging copy of the game, so without it the version came from the SDK's
+checkout instead of the game's. Outside git it gives the default (`0.1.0`), never another checkout's version;
+`--version` still wins over it. The test cart carries 0.40.0.
+
 ## 0.39.1
 
 **A dev build counts from the nearest version tag, not the highest.** A fork keeps its upstream's tags beside its own,

@@ -28,6 +28,10 @@
  *     0.1.0. A version that is not semver stops the pack. Same rule as
  *     cartwheel's cw_add_app.
  *
+ *   --version-from <dir>  read the git version from this directory's checkout
+ *     instead (an SDK that packs a game's files from a staging copy points it
+ *     at the game).
+ *
  *   --files  also record the asset list in the manifest (optional `files`), so
  *     the archive can be unzipped and served as a cart DIRECTORY on the web,
  *     where _filelist.txt has no other source. A .wasc itself never needs it.
@@ -50,6 +54,7 @@ let cartHeight = 0;
 let outputPath = null;
 let gameName = null;
 let gameVersion = null;  // --version; else the git rule (src/cartVersion.js)
+let versionFrom = null;  // --version-from: the checkout the git rule reads
 let players = null;
 let netWebsocket = null;  // array of domain strings
 let netDataChannel = false;
@@ -87,6 +92,9 @@ for (let i = 0; i < args.length; i++) {
       break;
     case '--version':
       gameVersion = args[++i];
+      break;
+    case '--version-from':
+      versionFrom = resolve(args[++i]);
       break;
     case '--players':
       players = parseInt(args[++i], 10);
@@ -237,7 +245,10 @@ if (netWebsocket) {
 // launcher that compares versions.
 const versionInfo = resolveCartVersion({
   set: gameVersion,
-  dirs: [sourceDir, dirname(wasmPath), assetsDir, process.cwd()],
+  // --version-from names the one checkout to read: an SDK packing a game from
+  // its own runtime's directory (the wasm) and a staging copy (the assets)
+  // would otherwise read the SDK's version, not the game's.
+  dirs: versionFrom ? [versionFrom] : [sourceDir, dirname(wasmPath), assetsDir, process.cwd()],
   fallback: sourceManifest ? sourceManifest.version : null,
 });
 if (versionInfo.error) {
@@ -488,6 +499,8 @@ function printUsage() {
   console.log(`  --version <semver> Cart version for the manifest (default: from git: the tag`);
   console.log(`                     at a clean v<semver> tag, else <last tag>-dev.g<commit>;`);
   console.log(`                     outside git a --source manifest's version, else 0.1.0)`);
+  console.log(`  --version-from <d> Read that version from <d>'s git checkout (a game packed`);
+  console.log(`                     from a staging copy: point it at the game)`);
   console.log(`  --width <px>       Cart resolution width (hosts size their window to it)`);
   console.log(`  --height <px>      Cart resolution height`);
   console.log(`  --players <n>      Number of local players (1-4, default: 1)`);

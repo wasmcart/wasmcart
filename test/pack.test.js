@@ -207,6 +207,30 @@ test('no --version: the git rule (untagged, tagged, dirty, past the tag)', () =>
   }
 });
 
+test('--version-from reads the named checkout, not the wasm\'s', () => {
+  // An SDK packs its own runtime wasm with a staging copy of the game, so the
+  // wasm's checkout is the SDK's; the game's version is in the game's.
+  const tmp = mkdtempSync(join(tmpdir(), 'wc-ver-'));
+  try {
+    const sdk = cartRepo(tmp);                        // the runtime's checkout, tagged v9.0.0
+    git(sdk, 'tag', 'v9.0.0');
+    const game = join(tmp, 'game');
+    mkdirSync(game);
+    writeFileSync(join(game, 'main.lua'), 'x');
+    git(game, 'init', '-q');
+    git(game, 'add', '.');
+    git(game, 'commit', '-q', '-m', 'game');
+    git(game, 'tag', 'v1.3.0');
+    const wasm = join(sdk, 'cart.wasm');
+    assert.equal(packVersion(tmp, ['--wasm', wasm]), '9.0.0', 'without it, the wasm\'s checkout');
+    assert.equal(packVersion(tmp, ['--wasm', wasm, '--version-from', game]), '1.3.0', 'the game\'s checkout');
+    assert.equal(packVersion(tmp, ['--wasm', wasm, '--version-from', tmp]), '0.1.0', 'not a checkout: the default, never the wasm\'s');
+    assert.equal(packVersion(tmp, ['--wasm', wasm, '--version-from', game, '--version', '2.0.0']), '2.0.0', '--version still wins');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('no --version outside git: 0.1.0, not the 1.0.0 every cart used to claim', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'wc-ver-'));
   try {
