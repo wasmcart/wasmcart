@@ -192,6 +192,16 @@ test('no --version: the git rule (untagged, tagged, dirty, past the tag)', () =>
     assert.equal(packVersion(tmp, ['--wasm', wasm]), `1.4.2-dev.g${sha()}`, 'a commit past the tag');
 
     assert.equal(packVersion(tmp, ['--wasm', wasm, '--version', '3.0.0-rc.1']), '3.0.0-rc.1', '--version wins');
+
+    // a fork keeps its upstream's higher tags; its builds follow its own,
+    // nearer, tag
+    git(repo, 'tag', 'v2.1.20221123');
+    git(repo, 'commit', '-q', '--allow-empty', '-m', 'fork');
+    git(repo, 'tag', 'v0.1.0');
+    git(repo, 'commit', '-q', '--allow-empty', '-m', 'three');
+    assert.equal(packVersion(tmp, ['--wasm', wasm]), `0.1.0-dev.g${sha()}`, 'the nearest tag, not the highest');
+    git(repo, 'tag', 'v0.1');                         // a nearer v-tag that is not semver
+    assert.equal(packVersion(tmp, ['--wasm', wasm]), `0.1.0-dev.g${sha()}`, 'a nearer non-semver tag is skipped');
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

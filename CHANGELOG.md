@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.39.1
+
+**A dev build counts from the nearest version tag, not the highest.** A fork keeps its upstream's tags beside its own,
+so a port tagged `v0.1.0` that still carries upstream's `v2.1.20221123` packed its dev builds as
+`2.1.20221123-dev.g<commit>`. The packer now takes the nearest `v<semver>` tag behind the commit (`git describe`),
+skipping `v` tags that are not semver. Tag builds are unchanged. The test cart carries 0.39.1.
+
 ## 0.39.0
 
 **Every packed cart carries its real version.** `wasmcart-pack` without `--version` used to write `1.0.0` into every
