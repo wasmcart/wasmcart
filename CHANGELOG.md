@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.41.0
+
+**A cart can carry its display name.** The manifest's new optional `title` is the game's name as people read it
+("Tux Racer"), for a launcher's list, a frontend's game name and a window title; `name` stays the short id, and a host
+without a `title` falls back to it. It is a presentation hint like `description`, never gating, and is not `art.title`
+(the title-screen picture). `wasmcart-pack --title <text>` writes it and warns above 64 characters.
+
+**`wasmcart art` copies a cart's launcher art out for a frontend.** `--esde <dir>` writes ES-DE's media folders
+(`covers`, `screenshots`, `titlescreens`, `marquees`, `fanart`, named by the cart's file name), `--libretro <dir>` the
+libretro thumbnail folders (`Named_Boxarts`, `Named_Snaps`, `Named_Titles`; PNG art only, JPEG art is named and
+skipped; `--name-by title` names them by the cart's title), and `--out <dir>` every art file plus an `art.json` that
+`wasmcart-pack --art` packs back. It takes carts, cart folders or a folder of carts, reads only the manifest and the
+art, keeps existing files unless `--force`, and prints one line per cart with its title. A cart without art is not an
+error. The test cart carries 0.41.0.
+
 ## 0.40.0
 
 **`wasmcart-pack --version-from <dir>`** reads the cart's git version from that directory's checkout and no other. A
