@@ -6,6 +6,7 @@
  *   wasmcart play <cart> [options]                     same, explicit
  *   wasmcart pack --wasm cart.wasm [options]           package a .wasc
  *   wasmcart index <cart-dir> [--check|--remove]       write manifest `files`
+ *   wasmcart art <carts> --esde|--libretro|--out <dir>  copy carts' art for frontends
  *   wasmcart test [options]                            play the test cart (testcart/)
  *
  * Player options and keys: see `wasmcart play --help` (bin/wasmcart-play.js).
@@ -19,6 +20,9 @@ if (sub === 'pack') {
 } else if (sub === 'index') {
   process.argv.splice(2, 1);
   await import('./wasmcart-index.js');
+} else if (sub === 'art') {
+  process.argv.splice(2, 1);
+  await import('./wasmcart-art.js');
 } else if (sub === 'test') {
   // the host test cart: pads, touch, keyboard, sound and saves on one screen
   const { fileURLToPath } = await import('node:url');
@@ -31,6 +35,7 @@ if (sub === 'pack') {
   console.log('Usage: wasmcart <cart.wasc | cart-dir | https://.../cart.wasc> [options]');
   console.log('       wasmcart pack --wasm cart.wasm');
   console.log('       wasmcart index <cart-dir>   (list assets for web hosts)');
+  console.log('       wasmcart art <carts> --esde <dir>   (art for ES-DE; --libretro, --out)');
   console.log('       wasmcart test               (the test cart: pads, touch, sound, saves)');
   console.log('Player options: --term, --window, --gl, --zoom n, --width px, --height px,');
   console.log('  --no-resize, --stretch, --fullscreen (-f), --frames n, --shot out.png,');

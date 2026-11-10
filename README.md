@@ -674,6 +674,38 @@ repeatable), `--art <dir>`, `--description`, `--author`, `--files`,
 taken as the wasm path, then the output path. `--pointer`, `--keyboard`, and
 `--data-channel` are accepted, warning no-ops from the double-gate era.
 
+### wasmcart art
+
+Copy the art carts carry (`--art` above; SPEC: manifest `art`) to where a
+frontend looks for it, without running the carts:
+
+```bash
+# ES-DE: covers/ screenshots/ titlescreens/ marquees/ fanart/, one picture per cart
+npx wasmcart art carts/ --esde ~/ES-DE/downloaded_media/wasmcart
+# RetroArch thumbnails for a playlist: Named_Boxarts/ Named_Snaps/ Named_Titles/
+npx wasmcart art carts/ --libretro ~/.config/retroarch/thumbnails/wasmcart
+# every picture, to out/<cart>/ with an art.json: a folder --art packs back
+npx wasmcart art game.wasc --out out/
+```
+
+| key | ES-DE folder | libretro folder |
+|---|---|---|
+| `cover` | `covers` | `Named_Boxarts` |
+| first of `screenshots` | `screenshots` | `Named_Snaps` |
+| `title` | `titlescreens` | `Named_Titles` |
+| `logo` | `marquees` | |
+| `background` | `fanart` | |
+
+Each argument is a `.wasc`, a cart directory, or a directory of `.wasc` files,
+and each picture is named for the cart's file name without `.wasc`, the name
+both frontends match a game by (libretro's thumbnails also replace
+``& * / : ` < > ? \ |`` with `_`). A picture keeps its format: `.png` or
+`.jpg`. libretro thumbnails must be PNG, and a JPEG is not converted: it is
+named in the cart's line and skipped. A file already there is kept (for ES-DE,
+one of the same name in any picture format) unless `--force`. It prints one
+line per cart: what it wrote, what it kept, or `no art`, which is not an
+error; only a cart it cannot read fails the run.
+
 ## Writing Carts
 
 The ABI is three exported functions and a struct, so the language question is
