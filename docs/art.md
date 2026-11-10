@@ -111,6 +111,10 @@ Frontends that keep art in folders by game name take these keys:
 | `background` | | `fanart` |
 | `icon` | | |
 
+`wasmcart art <carts> --esde <dir>` (or `--libretro <dir>`) copies them there
+(README, "wasmcart art"). The manifest's `title` (the game's name as people
+read it) is not art: a frontend shows it from its own game list.
+
 ## Where this comes from
 
 The same split appears in most packaged games. Handheld and console formats

@@ -362,7 +362,8 @@ stopped arriving. Gamepad input is always available regardless.
 A host ignores every field it does not know, so a cart carrying a field from a
 later revision of the SPEC runs on an older host as if the field were absent.
 
-`description`, `author` and `art` are for launchers: what the game is, who
+`title`, `description`, `author` and `art` are for launchers: the game's name
+as people read it (`name` stays the short id), what the game is, who
 made it, and its pictures (an icon, box art, key art with no text, a
 transparent logo, the title screen, labelled screenshots), PNG or JPEG files
 the archive carries under `art/`. A launcher can show them without running the
@@ -616,7 +617,7 @@ npx wasmcart-pack --wasm cart.wasm -o game.wasc --controls dpad,a,b,start
 
 # The cart's pictures for launchers (icon, cover, screenshots...), and who made it
 npx wasmcart-pack --wasm cart.wasm --assets assets/ -o game.wasc --art art/ \
-  --description "Sail, trade and fight across a sunlit archipelago." --author "Me"
+  --title "Sunlit Isles" --description "Sail, trade and fight across a sunlit archipelago." --author "Me"
 # (pointer/keyboard need NO flag: the cart declares WC_FLAG_POINTER /
 #  WC_FLAG_KEYBOARD in its own wc_info_t, and that is the only gate)
 ```
@@ -669,7 +670,7 @@ can check the result by reading `version` from the `.wasc`'s `manifest.json`.
 All flags: `--wasm`, `--assets`, `--source`, `--output`/`-o`, `--name`,
 `--version` (wins in both forms; default from git, above), `--version-from`,
 `--width`/`--height`, `--players`, `--controls` (comma-separated or
-repeatable), `--art <dir>`, `--description`, `--author`, `--files`,
+repeatable), `--art <dir>`, `--title`, `--description`, `--author`, `--files`,
 `--ws`/`--websocket` (repeatable). Bare positional arguments are
 taken as the wasm path, then the output path. `--pointer`, `--keyboard`, and
 `--data-channel` are accepted, warning no-ops from the double-gate era.
@@ -705,6 +706,13 @@ named in the cart's line and skipped. A file already there is kept (for ES-DE,
 one of the same name in any picture format) unless `--force`. It prints one
 line per cart: what it wrote, what it kept, or `no art`, which is not an
 error; only a cart it cannot read fails the run.
+
+The game's name as people read it is the manifest's `title` (`--title` above),
+and each cart's line shows it: `racer ("Kart Racer"): esde: wrote 5`. ES-DE
+shows a game's name from its own `gamelist.xml`, which `wasmcart art` never
+writes, so set the names there yourself. A RetroArch playlist whose labels are
+the titles needs thumbnails named the same way: `--name-by title` names them
+for the cart's `title` (a cart without one keeps its file name).
 
 ## Writing Carts
 

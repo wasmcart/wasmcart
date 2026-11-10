@@ -65,10 +65,11 @@ test('--art packs pictures named for their key under art/, with description and 
     writeFileSync(join(art, 'screenshot-10.png'), png(1920, 1080, 2));
     writeFileSync(join(art, 'screenshot-2.png'), png(1920, 1080, 2));
     const out = join(tmp, 'out.wasc');
-    const r = pack(['--wasm', wasm, '--art', art, '--description', 'A test cart.', '--author', 'Someone', '-o', out]);
+    const r = pack(['--wasm', wasm, '--art', art, '--title', 'The Test Cart', '--description', 'A test cart.', '--author', 'Someone', '-o', out]);
     assert.equal(r.status, 0, r.stderr);
     assert.ok(!/wasmcart-pack:/.test(r.stderr), `no warnings for well-formed art: ${r.stderr}`);
     const m = readManifest(out);
+    assert.equal(m.title, 'The Test Cart');
     assert.equal(m.description, 'A test cart.');
     assert.equal(m.author, 'Someone');
     assert.deepEqual(m.art, {

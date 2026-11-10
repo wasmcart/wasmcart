@@ -18,7 +18,12 @@
  *   logo, title, screenshot-N) with an art.json carrying the screenshot labels,
  *   a folder `wasmcart-pack --art` packs back as it was.
  *
- * The cart name is the file name without .wasc, what both frontends match on.
+ * The cart name is the file name without .wasc, what ES-DE matches on. libretro
+ * matches the playlist's label: --name-by title names its thumbnails for the
+ * manifest's `title` instead (a cart without one keeps its file name), for a
+ * playlist that shows titles. ES-DE shows names from its gamelist.xml, which
+ * this never writes: each cart's line carries its title (`racer ("Kart
+ * Racer")`) for you to set there.
  * An existing file is kept unless --force. One line per cart: what it wrote,
  * what it kept, or that it has no art (not an error).
  */
@@ -30,6 +35,7 @@ const args = process.argv.slice(2);
 const targets = [];
 const carts = [];
 let force = false;
+let nameBy = 'file';
 let bad = null;
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
@@ -38,6 +44,10 @@ for (let i = 0; i < args.length; i++) {
     if (!dir) bad = `${a} needs a directory`;
     else targets.push({ target: a === '--esde' ? 'esde' : a === '--libretro' ? 'libretro' : 'out', dir: resolve(dir) });
   } else if (a === '--force' || a === '-f') force = true;
+  else if (a === '--name-by') {
+    nameBy = args[++i];
+    if (nameBy !== 'file' && nameBy !== 'title') bad = '--name-by is file or title';
+  }
   else if (a === '-h' || a === '--help') bad = '';
   else if (a.startsWith('-')) bad = `unknown option ${a}`;
   else carts.push(a);
@@ -50,6 +60,8 @@ if (bad !== null || !carts.length || !targets.length) {
   console.log('  --libretro <thumb dir>    RetroArch: Named_Boxarts/ Named_Snaps/ Named_Titles/ (PNG only;');
   console.log('                            JPEG pictures are skipped, not converted)');
   console.log('  --out <dir>               every picture, to <dir>/<cart>/ with an art.json');
+  console.log('  --name-by file|title      libretro thumbnails named for the file (default) or the');
+  console.log('                            manifest title, to match what the playlist shows');
   console.log('  --force                   overwrite files already there (kept by default)');
   process.exit(bad === '' ? 0 : 1);
 }
@@ -78,8 +90,11 @@ for (const path of list) {
   try {
     const parts = [];
     let noArt = false;
+    const t = cart.manifest && cart.manifest.title;
+    const title = typeof t === 'string' && t.trim() ? t.trim() : null;
     for (const { target, dir } of targets) {
-      const r = await exportArt(cart, target, dir, name, { force });
+      const as = target === 'libretro' && nameBy === 'title' && title ? title : name;
+      const r = await exportArt(cart, target, dir, as, { force });
       if (r.noArt) { noArt = true; break; }
       const bits = [];
       if (r.written.length) bits.push(`wrote ${r.written.length}`);
@@ -87,7 +102,9 @@ for (const path of list) {
       if (!r.written.length && !r.skipped.length) bits.push('nothing to write');
       parts.push(`${target}: ${bits.join(', ')}${r.notes.length ? ` (${r.notes.join('; ')})` : ''}`);
     }
-    console.log(noArt ? `${name}: no art` : `${name}: ${parts.join('; ')}`);
+    // ES-DE shows the name from its gamelist.xml, which this never writes: the title is here to set there
+    const label = title ? `${name} ("${title}")` : name;
+    console.log(noArt ? `${label}: no art` : `${label}: ${parts.join('; ')}`);
   } catch (e) {
     console.log(`${name}: error: ${e.message}`);
     failed = true;

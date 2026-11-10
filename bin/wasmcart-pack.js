@@ -63,6 +63,7 @@ let useKeyboard = false;
 let controls = null;   // array of pad-subset tokens (SPEC: manifest 'controls')
 let writeFiles = false; // --files: record the asset list (SPEC: manifest 'files')
 let artDir = null;      // --art: the cart's pictures (SPEC: manifest 'art')
+let title = null;       // --title: the game's name as people read it (SPEC: manifest 'title')
 let description = null;
 let author = null;
 
@@ -122,6 +123,9 @@ for (let i = 0; i < args.length; i++) {
       break;
     case '--art':
       artDir = resolve(args[++i]);
+      break;
+    case '--title':
+      title = args[++i];
       break;
     case '--description':
       description = args[++i];
@@ -319,6 +323,10 @@ if (!sourceManifest && assetsDir) {
   manifest.assets = 'assets/';
 }
 
+if (title !== null) {
+  if (title.length > 64) console.warn(`wasmcart-pack: --title is ${title.length} characters; hosts may cut it after 64`);
+  manifest.title = title;
+}
 if (description !== null) {
   if (description.length > 300) console.warn(`wasmcart-pack: --description is ${description.length} characters; hosts may cut it after 300`);
   manifest.description = description;
@@ -510,6 +518,7 @@ function printUsage() {
   console.log(`  --art <dir>        The cart's pictures for launchers: icon, cover, background,`);
   console.log(`                     logo, title (.png/.jpg) and screenshot*.png, or the dir's`);
   console.log(`                     art.json naming them, with screenshot labels`);
+  console.log(`  --title <text>     The game's name as people read it ("Tux Racer"; --name is the id)`);
   console.log(`  --description <t>  What the game is, a sentence or two (under 300 characters)`);
   console.log(`  --author <name>    Who made it, as it should be credited`);
   console.log(`  --files            Record the asset list in the manifest (optional; lets the`);

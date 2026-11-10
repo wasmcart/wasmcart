@@ -41,8 +41,8 @@ const PICS = {
   'art/icon.png': png(512, 512), 'art/cover.jpg': jpeg(600, 900), 'art/background.jpg': jpeg(1920, 1080),
   'art/logo.png': png(1280, 400), 'art/title.png': png(1280, 720, 2), 'art/shot-1.png': png(1280, 720, 2), 'art/shot-2.jpg': jpeg(1280, 720),
 };
-function cart(path, art = ART, pics = PICS) {
-  const manifest = { name: 'Test', version: '1.0.0', abi: 4, entry: 'cart.wasm', ...(art ? { art } : {}) };
+function cart(path, art = ART, pics = PICS, extra = {}) {
+  const manifest = { name: 'Test', version: '1.0.0', abi: 4, entry: 'cart.wasm', ...extra, ...(art ? { art } : {}) };
   const files = { 'manifest.json': Buffer.from(JSON.stringify(manifest)), 'cart.wasm': wasm() };
   for (const [p, b] of Object.entries(pics)) files[p] = b;
   writeFileSync(path, zipSync(files));
@@ -152,6 +152,25 @@ test('a cart directory reads its art off disk; an unreadable cart fails the run'
     assert.match(r.stdout, /^mygame: esde: wrote 1$/m);
     assert.match(r.stdout, /^broken: error: cannot read the cart/m);
     assert.deepEqual(readFileSync(join(tmp, 'media', 'covers', 'mygame.jpg')), PICS['art/cover.jpg']);
+  }));
+
+test('the title shows in each line, and --name-by title names libretro thumbnails for it', () =>
+  withTmp((tmp) => {
+    cart(join(tmp, 'kart.wasc'), ART, PICS, { title: 'Kart Racer: Snow' });
+    cart(join(tmp, 'plain.wasc'));
+    const thumbs = join(tmp, 'thumbs');
+    let r = run([join(tmp, 'kart.wasc'), join(tmp, 'plain.wasc'), '--libretro', thumbs, '--name-by', 'title']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^kart \("Kart Racer: Snow"\): libretro: wrote 2/m);
+    assert.match(r.stdout, /^plain: libretro: wrote 2/m);
+    assert.ok(existsSync(join(thumbs, 'Named_Snaps', 'Kart Racer_ Snow.png')), 'named for the title, : made _');
+    assert.ok(existsSync(join(thumbs, 'Named_Snaps', 'plain.png')), 'no title: the file name');
+    // ES-DE matches the file name whatever --name-by says, and nothing writes a gamelist
+    const media = join(tmp, 'media');
+    r = run([join(tmp, 'kart.wasc'), '--esde', media, '--name-by', 'title']);
+    assert.ok(existsSync(join(media, 'covers', 'kart.jpg')));
+    assert.ok(!existsSync(join(media, 'gamelist.xml')));
+    assert.equal(run([join(tmp, 'kart.wasc'), '--esde', media, '--name-by', 'label']).status, 1);
   }));
 
 test('no target or no cart prints the usage and fails', () => {

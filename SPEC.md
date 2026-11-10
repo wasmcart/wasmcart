@@ -86,7 +86,7 @@ So the manifest carries only what the cart cannot state for itself:
   would defeat the point of having one.
 - **Presentation hints** a launcher wants before instantiation, like
   `width`/`height` (see Resolution) — advisory, never binding.
-- **Human metadata**: `name`, `version`, `description`, `author`, and
+- **Human metadata**: `name`, `title`, `version`, `description`, `author`, and
   the cart's `art` (its icon, cover, screenshots: see below) for a launcher
   to show before the cart runs.
 
@@ -156,6 +156,14 @@ on a later host unchanged. A packer MAY warn about a field it does not know
   loading a local directory whose `files` disagrees with the directory SHOULD
   warn, naming the files: a stale list only fails once deployed, as files that
   load by name but are missing from the listing.
+
+**`title`** (string, optional)
+- The game's name as people should read it ("Tux Racer"), for a launcher's
+  list, a frontend's game name and a window title; `name` stays the cart's
+  short id. A **presentation hint** like `description`: advisory, never
+  gating. A host without it falls back to `name`. Keep it under 64
+  characters; a host MAY cut a longer one.
+- Not `art.title`, which is the title-screen picture.
 
 **`description`** (string, optional)
 - What the game is, in a sentence or two of plain text, for a launcher's
