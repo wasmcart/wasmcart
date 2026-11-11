@@ -653,7 +653,8 @@ directory), by the same rule as cartwheel's build:
 
 So a build at a release tag is the release, and any other build says it is a
 dev build. Tags are `v` plus semver (`v1.4.2`, `v2.0.0-rc.1`); a tag of another
-shape is ignored. `--version` wins over all of it, `--source` included (a
+shape is ignored, and "the last tag" is the nearest one behind the commit, not the highest
+(a fork keeps its upstream's tags, and its builds follow its own). `--version` wins over all of it, `--source` included (a
 `--source` manifest's `version` is only a placeholder while git can say
 better). Every version must be semver (`MAJOR.MINOR.PATCH`, optionally
 `-prerelease` and `+build`): the packer stops on `1.0` or `v1.0.0` rather

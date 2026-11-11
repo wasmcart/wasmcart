@@ -50,7 +50,7 @@ npx wasmcart-pack --wasm cart.wasm --name mycart -o mycart.wasc
 ```
 
 `wasmcart-pack` and the `wasmcart` player come from the npm package: in your
-own project, `npm install --save-dev wasmcart@^0.32` first (WebGPU needs 0.32
+own project, `npm install --save-dev wasmcart` first (WebGPU needs 0.32
 or later).
 
 `<wasmcart>/include` is the `include/` directory of this repo or of the npm

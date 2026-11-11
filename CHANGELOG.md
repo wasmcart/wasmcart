@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.41.1
+
+**The first release since 0.37.0.** 0.38.0 through 0.41.0 were tagged but never published to npm, so this one carries
+everything in their entries below (carts' own art and `title`, git versions for packed carts, `--version-from`,
+`wasmcart art`). 0.41.0 was never published because its pre-publish GPU-memory test depended on the GPU: it compared the
+second half's peak with the first half's high-water mark, and a GPU whose driver pools finished growing after the
+half-way frame failed it though nothing leaked.
+
+**The GPU-memory test checks a growth rate.** `test/wgpu-claim.test.js` now fits a least-squares slope of GPU memory
+against frame over the last 40% of the run and fails above 0.1 MiB per frame (a leak is about 1.3, a late pool step of
+70 MiB about 0.03), plus a loose bound on the final level. The maths is in `test/helpers/gpu-growth.js`, with
+must-fail controls on synthetic series in `test/gpu-growth.test.js` (a flat series and a late pool step pass, a leak
+fails, and the old rule is shown to reject the pool step). The test asks the host for the low-power adapter, so it never
+runs on a display GPU.
+
+**Docs.** README's version section says the last tag is the nearest behind the commit, not the highest;
+`docs/webgpu.md` no longer pins an old caret range. No host, ABI or SPEC change; the test cart carries 0.41.1.
+
 ## 0.41.0
 
 **A cart can carry its display name.** The manifest's new optional `title` is the game's name as people read it

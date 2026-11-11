@@ -19,9 +19,13 @@ import path from 'node:path';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { CartHost } from '../index.js';
+import { plateauProblem } from './helpers/gpu-growth.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const fixture = name => path.join(HERE, 'fixtures', name);
+// The plateau test never runs on a display GPU: it asks the host for the low-power
+// adapter (the same as WASMCART_WGPU_POWER=low-power, which the host honours too).
+const LOW_POWER = { adapterOptions: { powerPreference: 'low-power' } };
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 // The cart's expected cell centres (wgputex.c's table)
@@ -151,7 +155,7 @@ test('GPU memory levels off over thousands of frames when the loop yields betwee
   if (processGpuBytes() === null) {
     // a WebGPU device must exist before a DRM client shows; probe with the cart
     const probe = new CartHost();
-    await probe.load(fixture('wgpuvram.wasc'));
+    await probe.load(fixture('wgpuvram.wasc'), LOW_POWER);
     probe.runFrame(); await tick();
     const seen = processGpuBytes();
     probe.destroy();
@@ -159,7 +163,7 @@ test('GPU memory levels off over thousands of frames when the loop yields betwee
   }
   const frames = Number(process.env.WASMCART_VRAM_FRAMES || 6000);
   const host = new CartHost();
-  await host.load(fixture('wgpuvram.wasc'));
+  await host.load(fixture('wgpuvram.wasc'), LOW_POWER);
   try {
     const samples = [];
     for (let i = 1; i <= frames; i++) {
@@ -172,16 +176,13 @@ test('GPU memory levels off over thousands of frames when the loop yields betwee
     const frame = await host.readGpuFrame();
     const want = [[200, 40, 40], [40, 200, 40], [40, 40, 200], [200, 200, 40]][host.readDebugValue('vram.colour').value];
     assert.deepEqual(pixel(frame, 32, 32).slice(0, 3), want, 'the last frame drew this frame\'s texture');
-    // The driver's and Dawn's pools grow for the first several hundred frames
-    // (to ~220 MiB here, reached anywhere from frame 750 to 2250), so the
-    // level is the high-water mark of the first half. The second half may
-    // wander by GC timing but must not climb past it: a leak is ~1.3 MiB a
-    // frame, ~2000 MiB over the second half.
-    const half = samples.filter(s => s.frame <= frames / 2), rest = samples.filter(s => s.frame > frames / 2);
-    const level = Math.max(...half.map(s => s.mib)), peak = Math.max(...rest.map(s => s.mib)), last = rest.at(-1).mib;
+    // Driver and Dawn pools grow for the first several hundred frames and on
+    // some GPUs step again much later, so the check is a growth rate over the
+    // last 40% of the run, not a level (test/helpers/gpu-growth.js): a leak is
+    // ~1.3 MiB a frame, a late pool step ~0.03.
     t.diagnostic(`GPU memory (MiB) by frame: ${samples.map(s => `${s.frame}:${s.mib.toFixed(0)}`).join(' ')}`);
-    assert.ok(peak - level < 64, `GPU memory kept growing after frame ${half.at(-1).frame}: ${level.toFixed(0)} -> peak ${peak.toFixed(0)} MiB`);
-    assert.ok(last - level < 64, `GPU memory ${level.toFixed(0)} -> ${last.toFixed(0)} MiB`);
+    const problem = plateauProblem(samples);
+    assert.equal(problem, null, problem ?? '');
   } finally {
     host.destroy();
   }
