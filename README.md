@@ -854,6 +854,43 @@ shipping its `.wasc` as a Release artifact:
 | `openarena2` | GL | Quake III Arena (ioquake3) |
 | `flare`, `flare_es` | 2D | FLARE RPG (hand-port and SDL2 backend) |
 
+### Made with wasmcart
+
+Original games built as wasmcart carts (C99 on [three.c](https://github.com/monteslu/three.c), compiled with
+Emscripten) at [HeatSync Labs](https://heatsynclabs.org) in Mesa, Arizona, for the lab's Batocera game station
+(through [wasmcart-libretro](https://github.com/wasmcart/wasmcart-libretro)) and the browser. Each repo holds the
+source, and each page plays the cart in the browser.
+
+**KEYHOLDER** ([source](https://github.com/virgilvox/keyholder), [play in the browser](https://virgilvox.github.io/keyholder/), [`.wasc`](https://github.com/virgilvox/keyholder/releases/latest))<br>
+One day hosting at a hackerspace, 9 am to midnight: a PS2-style action visual novel with voiced cutscenes, a camera director, sword fights, three nights after the day and a nightmare attic.
+
+<p><img src="https://raw.githubusercontent.com/virgilvox/keyholder/main/docs/shots/02-arena-fight.jpg" width="49%" alt="KEYHOLDER screenshot"> <img src="https://raw.githubusercontent.com/virgilvox/keyholder/main/docs/shots/03-attic-mannequins.jpg" width="49%" alt="KEYHOLDER screenshot"></p>
+
+**COFFEE & KILL** ([source](https://github.com/virgilvox/coffee-and-kill), [play in the browser](https://virgilvox.github.io/coffee-and-kill/), [`.wasc`](https://github.com/virgilvox/coffee-and-kill/releases/latest))<br>
+A two-player 3D brawler in a hackerspace workshop: thirteen fighters, weapons, EXTREME specials and a tourney mode.
+
+<p><img src="https://raw.githubusercontent.com/virgilvox/coffee-and-kill/main/docs/shots/01-workshop-brawl.jpg" width="49%" alt="COFFEE & KILL screenshot"> <img src="https://raw.githubusercontent.com/virgilvox/coffee-and-kill/main/docs/shots/03-extreme-special.jpg" width="49%" alt="COFFEE & KILL screenshot"></p>
+
+**DROPSHOT** ([source](https://github.com/virgilvox/dropshot), [play in the browser](https://virgilvox.github.io/dropshot/), [`.wasc`](https://github.com/virgilvox/dropshot/releases/latest))<br>
+A flamingo who washes windows in orbit versus three derelict arcology ships: a third-person scope-and-glide shooter with in-engine cutscenes.
+
+<p><img src="https://raw.githubusercontent.com/virgilvox/dropshot/main/docs/shots/01-orbital-drop.jpg" width="49%" alt="DROPSHOT screenshot"> <img src="https://raw.githubusercontent.com/virgilvox/dropshot/main/docs/shots/04-scope-weak-point.jpg" width="49%" alt="DROPSHOT screenshot"></p>
+
+**SMALL PARTS** ([source](https://github.com/virgilvox/small-parts), [play in the browser](https://virgilvox.github.io/small-parts/), [`.wasc`](https://github.com/virgilvox/small-parts/releases/latest))<br>
+Two makers shrunk to nine centimetres fight five hundred plastic army men across a real hackerspace: a PS1-style shooter.
+
+<p><img src="https://raw.githubusercontent.com/virgilvox/small-parts/main/docs/shots/01-jetpack-member-storage.jpg" width="49%" alt="SMALL PARTS screenshot"> <img src="https://raw.githubusercontent.com/virgilvox/small-parts/main/docs/shots/02-rubber-band-firefight.jpg" width="49%" alt="SMALL PARTS screenshot"></p>
+
+**RED TAG RUMBLE** ([source](https://github.com/virgilvox/red-tag-rumble), [play in the browser](https://virgilvox.github.io/red-tag-rumble/))<br>
+Build a robot from abandoned projects in sixty seconds, then fight it in split screen for one to four players.
+
+<p><img src="https://raw.githubusercontent.com/virgilvox/red-tag-rumble/main/docs/shots/01-split-screen-hit.jpg" width="49%" alt="RED TAG RUMBLE screenshot"> <img src="https://raw.githubusercontent.com/virgilvox/red-tag-rumble/main/docs/shots/03-garage-builder.jpg" width="49%" alt="RED TAG RUMBLE screenshot"></p>
+
+**DO-OCRACY** ([source](https://github.com/virgilvox/do-ocracy), [play in the browser](https://virgilvox.github.io/do-ocracy/))<br>
+An arcade game about one night of running a hackerspace: whoever does it, decides. Phones join as controllers by QR code.
+
+<p><img src="https://raw.githubusercontent.com/virgilvox/do-ocracy/main/docs/shots/01-open-house-night.jpg" width="49%" alt="DO-OCRACY screenshot"> <img src="https://raw.githubusercontent.com/virgilvox/do-ocracy/main/docs/shots/03-late-night.jpg" width="49%" alt="DO-OCRACY screenshot"></p>
+
 ## Documentation
 
 - **[SPEC.md](SPEC.md)** - the normative specification
