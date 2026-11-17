@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.41.2
+
+**A cart directory answers an asset named with the asset prefix, as a `.wasc` does.** Both archive loaders index every
+entry twice, as `main.py` and as `assets/main.py`, so a cart that asks for the prefixed name works packed. The node and
+web hosts' directory mode only answered the bare name, so the same cart failed when run unpacked: wasmcart-pygame's
+importer asks for `assets/main.py`, and an unzipped pygame cart stopped with `No module named 'main'`. A directory now
+takes the path as given and, when no such file exists, the path without the prefix. The web host, which cannot test a
+path without fetching it, uses the manifest's `files` list when there is one and otherwise drops the prefix.
+`test/asset-prefix.test.js` checks that a directory answers exactly what its packed copy answers (0.41.1 fails it), and
+`test/browser.test.mjs` checks the web host. No ABI or SPEC change; the test cart carries 0.41.2.
+
 ## 0.41.1
 
 **The first release since 0.37.0.** 0.38.0 through 0.41.0 were tagged but never published to npm, so this one carries

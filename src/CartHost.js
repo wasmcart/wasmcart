@@ -1,5 +1,5 @@
 import { readFile, stat } from 'fs/promises';
-import { openSync, readSync, closeSync, statSync, read as fsRead } from 'fs';
+import { openSync, readSync, closeSync, statSync, existsSync, read as fsRead } from 'fs';
 import { join, extname } from 'path';
 import { open as yauzlOpen } from 'yauzl';
 import { inflateRawSync, inflateRaw } from 'zlib';
@@ -343,6 +343,7 @@ export class CartHost {
     this._assetFd = null;      // file descriptor for on-disk zip reading
     this._assetBuf = null;     // in-memory zip buffer (for Uint8Array source)
     this._assetDir = null;     // directory path for dev-mode loading
+    this._assetDirPrefix = null;
     this._hasAssets = false;
     // wc_asset_prefetch (SPEC.md, "Asset prefetch"): a cache in front of
     // _assetSize/_loadAsset, filled off the main thread. null until load().
@@ -1759,6 +1760,7 @@ export class CartHost {
     // Set up directory-based asset loading
     const assetsDir = join(dirPath, assetPrefixOf(manifest));
     this._assetDir = assetsDir;
+    this._assetDirPrefix = assetPrefixOf(manifest);
     this._hasAssets = true;
     // No index needed - we'll read files directly from disk.
 
@@ -1779,6 +1781,18 @@ export class CartHost {
     if (Array.isArray(manifest.files)) warnStaleFileList(manifest.files, onDisk, dirPath);
 
     return wasmBytes;
+  }
+
+  /* The file on disk for an asset path in dev mode. An archive indexes each
+   * entry under BOTH spellings, "main.py" and "assets/main.py" (the loaders
+   * above), so a cart that names its assets with the prefix works packed. A
+   * directory has to answer the same way, or that cart boots packed and fails
+   * as a directory: the path as given first, then without the prefix. */
+  _dirAssetFile(path) {
+    const direct = join(this._assetDir, path);
+    const prefix = this._assetDirPrefix;
+    if (!prefix || !path.startsWith(prefix) || existsSync(direct)) return direct;
+    return join(this._assetDir, path.slice(prefix.length));
   }
 
   // --- Asset API implementation ---
@@ -1816,7 +1830,7 @@ export class CartHost {
     // Directory-based dev mode
     if (this._assetDir) {
       try {
-        const s = statSync(join(this._assetDir, path));
+        const s = statSync(this._dirAssetFile(path));
         return s.size;
       } catch {
         return -1;
@@ -1844,7 +1858,7 @@ export class CartHost {
     } else if (this._assetDir) {
       // Directory-based dev mode - read file directly
       try {
-        const filePath = join(this._assetDir, path);
+        const filePath = this._dirAssetFile(path);
         const fd = openSync(filePath, 'r');
         const s = statSync(filePath);
         const size = Math.min(s.size, maxSize);
@@ -1922,7 +1936,7 @@ export class CartHost {
     if (path === '_filelist.txt' && this._fileListBuf) return this._fileListBuf;
     if (this._assetDir) {
       try {
-        const data = await readFile(join(this._assetDir, path), { signal });
+        const data = await readFile(this._dirAssetFile(path), { signal });
         if (data.length > MAX_ASSET_SIZE) throw new Error('asset larger than the limit');
         return data;
       } catch (e) {

@@ -314,6 +314,16 @@ check('missing asset is -1', r.missing_size, -1);
 check('no files list: _filelist.txt is missing', [r.list_size, r.list_loaded], [-1, -1]);
 check('only what init asked for was fetched', fetchedAssets(), ['hello.txt', 'nope.txt']);
 
+// A path naming the asset prefix resolves as it does packed (asset-prefix.test.js).
+const prefixed = await page.evaluate(async () => {
+  const h = window.__dirHost;
+  const bytes = new TextEncoder().encode('assets/hello.txt');
+  const ptr = h.memory.buffer.byteLength - 4096;
+  new Uint8Array(h.memory.buffer).set(bytes, ptr);
+  return await h._dirAssetSize(ptr, bytes.length);
+});
+check('a prefixed path ("assets/hello.txt") resolves in a directory', prefixed, 22);
+
 const frames = await page.evaluate(async () => {
   const h = window.__dirHost;
   const out = [];

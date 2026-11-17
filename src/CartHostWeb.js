@@ -1495,6 +1495,7 @@ export class CartHostWeb {
     const wasm = await (separate || fetchCompiled(new URL(assetUrlPath(wasmName), base)));
 
     this._dirAssetBase = new URL(assetUrlPath(assetPrefixOf(manifest)), base);
+    this._dirAssetPrefix = assetPrefixOf(manifest);
     this._hasAssets = true;
 
     const files = Array.isArray(manifest.files)
@@ -1643,7 +1644,18 @@ export class CartHostWeb {
     const bytes = this._u8.slice(pathPtr, pathPtr + pathLen);
     const path = new TextDecoder().decode(bytes);
     if (!validateAssetPath(path)) return null;
-    return path;
+    return this._dirAssetBase ? this._dirAssetPath(path) : path;
+  }
+
+  /* An archive indexes each entry under both spellings, "main.py" and
+   * "assets/main.py", so a cart that names its assets with the prefix works
+   * packed; a directory answers the same way. With a `files` list the listed
+   * spelling wins; without one HTTP cannot tell, and the prefix is dropped. */
+  _dirAssetPath(path) {
+    const prefix = this._dirAssetPrefix;
+    if (!prefix || !path.startsWith(prefix)) return path;
+    if (this._dirListed?.has(path)) return path;
+    return path.slice(prefix.length);
   }
 
   _assetSize(pathPtr, pathLen) {
