@@ -133,9 +133,25 @@ on a later host unchanged. A packer MAY warn about a field it does not know
 - Omitted: hosts SHOULD assume the retro default set
   `["dpad","a","b","x","y","start","select","l","r"]` (sticks and triggers
   only appear when declared).
+- Empty (`[]`): the game reads no pad on a touchscreen; it plays by touch
+  through the pointer (a puzzle game that swaps tiles under the finger, a
+  game that drags to aim). Hosts MUST NOT draw on-screen pad controls for it.
+  This is the only way a cart turns the on-screen pad off: `WC_FLAG_POINTER`
+  says the cart reads the pointer, not that it has no use for a pad, and
+  hosts MUST NOT hide on-screen controls because of it.
+- **The host draws the on-screen pad; a cart never draws its own.** A cart
+  that wants touch play declares the pad controls it reads and lets the host
+  draw them, so every game gets the same placement, sizing, haptics and
+  player settings (hide, move, resize), and the same cart runs unchanged
+  where there is no touchscreen. Touch as gameplay (tapping or dragging in
+  the game's own picture) is pointer input, not a pad, and is the cart's to
+  handle.
+- A host that draws `left_stick` or `right_stick` SHOULD deliver analog
+  values (the stick's deflection), not only the eight directions.
 - Examples: a two-button platformer ships `["dpad","a","b","start"]`; a twin-
   stick shooter ships `["left_stick","right_stick","a","start"]`; declaring
-  both `dpad` and `left_stick` is allowed and means the game reads either.
+  both `dpad` and `left_stick` is allowed and means the game reads either; a
+  match-three game played by tapping ships `[]`.
 - `wasmcart-pack --controls dpad,a,b,start` writes it (repeatable or
   comma-separated; unknown tokens warn at pack time but still pack, since
   hosts tolerate them by rule).
