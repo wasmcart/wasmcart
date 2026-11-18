@@ -22,7 +22,8 @@ try {
     '-Wl,--no-entry', '-Wl,--export=__indirect_function_table', join(HERE, 'testcart.c'), '-o', wasm],
     { stdio: 'inherit' });
   execFileSync(process.execPath, [join(HERE, '..', 'bin', 'wasmcart-pack.js'), '--wasm', wasm,
-    '--name', 'wasmcart test cart', '--version', version, '--width', '640', '--height', '360', '--players', '4',
+    '--name', 'testcart', '--title', 'wasmcart test cart', '--version', version,
+    '--art', join(HERE, 'art'), '--width', '640', '--height', '360', '--players', '4',
     '--controls', 'dpad,a,b,x,y,l,r,start,select,left_stick,right_stick,left_trigger,right_trigger,l3,r3',
     '-o', join(HERE, 'testcart.wasc')], { stdio: 'inherit' });
 } finally {
