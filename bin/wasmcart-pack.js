@@ -224,9 +224,15 @@ const KNOWN_CONTROLS = new Set([
   'dpad', 'a', 'b', 'x', 'y', 'l', 'r', 'start', 'select',
   'left_stick', 'right_stick', 'left_trigger', 'right_trigger', 'l3', 'r3',
 ]);
+// `none` writes an empty list: no on-screen pad, the cart plays by touch
+// (SPEC: controls []). It stands alone; with other tokens it means nothing.
+if (controls && controls.includes('none') && controls.length > 1) {
+  console.error('wasmcart-pack: --controls none means no on-screen pad; it cannot be combined with other controls');
+  process.exit(1);
+}
 if (controls) {
   for (const t of controls) {
-    if (!KNOWN_CONTROLS.has(t)) {
+    if (t !== 'none' && !KNOWN_CONTROLS.has(t)) {
       console.warn(`wasmcart-pack: unknown --controls token "${t}" (hosts will ignore it; known: ${[...KNOWN_CONTROLS].join(', ')})`);
     }
   }
@@ -286,7 +292,7 @@ if (players !== null && players > 1) {
 // Like --name, an explicit --controls overrides even a --source manifest:
 // flags the user typed win over what the tree carries.
 if (controls && controls.length) {
-  manifest.controls = controls;
+  manifest.controls = controls[0] === 'none' ? [] : controls;
 }
 
 // --pointer / --keyboard used to write manifest fields that gated input
@@ -514,7 +520,8 @@ function printUsage() {
   console.log(`  --players <n>      Number of local players (1-4, default: 1)`);
   console.log(`  --controls <list>  Comma-separated pad subset the game reads (advisory`);
   console.log(`                     hint for hosts drawing on-screen touch controls, e.g.`);
-  console.log(`                     dpad,a,b,start; repeatable; omit for the retro default)`);
+  console.log(`                     dpad,a,b,start; repeatable; omit for the retro default;`);
+  console.log(`                     "none" for no on-screen pad, a game played by touch)`);
   console.log(`  --art <dir>        The cart's pictures for launchers: icon, cover, background,`);
   console.log(`                     logo, title (.png/.jpg) and screenshot*.png, or the dir's`);
   console.log(`                     art.json naming them, with screenshot labels`);

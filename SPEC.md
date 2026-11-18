@@ -154,7 +154,7 @@ on a later host unchanged. A packer MAY warn about a field it does not know
   match-three game played by tapping ships `[]`.
 - `wasmcart-pack --controls dpad,a,b,start` writes it (repeatable or
   comma-separated; unknown tokens warn at pack time but still pack, since
-  hosts tolerate them by rule).
+  hosts tolerate them by rule); `--controls none` writes `[]`.
 
 **`files`** (array of strings, optional)
 - Every asset path, relative to the asset prefix (`assets`, default

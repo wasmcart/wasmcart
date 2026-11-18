@@ -275,3 +275,22 @@ test('a version that is not semver stops the pack', () => {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('--controls writes the list, and none writes [] (no on-screen pad)', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'wc-controls-'));
+  try {
+    const wasmPath = join(tmp, 'cart.wasm');
+    writeFileSync(wasmPath, unzipSync(readFileSync(HELLO_WASC))['cart.wasm']);
+    const pack = (...extra) => {
+      const out = join(tmp, 'out.wasc');
+      execFileSync(process.execPath, [PACK, '--wasm', wasmPath, '--output', out, '--name', 'c', '--version', '1.0.0', ...extra], { stdio: 'pipe' });
+      return JSON.parse(new TextDecoder().decode(unzipSync(readFileSync(out))['manifest.json']));
+    };
+    assert.deepEqual(pack('--controls', 'dpad,a,b').controls, ['dpad', 'a', 'b']);
+    assert.deepEqual(pack('--controls', 'none').controls, []);
+    assert.equal('controls' in pack(), false, 'omitted stays omitted: the retro default');
+    assert.throws(() => pack('--controls', 'none,a'), 'none cannot be combined');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});

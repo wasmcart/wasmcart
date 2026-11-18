@@ -614,6 +614,7 @@ npx wasmcart-pack --wasm cart.wasm --assets assets/ -o game.wasc --name "My Game
 # Manifest extras: multiplayer, a network grant, an on-screen-controls hint
 npx wasmcart-pack --wasm cart.wasm -o game.wasc --players 4 --ws api.mygame.com
 npx wasmcart-pack --wasm cart.wasm -o game.wasc --controls dpad,a,b,start
+npx wasmcart-pack --wasm cart.wasm -o game.wasc --controls none   # played by touch: no on-screen pad
 
 # The cart's pictures for launchers (icon, cover, screenshots...), and who made it
 npx wasmcart-pack --wasm cart.wasm --assets assets/ -o game.wasc --art art/ \
@@ -671,7 +672,7 @@ can check the result by reading `version` from the `.wasc`'s `manifest.json`.
 All flags: `--wasm`, `--assets`, `--source`, `--output`/`-o`, `--name`,
 `--version` (wins in both forms; default from git, above), `--version-from`,
 `--width`/`--height`, `--players`, `--controls` (comma-separated or
-repeatable), `--art <dir>`, `--title`, `--description`, `--author`, `--files`,
+repeatable; `none` writes `[]`), `--art <dir>`, `--title`, `--description`, `--author`, `--files`,
 `--ws`/`--websocket` (repeatable). Bare positional arguments are
 taken as the wasm path, then the output path. `--pointer`, `--keyboard`, and
 `--data-channel` are accepted, warning no-ops from the double-gate era.
