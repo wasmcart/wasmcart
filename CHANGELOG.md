@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.41.3
+
+**A GLSL ES 1.00 fragment shader with no `precision` statement compiles.** The GL host upgrades `#version 100` shaders
+to `300 es` and declares `gl_FragColor` as an `out vec4 FragColor`. ES 1.00 allows a fragment shader with no default
+precision when every float carries its own qualifier, but ES 3.00 needs one on the output too, so a bare `out vec4
+FragColor;` failed to compile and the cart got no program. miniquad (macroquad) writes its shaders exactly this way.
+The output is now declared `out mediump vec4 FragColor;` (the precision `gl_FragColor` had) when the shader has no
+precision statement. `test/shader-v100-precision.test.js` compiles both forms against real GL, with a broken shader
+as the control (0.41.2 fails it). No ABI or SPEC change; the test cart carries 0.41.3.
+
 ## 0.41.2
 
 **A cart directory answers an asset named with the asset prefix, as a `.wasc` does.** Both archive loaders index every

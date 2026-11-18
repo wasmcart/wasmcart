@@ -680,8 +680,11 @@ export function createWebGLImports({ getMemory, ctx, allocator, getExports, nati
           const insertPos = patched.lastIndexOf(lastPrecision) + lastPrecision.length;
           patched = patched.slice(0, insertPos) + 'out vec4 FragColor;\n' + patched.slice(insertPos);
         } else {
-          // Fallback: insert after #version line
-          patched = patched.replace(/(#version 300 es\n)/, '$1out vec4 FragColor;\n');
+          // No precision statement: legal in GLSL ES 1.00 when every float
+          // carries its own qualifier, but ES 3.00 has no default float
+          // precision in a fragment shader, so the output must say one.
+          // mediump is what gl_FragColor was.
+          patched = patched.replace(/(#version 300 es\n)/, '$1out mediump vec4 FragColor;\n');
         }
       }
       // gl_FragData[n] → FragData_n (rare, but handle it)
