@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.42.1
+
+**The terminal player renders through upstream chafa-wasm.** The dependency is now `chafa-wasm` (hectorm/chafa-wasm,
+LGPL-3.0) instead of a fork. It exports the same chafa functions, so every `--symbols`, `--colors`, `--fg-only`,
+`--dither` and `--contrast` mode, `matrix`'s custom glyphs included, renders as in 0.42.0. 0.42.0 was never
+published, so this release carries its entry below. The terminal tests always run on the low-power WebGPU adapter and
+check that they did, so a plain `npm test` never renders on the GPU that drives the display. No ABI or SPEC change;
+the test cart carries 0.42.1.
+
 ## 0.42.0
 
 **The terminal player shows WebGPU carts.** `--term` drew a WebGPU or dual (GL and WebGPU) cart as one row of

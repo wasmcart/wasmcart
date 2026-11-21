@@ -154,7 +154,7 @@ dependencies power the CLI, they are not required by the embedding API.
 `--term` plays a cart in the terminal, with no window or GPU display: 2D carts
 directly, GL and WebGPU carts by reading their frame back. Frames are turned
 into text by [chafa](https://hpjansson.org/chafa/) (through
-[`@monteslu/chafa-wasm`](https://www.npmjs.com/package/@monteslu/chafa-wasm),
+[`chafa-wasm`](https://www.npmjs.com/package/chafa-wasm),
 in a worker thread so the cart's 60 Hz logic never waits on it). The options
 have the same names and values as [retroemu](https://github.com/monteslu/retroemu)'s
 terminal player, so flags carry over between the two:

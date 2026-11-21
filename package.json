@@ -1,6 +1,6 @@
 {
   "name": "wasmcart",
-  "version": "0.42.0",
+  "version": "0.42.1",
   "description": "WASM cartridge host - load and run sandboxed .wasm and .wasc game carts",
   "type": "module",
   "main": "index.js",
@@ -55,7 +55,7 @@
   },
   "dependencies": {
     "@kmamal/sdl": "^0.11.13",
-    "@monteslu/chafa-wasm": "^0.4.0",
+    "chafa-wasm": "^0.3.3",
     "fflate": "^0.8.3",
     "native-dawn": "^0.1.6",
     "webgl-node": "^1.6.0",

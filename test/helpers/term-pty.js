@@ -18,12 +18,12 @@ const q = (a) => `'${String(a).replace(/'/g, `'\\''`)}'`;
 /**
  * Play `cart` with --term in a cols x rows pty until `frames` frames have been
  * drawn (or `timeoutMs`), then press q. Resolves to the raw output.
- * The WebGPU adapter is the low-power one unless WASMCART_WGPU_POWER says otherwise.
+ * Always on the low-power WebGPU adapter, never the GPU driving the display.
  */
 export function runTerm(cart, args = [], { cols = 160, rows = 50, frames = 6, timeoutMs = 60000 } = {}) {
   const cmd = `stty cols ${cols} rows ${rows}; exec ${q(process.execPath)} ${q(PLAY)} ${q(cart)} --term ${args.map(q).join(' ')}`;
   const child = spawn('script', ['-qfec', cmd, '/dev/null'], {
-    env: { ...process.env, WASMCART_WGPU_POWER: process.env.WASMCART_WGPU_POWER || 'low-power' },
+    env: { ...process.env, WASMCART_WGPU_POWER: 'low-power' },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let out = '';

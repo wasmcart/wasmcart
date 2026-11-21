@@ -1,6 +1,6 @@
 /*
- * The chafa renderer: RGBA frame in, ANSI text out, through chafa-wasm
- * (@monteslu/chafa-wasm, LGPL-3.0). Runs in the terminal player's worker
+ * The chafa renderer: RGBA frame in, ANSI text out, through chafa-wasm (the
+ * upstream hectorm/chafa-wasm, LGPL-3.0). Runs in the terminal player's worker
  * (chafaWorker.js); the logic is here so it is one module either way.
  *
  * It follows retroemu's terminal renderer (src/video/videoWorker.js there):
@@ -217,7 +217,7 @@ export function createChafaRenderer(chafa) {
 
 /** Load and initialise chafa-wasm. */
 export async function loadChafa() {
-  const mod = await import('@monteslu/chafa-wasm');
+  const mod = await import('chafa-wasm');
   let chafa = mod.default || mod;
   if (typeof chafa === 'function') chafa = await chafa();
   return chafa;

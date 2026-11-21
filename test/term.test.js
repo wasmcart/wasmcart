@@ -26,7 +26,9 @@ const ROOT = join(HERE, '..');
 const WGPU_HELLO = join(ROOT, 'examples', 'webgpu-hello', 'webgpu-hello.wasc');
 const GLTRI = join(HERE, 'fixtures', 'gltri.wasc');
 const HELLO2D = join(HERE, 'fixtures', 'hello.wasc');
-if (!process.env.WASMCART_WGPU_POWER) process.env.WASMCART_WGPU_POWER = 'low-power';
+// Always the low-power GPU: a plain `npm test` must never render on the GPU that
+// drives the display. The CLI runs below inherit it.
+process.env.WASMCART_WGPU_POWER = 'low-power';
 
 // ── helpers ──────────────────────────────────────────────────────────
 
@@ -289,6 +291,7 @@ test('--term shows a WebGPU cart\'s rendered frame (webgpu-hello)', ptyOpts, asy
       let f;
       for (let i = 0; i < 10; i++) { f = host.runFrame([]); await new Promise((r) => setImmediate(r)); }
       t.diagnostic(`adapter: ${JSON.stringify(host.getGpuAdapterInfo())}`);
+      assert.equal(host.getGpuAdapterInfo().powerPreference, 'low-power', 'the test must run on the low-power GPU');
       const old = new Uint8Array(f.width * f.height * 4);
       for (let p = 0; p < old.length; p += 4) { old[p] = f.framebuffer[p + 2]; old[p + 1] = f.framebuffer[p + 1]; old[p + 2] = f.framebuffer[p]; old[p + 3] = 255; }
       const oldCells = parseCells(renderHalfblock(old, f.width, f.height, cells[0].length, cells.length));
