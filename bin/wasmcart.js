@@ -39,7 +39,9 @@ if (sub === 'pack') {
   console.log('       wasmcart test               (the test cart: pads, touch, sound, saves)');
   console.log('Player options: --term, --window, --gl, --zoom n, --width px, --height px,');
   console.log('  --no-resize, --stretch, --fullscreen (-f), --frames n, --shot out.png,');
-  console.log('  --wav out.wav, --seed n, --scale cols, --fps n   (details: wasmcart play --help)');
+  console.log('  --wav out.wav, --seed n, --scale cols, --stats   (details: wasmcart play --help)');
+  console.log('Terminal (--term): --symbols set, --colors mode, --fg-only, --dither, --contrast n,');
+  console.log('  --term-fps n, --frame-skip n   (default: ASCII in foreground colour on black)');
 } else {
   await import('./wasmcart-play.js'); // bare cart path → play
 }

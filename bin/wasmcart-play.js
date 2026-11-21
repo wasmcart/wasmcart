@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 /*
  * wasmcart-play - run a .wasc cart (or a dev-mode cart DIRECTORY) right in
- * the terminal, no native host required. Video renders as ANSI half-blocks;
- * the keyboard drives pad 0. Also a headless runner for scripting:
- * step N frames, dump a PNG screenshot and/or a WAV of the audio, exit.
+ * the terminal, no native host required. Video renders as text through chafa
+ * (ASCII on black by default; --symbols picks the glyph set) or as wasmcart's
+ * own ANSI half-blocks (--symbols halfblock); the keyboard drives pad 0.
+ * Also a headless runner for scripting: step N frames, dump a PNG
+ * screenshot and/or a WAV of the audio, exit.
  *
  * Usage: wasmcart-play <cart.wasc | cart-dir | https://.../cart.wasc> [options]
  *
@@ -14,7 +16,15 @@
  *   --wav <out.wav>  Headless: write the run's audio as a 16-bit stereo WAV
  *   --seed <n>       Deterministic run: fixed clock + wc_set_seed(n)
  *   --scale <cols>   Terminal width in columns (default: fit the window)
- *   --fps <n>        Terminal refresh rate (default 30; logic always runs 60)
+ *   --term-fps <n>   Terminal refresh rate (default 30; logic always runs 60);
+ *                    --fps is the same option
+ *   --frame-skip <n> Draw every nth frame to the terminal (60/n fps)
+ *   --symbols <set>  Glyphs: ascii (default), block, half, ascii+block, solid,
+ *                    stipple, quad, sextant, octant, braille, matrix, halfblock
+ *   --colors <mode>  true (default), 256, 16, 2
+ *   --fg-only        Foreground colour only, on black (the default's look)
+ *   --dither         Floyd-Steinberg dithering
+ *   --contrast <n>   Contrast boost, 1.0 = unchanged
  *   --stats          Print measured frame rate every second (stderr)
  *
  * Keys: arrows/WASD = d-pad, x=A z=B a=X s=Y, Enter=Start, Tab=Select,
@@ -32,6 +42,8 @@ import { BUTTON } from '../src/abi.js';
 import { savPathFor, loadSave, makeSaver } from '../src/save.js';
 import { downloadRemoteCart, isRemoteCart } from '../src/remoteCart.js';
 import { writeFileSync } from 'fs';
+import { DEFAULT_TERM, checkTermOptions, fitCells } from '../src/term/options.js';
+import { createTermRenderer } from '../src/term/renderer.js';
 import { deflateSync } from 'zlib';
 
 // ── args ─────────────────────────────────────────────────────────────
@@ -39,7 +51,8 @@ import { deflateSync } from 'zlib';
 const argv = process.argv.slice(2);
 let cartPath = null;
 // resizable + letterbox are the DEFAULTS; --no-resize and --stretch opt out.
-const opt = { frames: 0, shot: null, wav: null, seed: null, scale: 0, fps: 30, stats: false, term: false, window: false, gl: false, zoom: 0, width: 0, height: 0, resizable: true, stretch: false, fullscreen: false };
+const opt = { frames: 0, shot: null, wav: null, seed: null, scale: 0, fps: DEFAULT_TERM.fps, stats: false,
+  symbols: null, colors: DEFAULT_TERM.colors, fgOnly: false, dither: false, contrast: DEFAULT_TERM.contrast, term: false, window: false, gl: false, zoom: 0, width: 0, height: 0, resizable: true, stretch: false, fullscreen: false };
 
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -49,7 +62,13 @@ for (let i = 0; i < argv.length; i++) {
     case '--wav':    opt.wav = argv[++i]; break;
     case '--seed':   opt.seed = parseInt(argv[++i], 10) >>> 0; break;
     case '--scale':  opt.scale = parseInt(argv[++i], 10) || 0; break;
-    case '--fps':    opt.fps = Math.max(1, Math.min(60, parseInt(argv[++i], 10) || 30)); break;
+    case '--fps': case '--term-fps': opt.fps = Number(argv[++i]); break;
+    case '--frame-skip': opt.fps = 60 / Math.max(1, parseInt(argv[++i], 10) || 1); break;
+    case '--symbols': opt.symbols = argv[++i]; break;
+    case '--colors': opt.colors = argv[++i]; break;
+    case '--fg-only': opt.fgOnly = true; break;
+    case '--dither': opt.dither = true; break;
+    case '--contrast': opt.contrast = Number(argv[++i]); break;
     case '--stats':  opt.stats = true; break;
     case '--term':   opt.term = true; break;
     case '--window': opt.window = true; break;
@@ -61,7 +80,21 @@ for (let i = 0; i < argv.length; i++) {
     case '--stretch':   opt.stretch = true; break;
     case '--fullscreen': case '-f': opt.fullscreen = true; break;
     case '-h': case '--help':
-      console.log('Usage: wasmcart-play <cart.wasc | cart-dir | URL> [--frames n] [--shot out.png] [--wav out.wav] [--seed n] [--term] [--window] [--gl] [--zoom n] [--width px] [--height px] [--scale cols] [--fps n] [--stats] [--no-resize] [--stretch] [--fullscreen]');
+      console.log('Usage: wasmcart-play <cart.wasc | cart-dir | URL> [--frames n] [--shot out.png] [--wav out.wav] [--seed n] [--term] [--window] [--gl] [--zoom n] [--width px] [--height px] [--no-resize] [--stretch] [--fullscreen] [--stats]');
+      console.log('Terminal player (--term) options, the same names and values as retroemu\'s:');
+      console.log('  --symbols <set>    ascii (default), block, half, ascii+block, solid, stipple, quad,');
+      console.log('                     sextant, octant, braille, matrix, halfblock');
+      console.log('                     The default is ASCII in foreground colour on a black background.');
+      console.log('                     halfblock is wasmcart\'s own renderer: one \u2580 per cell with exact');
+      console.log('                     pixel colours, the fastest mode; --colors/--fg-only/--dither do not apply.');
+      console.log('  --colors <mode>    true (default), 256, 16, 2');
+      console.log('  --fg-only          Foreground colour only, on black (on by default; with --symbols, off');
+      console.log('                     unless given, as in retroemu)');
+      console.log('  --dither           Floyd-Steinberg dithering');
+      console.log('  --contrast <n>     Contrast boost, 1.0 = unchanged (default 1.0)');
+      console.log('  --term-fps <n>     Terminal refresh rate, 1-60 (default 30; --fps is the same); logic runs at 60');
+      console.log('  --frame-skip <n>   Draw every nth frame (60/n fps)');
+      console.log('  --scale <cols>     Width in columns (default: fit the terminal)');
       console.log('GL carts are auto-detected (the wasm imports tell the player); --gl only FORCES the GL window up front.');
       console.log('The window opens at the cart\'s declared size and is RESIZABLE by default; the frame is');
       console.log('letterboxed (black bars) to preserve the cart\'s aspect ratio. --no-resize pins the window');
@@ -73,6 +106,11 @@ for (let i = 0; i < argv.length; i++) {
       if (!cartPath && !a.startsWith('-')) cartPath = a;
   }
 }
+
+// No --symbols: the default look (ASCII, foreground only, on black). An
+// explicit --symbols gets retroemu's behaviour: fg-only only when asked.
+if (opt.symbols === null) { opt.symbols = DEFAULT_TERM.symbols; opt.fgOnly = true; }
+try { checkTermOptions(opt); } catch (e) { console.error(`wasmcart-play: ${e.message}`); process.exit(1); }
 
 if (!cartPath) {
   console.error('wasmcart-play: pass a .wasc file, URL, or dev-mode cart directory. --help for options.');
@@ -108,7 +146,9 @@ function pngChunk(type, data) {
   return out;
 }
 
-export function encodePng(rgba, width, height) {
+/** @param {'bgrx'|'rgba'} order the bytes: CartHost's XRGB words (B,G,R,X) or RGBA */
+export function encodePng(rgba, width, height, order = 'bgrx') {
+  const ri = order === 'rgba' ? 0 : 2, bi = 2 - ri;
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
@@ -121,10 +161,9 @@ export function encodePng(rgba, width, height) {
     for (let x = 0; x < width; x++) {
       const s = (y * width + x) * 4;
       const d = row + 1 + x * 3;
-      // CartHost framebuffer bytes are little-endian XRGB words: B,G,R,X
-      raw[d] = rgba[s + 2];
+      raw[d] = rgba[s + ri];
       raw[d + 1] = rgba[s + 1];
-      raw[d + 2] = rgba[s];
+      raw[d + 2] = rgba[s + bi];
     }
   }
   return Buffer.concat([
@@ -160,31 +199,6 @@ export function toInt16(audio) {
     out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
   }
   return out;
-}
-
-// ── terminal renderer: half-blocks, 24-bit color ─────────────────────
-
-function renderAnsi(fb, fbW, fbH, cols, rows) {
-  // rows terminal rows = rows*2 pixel rows via '▀' (fg=top, bg=bottom)
-  const out = [];
-  for (let ry = 0; ry < rows; ry++) {
-    let line = '';
-    let lastFg = -1, lastBg = -1;
-    for (let cx = 0; cx < cols; cx++) {
-      const sx = Math.floor((cx * fbW) / cols);
-      const syT = Math.floor(((ry * 2) * fbH) / (rows * 2));
-      const syB = Math.floor(((ry * 2 + 1) * fbH) / (rows * 2));
-      const t = (syT * fbW + sx) * 4, b = (syB * fbW + sx) * 4;
-      // bytes are B,G,R,X
-      const fg = (fb[t + 2] << 16) | (fb[t + 1] << 8) | fb[t];
-      const bg = (fb[b + 2] << 16) | (fb[b + 1] << 8) | fb[b];
-      if (fg !== lastFg) { line += `\x1b[38;2;${(fg >> 16) & 255};${(fg >> 8) & 255};${fg & 255}m`; lastFg = fg; }
-      if (bg !== lastBg) { line += `\x1b[48;2;${(bg >> 16) & 255};${(bg >> 8) & 255};${bg & 255}m`; lastBg = bg; }
-      line += '▀';
-    }
-    out.push(line + '\x1b[0m');
-  }
-  return out.join('\n');
 }
 
 // ── key mapping (press = hold a few frames; terminals have no key-up) ─
@@ -283,31 +297,54 @@ async function main() {
     return false;
   };
 
-  // GL frames live in the GPU's framebuffer, so read them back into the same
-  // XRGB word layout CartHost hands out for a 2D cart. readPixels' origin is
-  // bottom-left while the cart's is top-left, hence the row flip.
+  // GL frames live in the GPU's framebuffer, so read them back as top-down
+  // RGBA. readPixels' origin is bottom-left while the cart's is top-left,
+  // hence the row flip.
   const glCtx = host.getGlContext();
   let glReadback = null;
   if (host.usesGL && glCtx) {
     const gi = host.getInfo();
     const gw = gi.width, gh = gi.height;
-    const rgba = new Uint8Array(gw * gh * 4);
-    const out = new Uint8Array(gw * gh * 4);
+    const raw = new Uint8Array(gw * gh * 4);
     glReadback = () => {
       glCtx.finish();
-      glCtx.readPixels(0, 0, gw, gh, glCtx.RGBA, glCtx.UNSIGNED_BYTE, rgba);
-      for (let y = 0; y < gh; y++) {
-        const src = (gh - 1 - y) * gw * 4, dst = y * gw * 4;
-        for (let x = 0; x < gw * 4; x += 4) {
-          out[dst + x]     = rgba[src + x + 2];   // B
-          out[dst + x + 1] = rgba[src + x + 1];   // G
-          out[dst + x + 2] = rgba[src + x];       // R
-          out[dst + x + 3] = 255;
-        }
-      }
-      return { framebuffer: out, width: gw, height: gh };
+      glCtx.readPixels(0, 0, gw, gh, glCtx.RGBA, glCtx.UNSIGNED_BYTE, raw);
+      const out = new Uint8Array(gw * gh * 4);
+      for (let y = 0; y < gh; y++) out.set(raw.subarray((gh - 1 - y) * gw * 4, (gh - y) * gw * 4), y * gw * 4);
+      return { rgba: out, width: gw, height: gh };
     };
   }
+
+  /*
+   * The frame the cart showed last, as top-down RGBA, whatever it renders
+   * with. A WebGPU cart's frame is a GPU texture (read back asynchronously),
+   * a GL cart's is the context's framebuffer, a 2D cart's is the XRGB
+   * framebuffer runFrame returns. A WebGPU cart has no 2D framebuffer at all:
+   * its fb_ptr is 0, so runFrame's framebuffer is the bytes at the start of
+   * its memory, and showing that is what drew one garbled row over black.
+   *
+   * Importing `gl` is not the same as RENDERING through it. An SDK that
+   * links a GL backend into every cart (the pygame shim does) makes usesGL
+   * true even for a cart that only writes the CPU framebuffer, and reading
+   * back the untouched context then yields a black frame over a perfectly
+   * good one. Take the GL readback only when it actually drew.
+   */
+  const grabRgba = async () => {
+    if (host.usesWgpu) {
+      const g = await host.readGpuFrame();
+      return g ? { rgba: g.data, width: g.width, height: g.height } : null;
+    }
+    if (glReadback) {
+      const gf = glReadback();
+      if (hasContent(gf.rgba)) return gf;
+    }
+    if (!frame) return null;
+    const fb = frame.framebuffer, out = new Uint8Array(frame.width * frame.height * 4);
+    for (let p = 0; p < out.length; p += 4) {
+      out[p] = fb[p + 2]; out[p + 1] = fb[p + 1]; out[p + 2] = fb[p]; out[p + 3] = 255;
+    }
+    return { rgba: out, width: frame.width, height: frame.height };
+  };
 
   const info = host.getInfo();
   const held = new Map(); // button name → frames left
@@ -324,15 +361,6 @@ async function main() {
   const step = () => {
     frame = host.runFrame(pad());
     if (host.gpuLost) return;
-    // Importing `gl` is not the same as RENDERING through it. An SDK that
-    // links a GL backend into every cart (the pygame shim does) makes
-    // usesGL true even for a cart that only writes the CPU framebuffer, and
-    // reading back the untouched context then yields a black frame over a
-    // perfectly good one. Take the GL readback only when it actually drew.
-    if (glReadback) {
-      const gf = glReadback();
-      if (hasContent(gf.framebuffer)) frame = { ...frame, ...gf };
-    }
     if (opt.wav) {
       const a = toInt16(frame.audio);
       if (a) audioChunks.push(a);
@@ -354,19 +382,11 @@ async function main() {
       // loop between frames (SPEC.md, "WebGPU"), so let it run.
       if (host.usesWgpu) await new Promise((resolve) => setImmediate(resolve));
     }
-    if (host.usesWgpu) {
-      // Its frame lives in a GPU texture: read it back (top-down RGBA) into
-      // the XRGB word layout a 2D cart hands out, as the GL path does.
-      const g = await host.readGpuFrame();
-      if (g) {
-        const out = new Uint8Array(g.width * g.height * 4);
-        for (let p = 0; p < out.length; p += 4) {
-          out[p] = g.data[p + 2]; out[p + 1] = g.data[p + 1]; out[p + 2] = g.data[p]; out[p + 3] = 255;
-        }
-        frame = { ...frame, framebuffer: out, width: g.width, height: g.height };
-      }
+    if (opt.shot) {
+      const g = await grabRgba();
+      writeFileSync(opt.shot, encodePng(g.rgba, g.width, g.height, 'rgba'));
+      frame = { ...frame, width: g.width, height: g.height };
     }
-    if (opt.shot) writeFileSync(opt.shot, encodePng(frame.framebuffer, frame.width, frame.height));
     if (opt.wav) writeFileSync(opt.wav, encodeWav(audioChunks, info.audioSampleRate || 48000));
     const dbg = host.info?.hasDebug ? ` debug=[${(host.readDebugState() || []).map((f) => f.name).join(',')}]` : '';
     console.log(`ran ${opt.frames} frames  ${frame.width}x${frame.height}  abi=${info.version}${dbg}` +
@@ -388,6 +408,8 @@ async function main() {
     console.error('wasmcart-play: not a TTY — use --frames N (with --shot/--wav) for headless runs.');
     process.exit(1);
   }
+  const renderer = createTermRenderer(opt);
+  let lastShown = null; // the last frame drawn, for --shot on quit
   let cleaned = false;
   const cleanup = () => {
     if (cleaned) return;
@@ -395,6 +417,7 @@ async function main() {
     persistSave(); // before destroy() -- getSaveData reads the cart's memory
     process.stdout.write('\x1b[?25h\x1b[0m\x1b[2J\x1b[H'); // cursor back, clear
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    renderer.close();
     host.destroy();
     remoteCart?.cleanup();
   };
@@ -409,7 +432,7 @@ async function main() {
   process.stdin.on('data', (buf) => {
     const k = buf.toString('utf8');
     if (k === 'q' || k === '\x03') {
-      if (opt.shot && frame) writeFileSync(opt.shot, encodePng(frame.framebuffer, frame.width, frame.height));
+      if (opt.shot && lastShown) writeFileSync(opt.shot, encodePng(lastShown.rgba, lastShown.width, lastShown.height, 'rgba'));
       cleanup();
       process.exit(0);
     }
@@ -418,9 +441,13 @@ async function main() {
   });
 
   process.stdout.write('\x1b[?25l\x1b[2J'); // hide cursor, clear
-  const framesPerRender = Math.max(1, Math.round(60 / opt.fps));
+  // The cart's logic runs at 60 Hz on its own timer. The terminal is drawn
+  // on a second timer at --term-fps, decoupled from it: reading the frame
+  // back and converting it to text never holds up a cart frame, and a draw
+  // still in flight (a WebGPU readback, a chafa render in its worker) makes
+  // the next tick skip rather than queue.
   let tickCount = 0;
-  const interval = setInterval(() => {
+  setInterval(() => {
     step();
     if (host.gpuLost) {
       cleanup();
@@ -428,16 +455,35 @@ async function main() {
       process.exit(4);
     }
     tickCount++;
-    if (tickCount % framesPerRender !== 0) return;
-    const cols = opt.scale || Math.min(process.stdout.columns || 80, 160);
-    const rows = Math.min(
-      (process.stdout.rows || 24) - 1,
-      Math.max(1, Math.round((cols * frame.height) / frame.width / 2)),
-    );
-    process.stdout.write('\x1b[H' + renderAnsi(frame.framebuffer, frame.width, frame.height, cols, rows) +
-      `\n\x1b[0m${frame.width}x${frame.height} f${tickCount}  arrows/wasd move  x/z=A/B  enter=start  q=quit `);
   }, 1000 / 60);
-  void interval;
+
+  const mode = opt.symbols === 'halfblock' ? 'halfblock' : `${opt.symbols} ${opt.colors}${opt.fgOnly ? ' fg' : ''}${opt.dither ? ' dither' : ''}`;
+  let drawing = false, drawn = 0, shownFps = 0, fpsSince = performance.now();
+  const draw = async () => {
+    if (drawing || cleaned || !frame) return;
+    drawing = true;
+    try {
+      const g = await grabRgba();
+      if (!g || cleaned) return;
+      if (opt.shot) lastShown = { ...g, rgba: g.rgba.slice() };
+      const maxRows = Math.max(1, (process.stdout.rows || 24) - 1);
+      const { cols, rows } = fitCells(g.width, g.height, process.stdout.columns || 80, maxRows, opt.scale);
+      const ansi = await renderer.render(g.rgba, g.width, g.height, cols, rows);
+      if (cleaned) return;
+      drawn++;
+      const now = performance.now();
+      if (now - fpsSince >= 1000) {
+        shownFps = Math.round((drawn * 1000) / (now - fpsSince));
+        if (opt.stats) process.stderr.write(`term fps ${shownFps}\n`);
+        drawn = 0; fpsSince = now;
+      }
+      process.stdout.write('\x1b[H' + ansi +
+        `\n\x1b[0m\x1b[K${g.width}x${g.height} -> ${cols}x${rows} | ${shownFps}fps | ${mode} | f${tickCount}  arrows/wasd move  x/z=A/B  enter=start  q=quit\x1b[J`);
+    } finally {
+      drawing = false;
+    }
+  };
+  setInterval(() => { draw().catch((e) => { cleanup(); console.error(`wasmcart-play: ${e.message}`); process.exit(1); }); }, 1000 / opt.fps);
 }
 
 main().catch((e) => {

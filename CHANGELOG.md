@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.42.0
+
+**The terminal player shows WebGPU carts.** `--term` drew a WebGPU or dual (GL and WebGPU) cart as one row of
+garbled colours over black. Its interactive loop drew `runFrame()`'s 2D framebuffer, and a WebGPU cart has none: its
+`fb_ptr` is 0, so the player showed the first bytes of the cart's memory. Only the headless `--frames`/`--shot` path
+read the GPU frame back. The terminal now reads every frame the same way for every cart: a WebGPU cart's texture
+(asynchronously, between frames), a GL cart's framebuffer, or a 2D cart's framebuffer. Drawing runs on its own timer,
+decoupled from the cart's 60 Hz logic, and skips a tick while a readback or render is still in flight.
+`test/term.test.js` runs the real CLI in a pseudo-terminal and compares the frame it draws with the cart's `--shot`
+for a WebGPU, a GL and a 2D cart; the readback 0.41 used is the control and fails the WebGPU comparison.
+
+**Terminal rendering through chafa, with retroemu's options.** Frames are turned into text by chafa
+(`@monteslu/chafa-wasm`, LGPL-3.0, loaded at run time) in a worker thread. The options have the same names and values
+as retroemu's terminal player: `--symbols` (`ascii`, `block`, `half`, `ascii+block`, `solid`, `stipple`, `quad`,
+`sextant`, `octant`, `braille`, `matrix`), `--colors` (`true`, `256`, `16`, `2`), `--fg-only`, `--dither`,
+`--contrast`, `--term-fps` (`--fps` stays as the same option) and `--frame-skip`. The half-block renderer the player
+had is `--symbols halfblock`: exact pixel colours, no chafa, the fastest mode. The frame now fits the terminal in both
+directions instead of being capped at 160 columns.
+
+**The default is ASCII in foreground colour on a black background.** It reads in any terminal and font (no block,
+sextant or braille glyphs needed) and keeps the terminal's colour theme out of the picture. With `--fg-only`, a flat
+cell, which chafa draws as a space or a glyph in two equal colours, is filled from a density ramp by its brightness
+(other symbol sets get their full-cell glyph), an edge cell is inked in the brighter of its two colours, and ASCII ink
+is lifted toward full brightness, so filled shapes and dark scenes stay visible; the frame's darkest tones stay black.
+Without this a solid shape came out as an empty outline. `--help` and the README describe every option.
+`test/term.test.js` checks each symbol set's glyphs and picture, each colour mode's escapes with and without
+`--fg-only` and `--dither`, `--contrast`, and that a dim scene stays readable on black, each with a control that must
+fail. No ABI or SPEC change; the test cart carries 0.42.0.
+
 ## 0.41.3
 
 **A GLSL ES 1.00 fragment shader with no `precision` statement compiles.** The GL host upgrades `#version 100` shaders

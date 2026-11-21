@@ -68,7 +68,8 @@ npx wasmcart game.wasc              # SDL window + audio + gamepad (the default)
 npx wasmcart https://example.com/games/game.wasc # fetch a remote cart and play it
 npx wasmcart game.wasc              # GL carts too - auto-detected, OpenGL window via webgl-node
 npx wasmcart my-cart-dir/           # dev mode: manifest.json + cart.wasm + assets, straight off disk
-npx wasmcart game.wasc --term       # ANSI terminal player (GL carts too, via offscreen readback)
+npx wasmcart game.wasc --term       # terminal player: ASCII on black (2D, GL and WebGPU carts)
+npx wasmcart game.wasc --term --symbols sextant --colors 256    # chafa glyph and colour choices
 npx wasmcart game.wasc --frames 300 --shot out.png --wav out.wav   # headless: step, dump, exit
 npx wasmcart game.wasc --seed 7 --frames 60 --shot a.png           # deterministic replay run
 npx wasmcart game.wasc --no-resize  # pin the window to the cart's declared size
@@ -147,6 +148,55 @@ seed → byte-identical PNG, so a shell loop is a regression test. Hosts that
 embed `CartHost` (harnesses like [romdevtools](https://www.npmjs.com/package/romdevtools))
 keep supplying their OWN backends via `load(..., { glBackend })` — these
 dependencies power the CLI, they are not required by the embedding API.
+
+### The terminal player
+
+`--term` plays a cart in the terminal, with no window or GPU display: 2D carts
+directly, GL and WebGPU carts by reading their frame back. Frames are turned
+into text by [chafa](https://hpjansson.org/chafa/) (through
+[`@monteslu/chafa-wasm`](https://www.npmjs.com/package/@monteslu/chafa-wasm),
+in a worker thread so the cart's 60 Hz logic never waits on it). The options
+have the same names and values as [retroemu](https://github.com/monteslu/retroemu)'s
+terminal player, so flags carry over between the two:
+
+| Option | Values | Default |
+|---|---|---|
+| `--symbols <set>` | `ascii`, `block`, `half`, `ascii+block`, `solid`, `stipple`, `quad`, `sextant`, `octant`, `braille`, `matrix`, `halfblock` | `ascii` |
+| `--colors <mode>` | `true` (24-bit), `256`, `16`, `2` | `true` |
+| `--fg-only` | foreground colour only, on a black background | on with the default symbols |
+| `--dither` | Floyd-Steinberg dithering | off |
+| `--contrast <n>` | contrast boost around mid-grey, `1.0` = unchanged | `1.0` |
+| `--term-fps <n>` | terminal refresh rate, 1 to 60 (`--fps` is the same option) | `30` |
+| `--frame-skip <n>` | draw every nth frame (60/n fps) | |
+| `--scale <cols>` | width in columns | fit the terminal |
+
+**The default is ASCII characters in foreground colour on a black background**
+(retroemu's `--symbols ascii --fg-only`). It reads as text art in any terminal
+and any font: it needs no block, sextant or braille glyphs, which many fonts
+draw badly or not at all, and the black background keeps the terminal's own
+colour theme out of the picture. Give `--symbols` and the background comes
+back unless you add `--fg-only`, as in retroemu.
+
+`--fg-only` keeps filled areas. chafa picks each glyph from a cell's two
+colours, which draws edges and text; a flat cell has no edge, and dropping its
+background would leave it black, so a solid shape came out as an empty
+outline. A flat cell is drawn from a density ramp (` .:-=+*#%@`) by its
+brightness instead (any other symbol set gets its full-cell glyph), an edge
+cell is inked in the brighter of its two colours, and ASCII ink is lifted
+toward full brightness, since a thin glyph in a dark colour vanishes on black.
+The darkest tones of the frame (just above its commonest dark level) stay
+black, so a game's backdrop reads as empty while the dim shapes of a dark
+scene still show.
+
+`--symbols halfblock` is wasmcart's own renderer, without chafa: one `▀` per
+cell, the nearest pixel of its top half as the foreground and of its bottom
+half as the background, in 24-bit colour. It is the fastest mode and the
+closest to the cart's pixels; `--colors`, `--fg-only` and `--dither` do not
+apply to it. `matrix` draws the frame in green katakana and digits.
+
+Keys: arrows/WASD d-pad, `x`/`z` = A/B, Enter = Start, Tab = Select,
+`[`/`]` = L/R, `q` or Ctrl-C quits. chafa is LGPL-3.0; it is a separate npm
+package loaded at run time, so it can be replaced like any dependency.
 
 Requires Node.js >= 22.
 
