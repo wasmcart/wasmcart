@@ -21,6 +21,7 @@ import { IN, DEVICE, GLYPH, glyphId, padOrigin, padFamily } from '../src/actions
 import { fitRect } from '../src/letterbox.js';
 import { savPathFor, loadSave, makeSaver } from '../src/save.js';
 import { createPadSlots } from '../src/padSlots.js';
+import { openFootSwitches } from '../src/footSwitch.js';
 
 const KEYMAP = {
   up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT',
@@ -382,8 +383,12 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, gpuLostMes
     stopRumble: (padId) => rumbler(padId)?.stopRumble(),
   });
 
+  // USB foot pedals (src/footSwitch.js) add face buttons to pad 0, alongside
+  // the keyboard and the first controller. Optional: no node-hid, no pedal.
+  const footSwitch = await openFootSwitches({ log: (m) => console.error(m) }).catch(() => null);
+
   const pad = () => {
-    let buttons = 0;
+    let buttons = footSwitch ? footSwitch.buttons() : 0;
     for (const name of held) buttons |= BUTTON[name];
     return padSlots ? padSlots.pads(buttons) : [{ connected: true, buttons }];
   };
@@ -509,6 +514,7 @@ export async function runWindowed(cartPath, opt, { CartHost, toInt16, gpuLostMes
     closing = true;
     persistSave();
     try { audioDev?.close(); } catch { /* already gone */ }
+    try { footSwitch?.close(); } catch { /* already gone */ }
     // The surface before the window it presents to (the device is the cart's;
     // host.destroy() releases it).
     try { wgpuWindow?.destroy(); } catch { /* already gone */ }
