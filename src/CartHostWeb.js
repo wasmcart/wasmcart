@@ -95,27 +95,54 @@ function validateAssetPath(path) {
 
 // --- In-memory ZIP parser ---
 
-function parseZipFromBuffer(buf) {
+// The end-of-central-directory record in the last bytes of an archive:
+// {entryCount, cdSize, cdOffset}. `tail` is the archive's last bytes (all of
+// it, or at least its last 65558).
+function readEocd(tail) {
   let eocdOffset = -1;
-  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65558); i--) {
-    if (buf[i] === 0x50 && buf[i + 1] === 0x4b &&
-        buf[i + 2] === 0x05 && buf[i + 3] === 0x06) {
+  for (let i = tail.length - 22; i >= Math.max(0, tail.length - 65558); i--) {
+    if (tail[i] === 0x50 && tail[i + 1] === 0x4b &&
+        tail[i + 2] === 0x05 && tail[i + 3] === 0x06) {
       eocdOffset = i;
       break;
     }
   }
   if (eocdOffset === -1) throw new Error('Not a valid ZIP file');
+  const view = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
+  return {
+    entryCount: view.getUint16(eocdOffset + 10, true),
+    cdSize: view.getUint32(eocdOffset + 12, true),
+    cdOffset: view.getUint32(eocdOffset + 16, true),
+  };
+}
 
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const entryCount = view.getUint16(eocdOffset + 10, true);
-  const cdSize = view.getUint32(eocdOffset + 12, true);
-  const cdOffset = view.getUint32(eocdOffset + 16, true);
+function parseZipFromBuffer(buf) {
+  const { entryCount, cdSize, cdOffset } = readEocd(buf);
+  return parseCentralDirectory(buf.subarray(cdOffset, cdOffset + cdSize), entryCount);
+}
 
+/* A .wasc's index read from a Blob (a File the player picked, or a download
+ * kept as a Blob) without reading the archive: its last 64 KiB, then its
+ * central directory. */
+async function parseZipFromBlob(blob) {
+  const tailStart = Math.max(0, blob.size - 65558);
+  const { entryCount, cdSize, cdOffset } = readEocd(await blobBytes(blob, tailStart, blob.size));
+  if (cdOffset + cdSize > blob.size) throw new Error('Not a valid ZIP file');
+  return parseCentralDirectory(await blobBytes(blob, cdOffset, cdOffset + cdSize), entryCount);
+}
+
+async function blobBytes(blob, start, end) {
+  return new Uint8Array(await blob.slice(start, end).arrayBuffer());
+}
+
+// The central directory's entries: path -> {compressionMethod, sizes, localHeaderOffset}.
+function parseCentralDirectory(cd, entryCount) {
+  const view = new DataView(cd.buffer, cd.byteOffset, cd.byteLength);
   const index = new Map();
-  let pos = cdOffset;
+  let pos = 0;
 
   for (let i = 0; i < entryCount; i++) {
-    if (view.getUint32(pos, true) !== 0x02014b50) break;
+    if (pos + 46 > cd.length || view.getUint32(pos, true) !== 0x02014b50) break;
 
     const compressionMethod = view.getUint16(pos + 10, true);
     const compressedSize = view.getUint32(pos + 20, true);
@@ -127,7 +154,7 @@ function parseZipFromBuffer(buf) {
     const localHeaderOffset = view.getUint32(pos + 42, true);
 
     const decoder = new TextDecoder();
-    const fileName = decoder.decode(buf.subarray(pos + 46, pos + 46 + nameLen));
+    const fileName = decoder.decode(cd.subarray(pos + 46, pos + 46 + nameLen));
 
     const isDir = fileName.endsWith('/');
     const isSymlink = ((externalAttrs >> 16) & 0xF000) === 0xA000;
@@ -185,6 +212,34 @@ function readZipEntryAsync(buf, entry) {
     }
   });
 }
+
+/* One entry's bytes read from a Blob archive: its local header (the data
+ * starts after the header's own name and extra field, whose lengths can
+ * differ from the central directory's), then its data, inflated off the main
+ * thread. The data offset is kept on the entry for the next read. */
+async function readBlobEntry(blob, entry) {
+  if (entry.dataOffset === undefined) {
+    const h = await blobBytes(blob, entry.localHeaderOffset, entry.localHeaderOffset + 30);
+    if (h.length < 30 || h[0] !== 0x50 || h[1] !== 0x4b || h[2] !== 0x03 || h[3] !== 0x04) throw new Error('damaged ZIP entry');
+    entry.dataOffset = entry.localHeaderOffset + 30 + (h[26] | (h[27] << 8)) + (h[28] | (h[29] << 8));
+  }
+  const slice = blob.slice(entry.dataOffset, entry.dataOffset + entry.compressedSize);
+  if (entry.compressionMethod === 0) return new Uint8Array(await slice.arrayBuffer());
+  if (entry.compressionMethod !== 8) throw new Error(`Unsupported ZIP compression method: ${entry.compressionMethod}`);
+  if (typeof DecompressionStream === 'function') {
+    return new Uint8Array(await new Response(slice.stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+  }
+  const compressed = new Uint8Array(await slice.arrayBuffer());
+  return new Promise((resolve, reject) =>
+    inflate(compressed, { size: entry.uncompressedSize }, (err, data) => (err ? reject(err) : resolve(data))));
+}
+
+/* A .wasc Blob (a File, or a fetched cart) larger than this is read entry by
+ * entry as the cart asks for its assets (JSPI suspends the cart on each
+ * read), instead of whole into memory. Smaller ones are read whole: every
+ * asset read is then a copy, as it always was. load(..., {streamAbove}) sets
+ * it per load. */
+const STREAM_ABOVE = 128 * 1024 * 1024;
 
 // Max single asset size (256MB)
 const MAX_ASSET_SIZE = 256 * 1024 * 1024;
@@ -301,9 +356,13 @@ export class CartHostWeb {
     // Asset index for .wasc carts
     this._assetIndex = null;
     this._assetBuf = null;
+    this._assetBlob = null;     // the .wasc Blob when its assets are read on demand
+    this._archiveBlob = null;   // the .wasc as a Blob for cart threads (see _threadArchive)
+    this._threadIndex = null;
     this._hasAssets = false;
 
-    // Directory carts (load(url) of a cart directory). _lazy means assets are
+    // Directory carts (load(url) of a cart directory), and a .wasc read entry
+    // by entry from its Blob (_loadFromWascBlob). _lazy means assets are
     // fetched on demand through JSPI and every cart entry point is async; see
     // _loadFromDirectory. _dirAssets holds fetched bytes: in lazy mode only
     // from a size query until the load that almost always follows, and for
@@ -371,12 +430,19 @@ export class CartHostWeb {
 
   /**
    * Load and instantiate a cart.
-   * @param {Uint8Array|string|URL} source - .wasc (ZIP) bytes or bare .wasm
-   *   bytes; or a URL: a .wasc/.wasm is fetched whole, anything else is a cart
-   *   DIRECTORY whose assets are fetched on demand (see _loadFromDirectory).
-   *   A lazily loaded directory cart's runFrame() returns a promise.
+   * @param {Uint8Array|Blob|string|URL} source - .wasc (ZIP) bytes or bare .wasm
+   *   bytes; a Blob of either (a File from a picker or a drop: a large .wasc
+   *   is read entry by entry, never whole); or a URL: a .wasm is fetched and
+   *   compiled as it streams, a .wasc is fetched as a Blob (then as a Blob
+   *   source), anything else is a cart DIRECTORY whose assets are fetched on
+   *   demand (see _loadFromDirectory). A lazily loaded cart's runFrame()
+   *   returns a promise (a directory cart, or a .wasc read from its Blob).
    * @param {object} [options]
    * @param {Uint8Array} [options.saveData] - existing save data to load
+   * @param {number} [options.streamAbove] - a .wasc Blob (or URL) larger than this
+   *   many bytes is read entry by entry as the cart asks for its assets (JSPI
+   *   suspends the cart on each read); a smaller one is read into memory whole.
+   *   Default 128 MiB. Without JSPI every .wasc is read whole.
    * @param {WebGL2RenderingContext|Function} [options.glBackend] - the context, OR a factory
    *   (sync/async) returning one; the factory runs once, only if the cart imports GL
    * @param {number} [options.preferredWidth] - hint for cart resolution
@@ -445,7 +511,19 @@ export class CartHostWeb {
         const w = await compiledFrom(res);
         return this._loadWasm(w.bytes, options, glCtx, w.module);
       }
-      source = new Uint8Array(await res.arrayBuffer());
+      // as a Blob: the browser keeps the body (on disk when it is large),
+      // and only the parts the cart reads come into this page's memory
+      source = await res.blob();
+    }
+
+    if (typeof Blob !== 'undefined' && source instanceof Blob) {
+      const head = await blobBytes(source, 0, 4);
+      if (head.length === 4 && head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04) {
+        const fromBlob = await this._loadFromWascBlob(source, !!separate, options);
+        const { bytes: wasmBytes, module } = separate ? await separate : { bytes: fromBlob, module: null };
+        return this._loadWasm(wasmBytes, options, glCtx, module);
+      }
+      source = new Uint8Array(await source.arrayBuffer());
     }
 
     const u8 = source instanceof Uint8Array ? source : new Uint8Array(source);
@@ -479,6 +557,8 @@ export class CartHostWeb {
     // Detect thread usage
     const threadAnalysis = this._analyzeModule(module);
     this.isThreaded = threadAnalysis.isThreaded;
+    // only threads and on-demand reads use the cart's Blob
+    if (!this.isThreaded && !this._assetBlob) this._archiveBlob = null;
     if (this.isThreaded && this._dirAssetBase) {
       // Worker threads read assets from the archive buffer, which a directory
       // cart does not have, and a JSPI suspension cannot reach a worker.
@@ -951,8 +1031,10 @@ export class CartHostWeb {
 
     if (this._wgpu) await this._wgpu.attach(this.instance, this.memory, this._alloc);
 
-    // Read info
-    this._infoPtr = exports.wc_get_info();
+    // Read info. Through _entry: on a lazy cart an engine may open its data
+    // files as early as wc_get_info (cartwheel applies its project there), and
+    // a read that suspends needs a promising caller.
+    this._infoPtr = await this._entry('wc_get_info')();
     this.info = this._readInfo(this._infoPtr);
 
     if (this.info.version < MIN_ABI_VERSION || this.info.version > ABI_VERSION) {
@@ -982,7 +1064,7 @@ export class CartHostWeb {
       (globalThis.crypto || {}).getRandomValues
         ? crypto.getRandomValues(s)
         : (s[0] = (Math.random() * 0x100000000) >>> 0);
-      exports.wc_set_seed(s[0]);
+      await this._entry('wc_set_seed')(s[0]);
     }
 
     // WASI reactor init. Static constructors and wc_init are where most
@@ -1385,6 +1467,9 @@ export class CartHostWeb {
     this._prefetch = null;
     this._assetIndex = null;
     this._assetBuf = null;
+    this._assetBlob = null;
+    this._archiveBlob = null;
+    this._threadIndex = null;
     this._dirAssets.clear();
     this._dirSizes.clear();
     this._promisingExports = null;
@@ -1403,9 +1488,40 @@ export class CartHostWeb {
 
   // --- .wasc loading ---
 
+  /* A .wasc given as a Blob (a File, or a fetched cart). Up to streamAbove
+   * bytes it is read whole and runs as a buffer does; above it (and where the
+   * browser has JSPI) only its index, manifest and wasm are read now, and each
+   * asset is read from the Blob when the cart asks for it. Either way the Blob
+   * is what cart threads read assets from: it is passed to them as a handle,
+   * never copied. */
+  async _loadFromWascBlob(blob, wasmElsewhere, options) {
+    const streamAbove = Number.isFinite(options.streamAbove) ? options.streamAbove : STREAM_ABOVE;
+    this._archiveBlob = blob;
+    if (blob.size <= streamAbove || !hasJSPI()) {
+      if (blob.size > streamAbove) {
+        console.warn(`wasmcart: this browser has no WebAssembly JSPI, so a ${Math.round(blob.size / 1048576)} MB cart is read into memory whole`);
+      }
+      return this._loadFromWascBuffer(new Uint8Array(await blob.arrayBuffer()), wasmElsewhere);
+    }
+    const index = await parseZipFromBlob(blob);
+    const read = (entry) => readBlobEntry(blob, entry);
+    const wasmBytes = await this._indexArchive(index, read, wasmElsewhere);
+    this._assetBlob = blob;
+    this._lazy = true;
+    return wasmBytes;
+  }
+
   async _loadFromWascBuffer(buf, wasmElsewhere = false) {
     const index = parseZipFromBuffer(buf);
+    const wasmBytes = await this._indexArchive(index, (entry, big) =>
+      (big ? readZipEntryAsync(buf, entry) : readZipEntryFromBuffer(buf, entry)), wasmElsewhere);
+    this._assetBuf = buf;
+    return wasmBytes;
+  }
 
+  /* The manifest, the wasm's bytes and the asset index of an archive, from its
+   * zip index; read(entry, big) gives an entry's bytes (or a promise). */
+  async _indexArchive(index, read, wasmElsewhere) {
     if (index.size > MAX_ARCHIVE_ENTRIES) {
       throw new Error(`Archive has too many entries (${index.size} > ${MAX_ARCHIVE_ENTRIES})`);
     }
@@ -1417,7 +1533,7 @@ export class CartHostWeb {
     // falls back to cart.wasm.
     let manifest = {};
     if (manifestEntry) {
-      const manifestBuf = readZipEntryFromBuffer(buf, manifestEntry);
+      const manifestBuf = await read(manifestEntry, false);
       manifest = JSON.parse(new TextDecoder().decode(manifestBuf));
     }
     this._manifest = manifestEntry ? manifest : null;
@@ -1426,7 +1542,7 @@ export class CartHostWeb {
     const wasmName = manifest.entry || 'cart.wasm';
     const wasmEntry = index.get(wasmName);
     if (!wasmEntry && !wasmElsewhere) throw new Error(`.wasc archive missing ${wasmName}`);
-    const wasmBytes = wasmElsewhere ? null : await readZipEntryAsync(buf, wasmEntry);
+    const wasmBytes = wasmElsewhere ? null : await read(wasmEntry, true);
 
     // Build asset index
     const assetsPrefix = assetPrefixOf(manifest);
@@ -1449,7 +1565,6 @@ export class CartHostWeb {
     const fileList = [...this._assetIndex.keys()].filter(p => !p.startsWith('assets/')).join('\n');
     this._fileListBuf = new TextEncoder().encode(fileList);
 
-    this._assetBuf = buf;
     this._hasAssets = this._assetIndex.size > 0;
 
     return wasmBytes;
@@ -1689,13 +1804,22 @@ export class CartHostWeb {
     } else {
       const entry = this._assetIndex.get(path);
       if (!entry) return -1;
+      if (this._assetBlob) {
+        // read from the Blob now: the cart waits (JSPI) for these bytes only
+        return readBlobEntry(this._assetBlob, entry).then(
+          (bytes) => this._copyAsset(path, bytes, destPtr, maxSize),
+          (e) => { console.warn(`wasmcart: could not read asset ${path}: ${e?.message ?? e}`); return -1; });
+      }
       try {
         data = readZipEntryFromBuffer(this._assetBuf, entry);
       } catch {
         return -1;
       }
     }
+    return this._copyAsset(path, data, destPtr, maxSize);
+  }
 
+  _copyAsset(path, data, destPtr, maxSize) {
     const copyLen = Math.min(data.length, maxSize);
     this._updateViews();
     this._u8.set(data.subarray ? data.subarray(0, copyLen) : new Uint8Array(data, 0, copyLen), destPtr);
@@ -1758,6 +1882,7 @@ export class CartHostWeb {
     if (!this._dirAssetBase) {
       const entry = this._assetIndex?.get(path);
       if (!entry) throw new AssetMissingError(path);
+      if (this._assetBlob) return readBlobEntry(this._assetBlob, entry);
       const buf = this._assetBuf;
       const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
       const dataOffset = entry.localHeaderOffset + 30
@@ -1807,28 +1932,31 @@ export class CartHostWeb {
     this._threadFatal ??= err;
   }
 
+  /* The archive as a Blob for cart threads: the Blob the cart came from, or
+   * (a cart loaded from bytes) one made from them on the first spawn, so the
+   * browser holds one copy for every thread. */
+  _threadArchive() {
+    if (!this._assetIndex) return null;
+    if (!this._archiveBlob && this._assetBuf) this._archiveBlob = new Blob([this._assetBuf]);
+    return this._archiveBlob ?? null;
+  }
+
   _spawnThread(startArg) {
     if (!this.isThreaded || !this._compiledModule || !this._sharedMemory) return -1;
 
     const tid = this._nextTid++;
 
-    // Serialize asset config for the worker
+    // The thread's assets: the archive as a Blob, which postMessage passes as
+    // a handle (no bytes are copied), and the index. The thread reads each
+    // entry it asks for with FileReaderSync. Posting the archive's buffer
+    // instead cloned the whole cart into every thread: a 1 GB cart with four
+    // threads failed with "DataCloneError ... out of memory".
     const assetConfig = {};
-    if (this._assetBuf) {
-      // SharedArrayBuffer is needed to pass to worker.
-      // If _assetBuf is on a regular ArrayBuffer, copy to SharedArrayBuffer.
-      let sharedBuf = this._assetBuf.buffer;
-      if (!(sharedBuf instanceof SharedArrayBuffer)) {
-        // Can't share regular ArrayBuffer with worker via structured clone
-        // in all browsers. Pass as transferable copy.
-        assetConfig.type = 'buffer';
-        assetConfig.buffer = this._assetBuf.buffer;
-        assetConfig.index = this._assetIndex ? [...this._assetIndex.entries()] : [];
-      } else {
-        assetConfig.type = 'buffer';
-        assetConfig.buffer = sharedBuf;
-        assetConfig.index = this._assetIndex ? [...this._assetIndex.entries()] : [];
-      }
+    const archive = this._threadArchive();
+    if (archive) {
+      assetConfig.type = 'blob';
+      assetConfig.blob = archive;
+      assetConfig.index = this._threadIndex ??= [...this._assetIndex.entries()];
     }
 
     const workerURL = new URL('./cartWorkerWeb.js', import.meta.url);

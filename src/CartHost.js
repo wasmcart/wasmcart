@@ -1474,6 +1474,19 @@ export class CartHost {
    * Called when the cart invokes wasi.thread-spawn(start_arg).
    * Returns a positive tid on success, or negative on error.
    */
+  /* The in-memory archive as a view of a SharedArrayBuffer, made on the first
+   * thread spawn and shared by every thread after it. */
+  _sharedAssetBuf() {
+    const buf = this._assetBuf;
+    if (buf.buffer instanceof SharedArrayBuffer) return buf;
+    if (this._assetShared?.src !== buf) {
+      const view = new Uint8Array(new SharedArrayBuffer(buf.byteLength));
+      view.set(buf);
+      this._assetShared = { src: buf, view };
+    }
+    return this._assetShared.view;
+  }
+
   _spawnThread(startArg) {
     if (!this.isThreaded || !this._compiledModule || !this._sharedMemory) return -1;
 
@@ -1487,9 +1500,11 @@ export class CartHost {
       assetConfig.filePath = this._assetFilePath;
       assetConfig.index = this._assetIndex ? [...this._assetIndex.entries()] : [];
     } else if (this._assetBuf) {
-      // In-memory buffer - pass the buffer (SharedArrayBuffer compatible)
+      // In-memory buffer: copied ONCE into a SharedArrayBuffer every thread
+      // shares. Posting the buffer itself would clone the whole archive into
+      // each thread (a 1 GB cart x 8 threads).
       assetConfig.type = 'buffer';
-      assetConfig.buffer = this._assetBuf;
+      assetConfig.buffer = this._sharedAssetBuf();
       assetConfig.index = this._assetIndex ? [...this._assetIndex.entries()] : [];
     } else if (this._assetDir) {
       assetConfig.type = 'dir';
@@ -1602,6 +1617,7 @@ export class CartHost {
     }
     this._assetIndex = null;
     this._assetBuf = null;
+    this._assetShared = null;
     this._assetDir = null;
     this._sharedMemory = null;
     this._compiledModule = null;

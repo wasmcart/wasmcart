@@ -246,6 +246,14 @@ a cart with `await host.runFrame(pads)`. A cart that enumerates its assets
 (`_filelist.txt`) needs the optional manifest `files` list there, since HTTP
 cannot list a directory: `npx wasmcart index <dir>` writes it.
 
+A large `.wasc` never has to sit in a page's memory. `CartHostWeb.load()` takes
+a `Blob` (a `File` from a file picker or a drop) and a `.wasc` URL is fetched as
+a Blob; above 128 MiB (`load(source, {streamAbove})`) only the archive's index,
+manifest and wasm are read before the cart starts, and each asset is read from
+the Blob when the cart asks for it (with JSPI, as for a cart directory: drive it
+with `await host.runFrame(pads)`). Cart threads read assets from the same Blob,
+passed to them as a handle, so a 1 GB threaded cart starts in a few tens of MB.
+
 A cart that streams a world can ask for the files it will need before it reads
 them: `wc_asset_prefetch(path, len, priority)` starts a background fetch into
 the host's memory and, called again, reports its state; once it answers

@@ -98,9 +98,19 @@ const prefetchParts = unzipSync(readFileSync(join(ROOT, 'test/fixtures/prefetch.
 const PREFETCH_DIR = '/test/fixtures/prefetch-dir/';
 const PREFETCH_DELAY_MS = 60;
 
+// /test/bigcart.wasc: fixtures/bigcart (a threaded cart whose thread reads the
+// archive's last entry) with 8 MiB of stored filler, made here.
+const { bigCartBytes } = await import('./fixtures/bigcart/bigcart.build.mjs');
+const BIGCART = bigCartBytes(8);
+
 const http = createServer(async (req, res) => {
   let path = decodeURIComponent(req.url.split('?')[0]);
   requests.push(path);
+  if (path === '/test/bigcart.wasc') {
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' });
+    res.end(BIGCART);
+    return;
+  }
   if (path.startsWith(PREFETCH_DIR)) {
     const name = path.slice(PREFETCH_DIR.length);
     const bytes = prefetchParts[name];
@@ -1036,6 +1046,65 @@ if (browserGpuBytes() === null) {
   check(`webgpu: Chromium's GPU memory levels off (within 64 MiB after frame ${settled[0].frame})`, peak - first < 64, true);
 }
 await page.evaluate(() => window.vramHost.destroy());
+
+// ─── Large carts: a .wasc read from a Blob entry by entry; cart threads get ──
+// the archive as a Blob handle, never its bytes. Posting the archive's
+// ArrayBuffer to each thread cloned the whole cart into every one: a 1 GB cart
+// with four threads failed to start with "DataCloneError ... out of memory".
+{
+  const big = await page.evaluate(async () => {
+    const { CartHostWeb } = await import('/web.js');
+    // what each thread was sent: the kind of its archive and any large buffer
+    const posted = [];
+    const post = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (msg, ...rest) {
+      if (msg && 'assetConfig' in msg) {
+        const big = [];
+        const walk = (v, depth) => {
+          if (!v || typeof v !== 'object' || depth > 3) return;
+          if (v instanceof ArrayBuffer || (typeof SharedArrayBuffer !== 'undefined' && v instanceof SharedArrayBuffer)) { if (v.byteLength > (1 << 20)) big.push(v.byteLength); return; }
+          if (ArrayBuffer.isView(v)) { if (v.byteLength > (1 << 20)) big.push(v.byteLength); return; }
+          if (v instanceof Blob || v instanceof WebAssembly.Module || v instanceof WebAssembly.Memory) return;
+          for (const k of Object.keys(v)) walk(v[k], depth + 1);
+        };
+        walk(msg, 0);
+        posted.push({ type: msg.assetConfig?.type ?? null, blob: msg.assetConfig?.blob instanceof Blob, bigBuffers: big.length });
+      }
+      return post.call(this, msg, ...rest);
+    };
+    const run = (source, opts) => runOne(source, opts).catch((e) => ({ error: String(e?.message ?? e) }));
+    const runOne = async (source, opts) => {
+      posted.length = 0;
+      const host = new CartHostWeb();
+      await host.load(source, opts);
+      const v = (n) => host.readDebugValue(n).value;
+      for (let i = 0; i < 300 && !(v('threads_ran') === 4 && v('song_ok') && v('played') >= 1600); i++) {
+        await host.runFrame([]);
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      const out = {
+        ran: v('threads_ran'), tail: v('tail_bytes'), tailOk: v('tail_ok'), song: v('song_bytes'), songOk: v('song_ok'),
+        playing: v('played') >= 1600, streamed: !host._assetBuf, threads: [...new Set(posted.map((p) => `${p.type}:${p.blob}:${p.bigBuffers}`))],
+      };
+      host.destroy();
+      return out;
+    };
+    const blob = await (await fetch('/test/bigcart.wasc')).blob();
+    const res = {
+      streamed: await run(blob, { streamAbove: 0 }),
+      blobWhole: await run(blob, {}),
+      bytes: await run(new Uint8Array(await blob.arrayBuffer()), {}),
+      url: await run('/test/bigcart.wasc', { streamAbove: 0 }),
+    };
+    Worker.prototype.postMessage = post;
+    return res;
+  });
+  const want = (streamed) => ({ ran: 4, tail: 4096, tailOk: 1, song: 4 << 20, songOk: 1, playing: true, streamed, threads: ['blob:true:0'] });
+  check('large cart: a Blob read entry by entry (streamAbove 0) starts, its thread reads the last entry, the song plays', big.streamed, want(true));
+  check('large cart: a Blob under streamAbove is read whole; threads still get the Blob, not its bytes', big.blobWhole, want(false));
+  check('large cart: a cart given as bytes; threads get one Blob made from them, never the buffer', big.bytes, want(false));
+  check('large cart: a .wasc URL is kept as a Blob and read entry by entry', big.url, want(true));
+}
 
 await browser.close();
 ws.kill();

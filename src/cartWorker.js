@@ -48,16 +48,28 @@ if (assetConfig) {
   }
 }
 
+// The central directory gives the local header's offset, not the data's: the
+// data starts after the local header's own name and extra field, whose
+// lengths can differ from the central directory's.
+function dataOffsetFd(fd, entry) {
+  const local = Buffer.alloc(30);
+  readSync(fd, local, 0, 30, entry.localHeaderOffset);
+  return entry.localHeaderOffset + 30 + local.readUInt16LE(26) + local.readUInt16LE(28);
+}
+
 function readZipEntry(fd, entry) {
   const buf = Buffer.alloc(entry.compressedSize);
-  readSync(fd, buf, 0, entry.compressedSize, entry.dataOffset);
+  readSync(fd, buf, 0, entry.compressedSize, entry.dataOffset ??= dataOffsetFd(fd, entry));
   if (entry.compressionMethod === 0) return buf;
   if (entry.compressionMethod === 8) return inflateRawSync(buf);
   return null;
 }
 
 function readZipEntryFromBuffer(buf, entry) {
-  const data = buf.slice(entry.dataOffset, entry.dataOffset + entry.compressedSize);
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const at = entry.dataOffset ??= entry.localHeaderOffset + 30
+    + view.getUint16(entry.localHeaderOffset + 26, true) + view.getUint16(entry.localHeaderOffset + 28, true);
+  const data = Buffer.from(buf.buffer, buf.byteOffset + at, entry.compressedSize);
   if (entry.compressionMethod === 0) return data;
   if (entry.compressionMethod === 8) return inflateRawSync(data);
   return null;

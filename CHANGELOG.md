@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.42.3
+
+**A large threaded cart starts in the browser.** A 1 GB threaded .wasc failed to start in CartHostWeb with
+"DataCloneError: Failed to execute 'postMessage' on 'Worker': Data cannot be cloned, out of memory" from the cart's
+first `pthread_create`. Each cart thread was posted the whole archive's ArrayBuffer so it could read assets, and
+postMessage copies an ArrayBuffer: every thread got its own copy of the cart. Threads now get the archive as a Blob,
+which postMessage passes as a handle without copying, and read only the entries they ask for (FileReaderSync on a
+slice). A cart loaded from bytes gets one Blob made from them on its first thread, shared by every thread.
+
+**CartHostWeb reads a .wasc from a Blob, entry by entry.** `load()` takes a `Blob`, such as a `File` from a file
+picker or a drop, and a .wasc URL is now fetched as a Blob instead of into an ArrayBuffer. A .wasc larger than
+`streamAbove` (a new load option, default 128 MiB) is never read whole: the host reads the archive's end, its central
+directory, the manifest and the wasm, and reads each asset from the Blob when the cart asks for it, suspending the
+cart on the read with JSPI as a cart directory does (drive it with `await host.runFrame(pads)`). Prefetched entries
+are read the same way, off the main thread. A smaller Blob, or any Blob in a browser without JSPI, is read into
+memory whole and runs as before. On a synthetic 1 GB threaded cart in Chromium the page's memory grew by about
+25 MB from a picked File (it could not start before), and a thread and the main thread each read an entry from the
+far end of the file.
+
+**A lazy cart may read assets from wc_get_info.** CartHostWeb called `wc_get_info` and `wc_set_seed` directly, so
+a cart read on demand (a cart directory, or now a large .wasc) whose engine opens files that early (cartwheel applies
+its project there) failed with "SuspendError: trying to suspend without WebAssembly.promising". Both now go through
+the same entry wrapper as `wc_init`. A 206 MB cartwheel cart runs streamed on WebGPU and on GL.
+
+**Node: a cart thread reads the right bytes of an asset.** CartHost's thread worker read an asset from an offset the
+host never set, so every asset a cart thread loaded from a .wasc came back as the archive's first bytes. It now reads
+the entry's local header for the data offset, as the main thread does. A cart loaded from bytes shares one
+SharedArrayBuffer copy of the archive with its threads instead of one copy per thread.
+
+`test/fixtures/bigcart` is a threaded cart whose thread reads the archive's last entry while the main thread plays a
+song from near the end; its build script writes a 1 GB archive without holding it in memory. No ABI or SPEC change;
+the test cart carries 0.42.3.
+
 ## 0.42.2
 
 **Leaving a WebGPU cart no longer throws.** A page that destroyed a WebGPU host (CartHostWeb) while GPU work was

@@ -69,3 +69,36 @@ test('a cart thread that dies stops the cart with an error naming the thread (Ca
     cart.destroy();
   }
 });
+
+// A cart thread reads an asset (test/fixtures/bigcart: thread 1 reads tail.bin,
+// the archive's last entry, and checks every byte). Node's thread worker read
+// from an offset the host never set, so a thread's asset read returned the
+// archive's first bytes (its "PK\3\4" header) for every entry.
+test('a cart thread reads an asset from a .wasc file and from bytes (CartHost)', async () => {
+  const { bigCartBytes } = await import('./fixtures/bigcart/bigcart.build.mjs');
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const bytes = bigCartBytes(0);
+  const dir = mkdtempSync(join(tmpdir(), 'bigcart-'));
+  const file = join(dir, 'bigcart.wasc');
+  writeFileSync(file, bytes);
+  try {
+    for (const source of [file, new Uint8Array(bytes)]) {
+      const cart = new CartHost();
+      await cart.load(source);
+      try {
+        for (let i = 0; i < 200 && !(cart.readDebugValue('threads_ran').value === 4 && cart.readDebugValue('song_ok').value); i++) {
+          cart.runFrame();
+          await new Promise((r) => setTimeout(r, 5));
+        }
+        const v = (n) => cart.readDebugValue(n).value;
+        assert.deepEqual({ spawned: v('spawned'), ran: v('threads_ran'), tail: v('tail_bytes'), tailOk: v('tail_ok'), song: v('song_ok') },
+          { spawned: 4, ran: 4, tail: 4096, tailOk: 1, song: 1 }, typeof source === 'string' ? 'from the file' : 'from bytes');
+      } finally {
+        cart.destroy();
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

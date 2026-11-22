@@ -13,16 +13,26 @@ let inflateSync = null;
 
 let memory;
 let tid;
-let assetBuf = null;
+let assetBlob = null;
 let assetIndex = null;
+let reader = null;
 
-function readZipEntryFromBuffer(buf, entry) {
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const nameLen = view.getUint16(entry.localHeaderOffset + 26, true);
-  const extraLen = view.getUint16(entry.localHeaderOffset + 28, true);
-  const dataOffset = entry.localHeaderOffset + 30 + nameLen + extraLen;
+// Bytes [start, end) of the archive Blob, read synchronously (a worker may).
+function blobBytes(start, end) {
+  reader ??= new FileReaderSync();
+  return new Uint8Array(reader.readAsArrayBuffer(assetBlob.slice(start, end)));
+}
 
-  const compressedData = buf.subarray(dataOffset, dataOffset + entry.compressedSize);
+/* One entry from the archive Blob: its local header (the data starts after
+ * the header's own name and extra field), then only its data. The archive is
+ * never read whole: the host passes the Blob as a handle. */
+function readZipEntry(entry) {
+  if (entry.dataOffset === undefined) {
+    const h = blobBytes(entry.localHeaderOffset, entry.localHeaderOffset + 30);
+    if (h.length < 30) return null;
+    entry.dataOffset = entry.localHeaderOffset + 30 + (h[26] | (h[27] << 8)) + (h[28] | (h[29] << 8));
+  }
+  const compressedData = blobBytes(entry.dataOffset, entry.dataOffset + entry.compressedSize);
 
   if (entry.compressionMethod === 0) return compressedData;
   if (entry.compressionMethod === 8) {
@@ -46,10 +56,12 @@ function loadAsset(pathPtr, pathLen, destPtr, maxSize) {
   if (!entry) return -1;
   if (entry.uncompressedSize > maxSize) return -1;
 
+  if (!assetBlob) return -1;
   let data;
-  if (assetBuf) {
-    data = readZipEntryFromBuffer(assetBuf, entry);
-  } else {
+  try {
+    data = readZipEntry(entry);
+  } catch (e) {
+    console.warn(`[thread] could not read asset ${path}: ${e?.message ?? e}`);
     return -1;
   }
   if (!data) return -1;
@@ -65,11 +77,12 @@ self.onmessage = async function(e) {
   tid = threadId;
 
   // Set up asset access
-  if (assetConfig && assetConfig.type === 'buffer' && assetConfig.buffer) {
-    assetBuf = new Uint8Array(assetConfig.buffer);
+  if (assetConfig && assetConfig.type === 'blob' && assetConfig.blob) {
+    assetBlob = assetConfig.blob;
     assetIndex = new Map(assetConfig.index);
-    // Load fflate dynamically for asset decompression
-    try {
+    // Load fflate dynamically for asset decompression (only an archive with
+    // deflated entries needs it)
+    if ([...assetIndex.values()].some((e) => e.compressionMethod === 8)) try {
       const fflate = await import('fflate');
       inflateSync = fflate.inflateSync;
     } catch (e) {
