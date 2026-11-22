@@ -39,6 +39,7 @@ import { fileURLToPath } from 'node:url'
 import { routeGlueAllocation, ALLOCATOR_EXPORTS } from './wgpu/glue-alloc.mjs'
 import { hookGlueObjects } from './wgpu/glue-release.mjs'
 import { arrayDynamicOffsets } from './wgpu/glue-offsets.mjs'
+import { gateClosedCallbacks } from './wgpu/glue-closed.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const pin = JSON.parse(fs.readFileSync(path.join(root, 'scripts/wgpu/emdawnwebgpu.json'), 'utf8'))
@@ -125,6 +126,8 @@ try {
   // setBindGroup's dynamic offsets as a reused array (Dawn's Node binding
   // takes the typed-array overload only after failing the array one).
   js = arrayDynamicOffsets(js)
+  // No async callback reaches the cart after the host's destroy().
+  js = gateClosedCallbacks(js)
 
   // The functions a cart may import from this glue, read from the glue's own
   // import list so the host can name anything a cart wants that it lacks.

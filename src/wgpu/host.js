@@ -646,6 +646,11 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
     destroy() {
       if (closed) return device.lost.then(() => {});
       closed = true;
+      // The glue's async callbacks (a mapAsync, onSubmittedWorkDone, an error
+      // scope, device loss) settle after this, some because of it: none may
+      // reach a cart whose host is letting go of its memory
+      // (scripts/wgpu/glue-closed.mjs).
+      Module.wcClosed = true;
       try { realContext.unconfigure?.(); } catch {}
       try { realContext.destroy?.(); } catch {}
       for (const d of extraDevices) d.destroy();
@@ -671,7 +676,14 @@ export async function createWgpuSession({ moduleImports, gpu, adapter: givenAdap
 
   async function readMapped(buffer, w, h, bytesPerRow, format) {
     try {
-      await buffer.mapAsync(0x0001 /* READ */);
+      try {
+        await buffer.mapAsync(0x0001 /* READ */);
+      } catch (e) {
+        // the host was destroyed with this read in flight: no frame, no error
+        if (closed) return null;
+        throw e;
+      }
+      if (closed) return null;
       const mapped = new Uint8Array(buffer.getMappedRange());
       const out = new Uint8Array(w * h * 4);
       for (let y = 0; y < h; y++) out.set(mapped.subarray(y * bytesPerRow, y * bytesPerRow + w * 4), y * w * 4);

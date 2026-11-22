@@ -374,6 +374,11 @@ vendor or device ids (those read 0) or an adapter type (Unknown).
 A host reads frames with `readGpuFrame()` (async, top-down RGBA) and draws them
 into a window with `presentWgpuTo(context, rect)` on `getGpuDevice()`.
 
+`destroy()` may come at any time, with GPU work still pending (a mapAsync,
+an error scope, a `readGpuFrame()`). From that call on no WebGPU callback
+reaches the cart: its pending results are dropped, and a `readGpuFrame()` in
+flight resolves to null.
+
 Which GPU: on a machine with two, `powerPreference` picks one (`'low-power'`
 is the integrated GPU). Embedders pass it in `adapterOptions`; the Node hosts
 (`CartHost`, wasmcart-native, romdev) also take `WASMCART_WGPU_POWER`

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.42.2
+
+**Leaving a WebGPU cart no longer throws.** A page that destroyed a WebGPU host (CartHostWeb) while GPU work was
+still pending, such as a mapAsync or an error scope, got "TypeError: Cannot read properties of null (reading
+'buffer')" as an unhandled rejection. Destroying the device settles those operations, and the WebGPU glue then ran
+their callbacks against a cart whose memory the host had already dropped: the callback allocated its message through
+the cart allocator, which read the null memory. Once destroy() runs, the glue now drops every async callback
+(mapAsync, onSubmittedWorkDone, popErrorScope, the async pipeline creations, getCompilationInfo,
+requestAdapter/requestDevice, device loss) before it reaches the cart (scripts/wgpu/glue-closed.mjs, applied when the
+glue is generated). The Node host had the same path: there the cart's callback still ran after destroy(). A
+`readGpuFrame()` in flight at destroy() now resolves to null instead of rejecting with an AbortError. While a host
+is alive nothing changes, and callback errors are reported as before. `test/wgpu-destroy.test.js` destroys both
+hosts with a mapAsync, an error scope and a frame read pending. No ABI or SPEC change; the test cart carries 0.42.2.
+
 ## 0.42.1
 
 **The terminal player renders through upstream chafa-wasm.** The dependency is now `chafa-wasm` (hectorm/chafa-wasm,

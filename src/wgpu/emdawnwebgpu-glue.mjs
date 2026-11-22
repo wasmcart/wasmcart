@@ -1640,7 +1640,8 @@ async function createWasm() {
       }
     };
   var callUserCallback = (func) => {
-      if (ABORT) {
+      // wasmcart: dropped once the host destroyed the session (scripts/wgpu/glue-closed.mjs).
+      if (ABORT || Module['wcClosed']) {
         return;
       }
       try {
